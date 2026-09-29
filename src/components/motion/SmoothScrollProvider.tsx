@@ -37,6 +37,7 @@ interface SmoothScrollProviderProps {
 
 export function SmoothScrollProvider({ children }: SmoothScrollProviderProps) {
   const setProgress = useScrollStore((state) => state.setProgress);
+  const setLenis = useScrollStore((state) => state.setLenis); // v2: share the instance for programmatic scrolls
 
   useEffect(() => {
     const prefersReducedMotion = window.matchMedia(
@@ -72,6 +73,7 @@ export function SmoothScrollProvider({ children }: SmoothScrollProviderProps) {
       lenis.raf(time * 1000);
     };
     gsap.ticker.add(onTick);
+    setLenis(lenis); // v2: publish so scrollToOffset() can use it
 
     // A dropped frame should skip ahead, not cause a visible catch-up jump.
     gsap.ticker.lagSmoothing(0);
@@ -106,8 +108,9 @@ export function SmoothScrollProvider({ children }: SmoothScrollProviderProps) {
       gsap.ticker.remove(onTick);
       lenis.off("scroll", onLenisScroll);
       lenis.destroy();
+      setLenis(null);
     };
-  }, [setProgress]);
+  }, [setProgress, setLenis]);
 
   return <>{children}</>;
 }
