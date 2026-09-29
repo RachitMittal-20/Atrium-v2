@@ -4,21 +4,8 @@
  * T-junctions and Opening.offset is wall.a → opening centre. Connects to:
  * src/types/plan.ts; run on the sample by scripts/validate-sample.ts.
  */
-import type { Plan, Vec2, Wall } from "@/types/plan";
-
-const EPS = 0.01; // 1 cm, in metres
-
-const dist = (p: Vec2, q: Vec2) => Math.hypot(p.x - q.x, p.y - q.y);
-const wallLength = (w: Wall) => dist(w.a, w.b);
-
-/** Distance from p to segment a–b. */
-function distToSegment(p: Vec2, a: Vec2, b: Vec2): number {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const len2 = dx * dx + dy * dy;
-  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
-  return dist(p, { x: a.x + t * dx, y: a.y + t * dy });
-}
+import type { Plan } from "@/types/plan";
+import { dist, JOINT_EPS as EPS, pointToWallDistance, wallLength } from "./geometry";
 
 export function validatePlan(plan: Plan): string[] {
   const problems: string[] = [];
@@ -34,7 +21,7 @@ export function validatePlan(plan: Plan): string[] {
       if (others.some((o) => dist(p, o.a) < EPS || dist(p, o.b) < EPS)) continue; // shared endpoint
       // Lands on another wall's middle → that wall needs splitting, which is a
       // more useful message than "dangling".
-      const host = others.find((o) => distToSegment(p, o.a, o.b) < EPS);
+      const host = others.find((o) => pointToWallDistance(p, o) < EPS);
       problems.push(
         host
           ? `Wall ${w.id} end ${end} lands on the middle of wall ${host.id}; split ${host.id} at that point.`

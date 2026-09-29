@@ -9,13 +9,13 @@ import { applyPatches, enablePatches, produceWithPatches, type Draft, type Patch
 import { create } from "zustand";
 import { samplePlan } from "@/data/samplePlan";
 import { isTypingTarget } from "@/lib/keyboard";
+import { clampOpening, JOINT_EPS, wallLength } from "@/lib/plan/geometry";
 import { validatePlan } from "@/lib/plan/validate";
 import type { Item, Opening, Plan, Vec2, Wall } from "@/types/plan";
 
 enablePatches();
 
 const HISTORY_LIMIT = 100;
-const JOINT_EPS = 0.01; // 1 cm: endpoints this close count as one joint
 
 /** One undo step: `patches` redo it, `inverse` undoes it. */
 interface HistoryEntry {
@@ -73,11 +73,23 @@ export const usePlanStore = create<PlanState>((set, get) => {
   }
 
   /** Update a plan-array entry by id; silently ignores unknown ids. */
-  const patchById = <K extends "walls" | "openings" | "items">(key: K, id: string, changes: object) =>
+  const patchById = <K extends "openings" | "items">(key: K, id: string, changes: object) =>
     edit((d) => {
       const target = (d[key] as { id: string }[]).find((e) => e.id === id);
       if (target) Object.assign(target, changes);
     });
+
+  /** Run `mutate` on the walls, then clamp openings on every wall whose length changed. */
+  function withClampedOpenings(d: Draft<Plan>, mutate: () => void) {
+    const before = new Map(d.walls.map((w) => [w.id, wallLength(w)]));
+    mutate();
+    for (const o of d.openings) {
+      const wall = d.walls.find((w) => w.id === o.wallId);
+      const was = before.get(o.wallId);
+      if (!wall || was === undefined || Math.abs(wallLength(wall) - was) < 1e-9) continue;
+      Object.assign(o, clampOpening(o, wall)); // unchanged values add no patch
+    }
+  }
 
   return {
     plan: samplePlan,
@@ -98,7 +110,13 @@ export const usePlanStore = create<PlanState>((set, get) => {
       edit((d) => void d.walls.push({ ...wall, id }));
       return id;
     },
-    updateWall: (id, changes) => patchById("walls", id, changes),
+    updateWall: (id, changes) =>
+      edit((d) =>
+        withClampedOpenings(d, () => {
+          const wall = d.walls.find((w) => w.id === id);
+          if (wall) Object.assign(wall, changes);
+        }),
+      ),
     deleteWall: (id) =>
       edit((d) => {
         d.walls = d.walls.filter((w) => w.id !== id);
@@ -107,13 +125,15 @@ export const usePlanStore = create<PlanState>((set, get) => {
     moveWallEndpoint: (wallId, end, to) => {
       const from = get().plan.walls.find((w) => w.id === wallId)?.[end];
       if (!from) return;
-      edit((d) => {
-        for (const w of d.walls) {
-          for (const key of ["a", "b"] as const) {
-            if (Math.hypot(w[key].x - from.x, w[key].y - from.y) < JOINT_EPS) w[key] = { x: to.x, y: to.y };
+      edit((d) =>
+        withClampedOpenings(d, () => {
+          for (const w of d.walls) {
+            for (const key of ["a", "b"] as const) {
+              if (Math.hypot(w[key].x - from.x, w[key].y - from.y) < JOINT_EPS) w[key] = { x: to.x, y: to.y };
+            }
           }
-        }
-      });
+        }),
+      );
     },
 
     addOpening: (opening) => {
