@@ -1,1 +1,65 @@
+/*
+ * src/app/globals.css — Atrium v2 design tokens.
+ *
+ * The palette is taken from the landing photos themselves, so the product
+ * and the mansion story share one material language:
+ *   limestone  – the carved walls and floors (page ground)
+ *   iron       – the black window frames and railings (text, lines)
+ *   gilt       – the sconces and chandeliers (the single accent)
+ *   cyanotype  – blueprint ink (the plan/editor side of the product)
+ * Declared in a Tailwind v4 @theme block, so each token is also a utility
+ * class (bg-limestone, text-iron, font-display, ...). Components use these
+ * tokens and never hard-code their own colours or sizes.
+ */
 @import "tailwindcss";
+
+@theme {
+  /* Colour */
+  --color-limestone: #e9e2d4; /* page ground */
+  --color-vellum: #f4efe5;    /* raised panels, paper */
+  --color-stone: #cfc5b3;     /* hairlines, dividers */
+  --color-iron: #1c1916;      /* primary text and linework */
+  --color-smoke: #6f675c;     /* secondary text */
+  --color-gilt: #a9823f;      /* the one accent: calls to action, focus */
+  --color-cyanotype: #1f3a5c; /* blueprint ink, editor chrome */
+  --color-dusk: #f0b25e;      /* sunset light, used only inside imagery overlays */
+
+  /* Type families (bound to next/font variables in layout.tsx) */
+  --font-display: var(--font-marcellus), serif; /* inscriptional headlines */
+  --font-sans: var(--font-figtree), sans-serif;  /* body and interface */
+
+  /* Type scale — a 1.333 (perfect fourth) ramp from a 17px body */
+  --text-xs: 13px;
+  --text-sm: 15px;
+  --text-base: 17px;
+  --text-lg: 23px;
+  --text-xl: 30px;
+  --text-2xl: 40px;
+  --text-3xl: 54px;
+  --text-4xl: 72px;
+  --text-5xl: 96px;
+}
+
+body {
+  background: var(--color-limestone);
+  color: var(--color-iron);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.6;
+}
+
+/* Visible keyboard focus everywhere, in the accent colour. */
+:focus-visible {
+  outline: 2px solid var(--color-gilt);
+  outline-offset: 3px;
+}
+
+/* Respect the OS reduced-motion setting from day one. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
