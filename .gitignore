@@ -8,3 +8,5 @@ next-env.d.ts
 .pnpm-store
 
 .playwright-mcp/
+
+test-plans/
