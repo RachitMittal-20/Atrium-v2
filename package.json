@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx scripts/validate-sample.ts && tsx scripts/test-store.ts && tsx scripts/test-geometry.ts"
+    "test": "tsx scripts/validate-sample.ts && tsx scripts/test-store.ts && tsx scripts/test-geometry.ts && tsx scripts/test-rooms.ts"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",

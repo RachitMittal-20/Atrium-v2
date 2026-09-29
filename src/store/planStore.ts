@@ -2,14 +2,18 @@
  * planStore.ts — the one editable `Plan` plus undo/redo. Every edit runs
  * through `edit()`, which uses Immer patches so history stores small diffs, not
  * whole plans. `transaction()` folds many edits (e.g. a drag) into one undo
- * step. Connects to: src/types/plan.ts, src/lib/plan/validate.ts,
+ * step. Every wall edit re-derives `plan.rooms` in the same recipe, so undo
+ * restores room names and loops together with the walls. Connects to:
+ * src/types/plan.ts, src/lib/plan/{validate,geometry,rooms}.ts,
  * src/lib/keyboard.ts; the 3D scene, 2D plan and exports read `plan` from here.
  */
 import { applyPatches, enablePatches, produceWithPatches, type Draft, type Patch } from "immer";
+import { useMemo } from "react";
 import { create } from "zustand";
 import { samplePlan } from "@/data/samplePlan";
 import { isTypingTarget } from "@/lib/keyboard";
 import { clampOpening, JOINT_EPS, wallLength } from "@/lib/plan/geometry";
+import { deriveRooms, toStoredRoom, type DerivedRoom } from "@/lib/plan/rooms";
 import { validatePlan } from "@/lib/plan/validate";
 import type { Item, Opening, Plan, Vec2, Wall } from "@/types/plan";
 
@@ -79,6 +83,15 @@ export const usePlanStore = create<PlanState>((set, get) => {
       if (target) Object.assign(target, changes);
     });
 
+  /** Wall edit: run `mutate`, then rebuild `d.rooms` against the pre-edit plan. */
+  function editWalls(mutate: (d: Draft<Plan>) => void) {
+    const before = get().plan;
+    edit((d) => {
+      mutate(d);
+      syncRooms(d, before);
+    });
+  }
+
   /** Run `mutate` on the walls, then clamp openings on every wall whose length changed. */
   function withClampedOpenings(d: Draft<Plan>, mutate: () => void) {
     const before = new Map(d.walls.map((w) => [w.id, wallLength(w)]));
@@ -92,7 +105,7 @@ export const usePlanStore = create<PlanState>((set, get) => {
   }
 
   return {
-    plan: samplePlan,
+    plan: { ...samplePlan, rooms: deriveRooms(samplePlan).map(toStoredRoom) },
     past: [],
     future: [],
 
@@ -102,30 +115,31 @@ export const usePlanStore = create<PlanState>((set, get) => {
         if (problems.length > 0) console.warn(`Plan "${plan.name}" has problems:\n- ${problems.join("\n- ")}`);
       }
       tx = null;
-      set({ plan, past: [], future: [] }); // a fresh plan starts a fresh history
+      const rooms = deriveRooms(plan).map(toStoredRoom); // stored rooms keep names by matching loop
+      set({ plan: { ...plan, rooms }, past: [], future: [] }); // a fresh plan starts a fresh history
     },
 
     addWall: (wall) => {
       const id = newId("w");
-      edit((d) => void d.walls.push({ ...wall, id }));
+      editWalls((d) => void d.walls.push({ ...wall, id }));
       return id;
     },
     updateWall: (id, changes) =>
-      edit((d) =>
+      editWalls((d) =>
         withClampedOpenings(d, () => {
           const wall = d.walls.find((w) => w.id === id);
           if (wall) Object.assign(wall, changes);
         }),
       ),
     deleteWall: (id) =>
-      edit((d) => {
+      editWalls((d) => {
         d.walls = d.walls.filter((w) => w.id !== id);
         d.openings = d.openings.filter((o) => o.wallId !== id);
       }),
     moveWallEndpoint: (wallId, end, to) => {
       const from = get().plan.walls.find((w) => w.id === wallId)?.[end];
       if (!from) return;
-      edit((d) =>
+      editWalls((d) =>
         withClampedOpenings(d, () => {
           for (const w of d.walls) {
             for (const key of ["a", "b"] as const) {
@@ -213,6 +227,18 @@ export const usePlanStore = create<PlanState>((set, get) => {
     },
   };
 });
+
+/** Recompute stored rooms; only writes when they changed, so plain moves add no room patches. */
+function syncRooms(d: Draft<Plan>, previous: Plan) {
+  const rooms = deriveRooms(d as Plan, previous).map(toStoredRoom);
+  if (JSON.stringify(rooms) !== JSON.stringify(d.rooms)) d.rooms = rooms;
+}
+
+/** Rooms with polygon, area, perimeter and centroid for components; recomputed only when the plan changes. */
+export function useDerivedRooms(): DerivedRoom[] {
+  const plan = usePlanStore((s) => s.plan);
+  return useMemo(() => deriveRooms(plan), [plan]);
+}
 
 /** Ctrl/Cmd+Z = undo, Shift+Ctrl/Cmd+Z = redo. Returns a cleanup; call it from an effect. */
 export function installPlanShortcuts(): () => void {
