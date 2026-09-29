@@ -29,3 +29,8 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 5. Before saying you're done, run `npx tsc --noEmit` and `npm run build` and fix every error.
 6. Units: metres internally everywhere; convert only at display time.
 7. Respect `prefers-reduced-motion`, keep keyboard focus visible, and keep the UI usable at 390px wide.
+
+## Conventions
+- `Opening.offset` is measured from a wall's `a` end to the opening's centre.
+- Walls are split at T-junctions, so every joint is an endpoint of every wall touching it.
+- Blueprint pixel rooms are `PixelRoom` (`src/types/blueprint.ts`); plan rooms are `Room` (`src/types/plan.ts`).

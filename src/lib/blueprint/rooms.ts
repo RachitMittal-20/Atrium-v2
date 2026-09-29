@@ -23,7 +23,7 @@
  * building's floor area ends up inside some room, and the best one wins.
  */
 
-import { BlueprintError, type Room, type RoomMap, type WallMask } from "@/types/blueprint";
+import { BlueprintError, type PixelRoom, type RoomMap, type WallMask } from "@/types/blueprint";
 import { dilate, labelComponents } from "./grid";
 
 const ROOM_SEAL_RADIUS_M = 0.55;
@@ -132,7 +132,7 @@ function detectAt(source: WallMask, rBig: number, rSmall: number, minAreaPx: num
   }
   const order = [...stats.entries()].sort((a, b) => a[1].b[1] - b[1].b[1] || a[1].b[0] - b[1].b[0]);
   const rename = new Map<number, number>();
-  const rooms: Room[] = [];
+  const rooms: PixelRoom[] = [];
   order.forEach(([old, s], idx) => {
     rename.set(old, idx + 1);
     rooms.push({ id: idx + 1, area: s.area, bbox: s.b });

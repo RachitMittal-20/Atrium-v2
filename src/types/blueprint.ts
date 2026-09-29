@@ -45,7 +45,7 @@ export interface WallMask {
 }
 
 /** One detected room: an id that is also its label value in RoomMap.labels. */
-export interface Room {
+export interface PixelRoom {
   /** 1-based; 0 in RoomMap.labels means "not part of any room" (a wall or
    *  the outside). */
   id: number;
@@ -56,13 +56,13 @@ export interface Room {
   bbox: [number, number, number, number];
 }
 
-/** What detectRooms found: a per-pixel room label and one Room per label. */
+/** What detectRooms found: a per-pixel room label and one PixelRoom per label. */
 export interface RoomMap {
   width: number;
   height: number;
-  /** labels[y * width + x] = a Room.id, or 0 for wall/outside. */
+  /** labels[y * width + x] = a PixelRoom.id, or 0 for wall/outside. */
   labels: Int32Array;
-  rooms: Room[];
+  rooms: PixelRoom[];
 }
 
 /** A plain axis-aligned rectangle in pixels, [x0, y0, x1, y1) — what walls
