@@ -4,9 +4,9 @@
  */
 import assert from "node:assert/strict";
 import { samplePlan } from "../src/data/samplePlan";
-import { DEFAULT_FLOOR_MATERIAL, deriveRooms } from "../src/lib/plan/rooms";
+import { DEFAULT_FLOOR_MATERIAL, deriveRooms, pointInPolygon } from "../src/lib/plan/rooms";
 import { usePlanStore } from "../src/store/planStore";
-import type { Plan } from "../src/types/plan";
+import type { Plan, Vec2, Wall } from "../src/types/plan";
 
 const s = () => usePlanStore.getState();
 const byName = (p: Plan) => new Map(deriveRooms(p).map((r) => [r.name, r]));
@@ -85,5 +85,28 @@ const dangling: Plan = {
 };
 const summary = (p: Plan) => deriveRooms(p).map((r) => `${r.name}:${r.area.toFixed(6)}`).sort();
 assert.deepEqual(summary(dangling), summary(samplePlan), "dangling walls don't change rooms");
+
+// --- U-shaped room: centroid falls in the notch, labelPoint doesn't, and the name survives a wall move
+{
+  // Centreline loop (0,0)(2,0)(2,4)(4,4)(4,0)(6,0)(6,6)(0,6): a 6×6 square minus a 2×4 notch
+  // from the top edge. Centroid y ≈ (36×3 − 8×2) / 28 ≈ 3.29 at x = 3, inside the notch.
+  const pts: Vec2[] = [[0, 0], [2, 0], [2, 4], [4, 4], [4, 0], [6, 0], [6, 6], [0, 6]].map(([x, y]) => ({ x, y }));
+  const walls: Wall[] = pts.map((a, i) => ({ id: `u${i}`, a, b: pts[(i + 1) % pts.length], thickness: 0.1, height: 2.7 }));
+  s().loadPlan({ ...samplePlan, id: "u", walls, openings: [], rooms: [], items: [] });
+  const [u] = deriveRooms(s().plan);
+  assert.ok(!pointInPolygon(u.centroid, u.polygon), "test setup: centroid is outside the U");
+  assert.ok(pointInPolygon(u.labelPoint, u.polygon), "labelPoint is inside the U");
+  s().renameRoom(u.id, "Studio");
+  s().moveWallEndpoint("u6", "a", { x: 6.5, y: 6 }); // pull the (6,6) corner out
+  assert.deepEqual(deriveRooms(s().plan).map((r) => r.name), ["Studio"], "U room keeps its name");
+}
+
+// --- the sample's four rooms still match by name through the store
+s().loadPlan(structuredClone(samplePlan));
+assert.deepEqual(
+  s().plan.rooms.map((r) => [r.id, r.name]).sort(),
+  samplePlan.rooms.map((r) => [r.id, r.name]).sort(),
+  "sample rooms keep ids and names",
+);
 
 console.log("OK");

@@ -10,7 +10,7 @@
  * and the surrounding room's area still includes it.
  */
 import type { Plan, Room, Vec2, Wall } from "@/types/plan";
-import { dist, JOINT_EPS, wallLength } from "./geometry";
+import { dist, JOINT_EPS, pointToWallDistance, wallLength } from "./geometry";
 
 export const DEFAULT_FLOOR_MATERIAL = "oak-floor";
 
@@ -20,6 +20,8 @@ export interface DerivedRoom extends Room {
   area: number; // m², net floor area
   perimeter: number; // m, of `polygon`
   centroid: Vec2;
+  /** A point inside the polygon, far from its edges: use it for labels and inside tests (centroids can fall outside L/U rooms). */
+  labelPoint: Vec2;
 }
 
 /** A bounded face of the wall graph, before names are attached. */
@@ -29,6 +31,7 @@ interface Face {
   area: number;
   perimeter: number;
   centroid: Vec2;
+  labelPoint: Vec2;
 }
 
 // ---------------------------------------------------------------- polygon helpers
@@ -67,6 +70,51 @@ export function pointInPolygon(p: Vec2, poly: Vec2[]): boolean {
     if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
   }
   return inside;
+}
+
+/**
+ * Pole of inaccessibility (the "polylabel" algorithm): the interior point
+ * furthest from any edge, to within `precision` metres. Covers the bounding box
+ * with square cells, then repeatedly splits the cell whose best possible
+ * distance could still beat the best point found so far.
+ */
+export function polylabel(poly: Vec2[], precision = 0.01): Vec2 {
+  const xs = poly.map((p) => p.x);
+  const ys = poly.map((p) => p.y);
+  const [minX, minY, maxX, maxY] = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  const size = Math.min(maxX - minX, maxY - minY);
+  if (size <= 0) return poly[0];
+
+  // Signed distance to the outline: positive inside, negative outside.
+  const signedDist = (p: Vec2) => {
+    let d = Infinity;
+    for (let i = 0; i < poly.length; i++) d = Math.min(d, pointToWallDistance(p, { a: poly[i], b: poly[(i + 1) % poly.length] }));
+    return pointInPolygon(p, poly) ? d : -d;
+  };
+  // h = half the cell's side; `max` = the best distance any point in the cell could have.
+  const cell = (x: number, y: number, h: number) => {
+    const d = signedDist({ x, y });
+    return { x, y, h, d, max: d + h * Math.SQRT2 };
+  };
+
+  const queue: ReturnType<typeof cell>[] = [];
+  for (let x = minX; x < maxX; x += size) for (let y = minY; y < maxY; y += size) queue.push(cell(x + size / 2, y + size / 2, size / 2));
+  const c = centroidOf(poly);
+  let best = cell(c.x, c.y, 0); // good first guess for convex-ish rooms
+  const mid = cell((minX + maxX) / 2, (minY + maxY) / 2, 0);
+  if (mid.d > best.d) best = mid;
+
+  // ponytail: linear scan for the most promising cell instead of a heap; fine for room-sized polygons.
+  while (queue.length > 0) {
+    let i = 0;
+    for (let j = 1; j < queue.length; j++) if (queue[j].max > queue[i].max) i = j;
+    const top = queue.splice(i, 1)[0];
+    if (top.d > best.d) best = top;
+    if (top.max - best.d <= precision) break; // it's the most promising cell, so none can beat `best`
+    const h = top.h / 2;
+    queue.push(cell(top.x - h, top.y - h, h), cell(top.x + h, top.y - h, h), cell(top.x - h, top.y + h, h), cell(top.x + h, top.y + h, h));
+  }
+  return { x: best.x, y: best.y };
 }
 
 // ---------------------------------------------------------------- face tracing
@@ -142,6 +190,7 @@ function traceFaces(walls: Wall[]): Face[] {
         area: Math.abs(signedArea(polygon)),
         perimeter: polygon.reduce((s, p, i) => s + dist(p, polygon[(i + 1) % polygon.length]), 0),
         centroid: centroidOf(polygon),
+        labelPoint: polylabel(polygon),
       });
     }
   }
@@ -182,7 +231,7 @@ const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((
 /**
  * Rooms for `plan`'s walls, keeping names/materials/ids from `previous` (the plan
  * before the edit; defaults to `plan`, whose stored rooms then match by loop).
- * Matching: a new and an old room are candidates when either's centroid lies in
+ * Matching: a new and an old room are candidates when either's labelPoint lies in
  * the other's polygon, scored by area ratio (smaller / larger); pairs are taken
  * greedily by score, so on a split the larger part keeps the name and on a
  * merge the larger old room's name wins.
@@ -196,11 +245,10 @@ export function deriveRooms(plan: Plan, previous: Plan = plan): DerivedRoom[] {
     return stored ? [{ face: f, stored }] : [];
   });
 
-  // ponytail: centroid test can miss a very concave room whose centroid falls outside it; use polygon clipping if that bites.
   const pairs: { n: number; o: number; score: number }[] = [];
   faces.forEach((f, n) =>
     old.forEach(({ face: g }, o) => {
-      if (pointInPolygon(f.centroid, g.polygon) || pointInPolygon(g.centroid, f.polygon)) {
+      if (pointInPolygon(f.labelPoint, g.polygon) || pointInPolygon(g.labelPoint, f.polygon)) {
         pairs.push({ n, o, score: Math.min(f.area, g.area) / Math.max(f.area, g.area) });
       }
     }),
