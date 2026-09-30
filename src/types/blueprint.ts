@@ -17,6 +17,8 @@
  *        walls, and extractWalls after fillHollowWalls, for walls drawn as
  *        two thin parallel lines
  *     -> vectorize      (lib/blueprint/vectorize.ts)  -> PixelWall[]
+ *     -> detectOpenings (lib/blueprint/openings.ts)   -> OpeningCandidate[], from
+ *        the walls and the deskewed but unfilled image
  *     -> estimateScale  (lib/blueprint/scale.ts)      -> pixels per metre, from
  *        the OcrWord[] that lib/blueprint/ocr.ts reads off the straightened image
  *     -> detectRooms   (lib/blueprint/rooms.ts)      -> RoomMap
@@ -29,6 +31,7 @@
  * downward exactly like the source image — the 3D builder is the one
  * place that turns image y into world z.
  */
+import type { Vec2 } from "./plan";
 
 /** Raw pixels as a canvas's getImageData delivers them (RGBA, 4 bytes per
  *  pixel). Kept as a plain interface, not ImageData, so the pipeline's
@@ -227,4 +230,22 @@ export interface PixelWall {
   a: { x: number; y: number };
   b: { x: number; y: number };
   thickness: number;
+}
+
+/** One gap in a wall line found by lib/blueprint/openings.ts, in deskewed
+ *  PIXELS like PixelWall. The scale is not known yet at this stage; the
+ *  conversion to metres (and door versus passage by width) comes later. */
+export interface OpeningCandidate {
+  /** The two ends of the gap: the facing wall ends. */
+  a: Vec2;
+  b: Vec2;
+  centre: Vec2;
+  /** |b - a|. Includes the jamb absorption described in openings.ts. */
+  widthPx: number;
+  wallThicknessPx: number;
+  kind: "window" | "door";
+  evidence: {
+    /** A thin dark line runs along at least 80% of the gap inside the wall band. */
+    glazingLine: boolean;
+  };
 }

@@ -9,7 +9,8 @@
  * wall mask. Doors and windows, drawn thin, vanish and leave gaps — which
  * is exactly how the 3D model wants them.
  *
- * Connects to: deskew.ts runs before this and reuses `binarize`; vectorize.ts
+ * Connects to: deskew.ts runs before this and reuses `binarize`; openings.ts
+ * reuses `binarize` and `luminance`; vectorize.ts
  * and rooms.ts consume the WallMask.
  */
 
@@ -42,22 +43,27 @@ function otsu(hist: Uint32Array, total: number): number {
   return best;
 }
 
-/** 1 = ink (dark), 0 = paper. Transparent pixels count as paper. Exported so
- *  deskew.ts measures the same dark pixels this stage does. */
-export function binarize(pixels: PlanPixels): Uint8Array {
+/** Grey level per pixel, 0 (black) to 255 (white). Transparent pixels count
+ *  as paper (255). Exported so openings.ts reads the same grey levels. */
+export function luminance(pixels: PlanPixels): Uint8Array {
   const { width, height, rgba } = pixels;
   const n = width * height;
   const lum = new Uint8Array(n);
-  const hist = new Uint32Array(256);
-  for (let i = 0; i < n; i++) {
-    const a = rgba[i * 4 + 3];
-    const l =
-      a < 128
+  for (let i = 0; i < n; i++)
+    lum[i] =
+      rgba[i * 4 + 3] < 128
         ? 255
         : Math.round(0.299 * rgba[i * 4] + 0.587 * rgba[i * 4 + 1] + 0.114 * rgba[i * 4 + 2]);
-    lum[i] = l;
-    hist[l]++;
-  }
+  return lum;
+}
+
+/** 1 = ink (dark), 0 = paper. Transparent pixels count as paper. Exported so
+ *  deskew.ts measures the same dark pixels this stage does. */
+export function binarize(pixels: PlanPixels): Uint8Array {
+  const n = pixels.width * pixels.height;
+  const lum = luminance(pixels);
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < n; i++) hist[lum[i]]++;
   // Clamped so a nearly blank or very low-contrast image cannot pick a
   // silly threshold.
   const t = Math.min(170, Math.max(70, otsu(hist, n)));

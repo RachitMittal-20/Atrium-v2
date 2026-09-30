@@ -10,6 +10,7 @@
  * endpoints), because that is what the truth of 1000 × 800 px describes; the
  * outer faces sit a wall thickness further out.
  */
+import { isH } from "../src/lib/blueprint/openings";
 import type { PixelWall } from "../src/types/blueprint";
 
 const TRUE_W = 1000;
@@ -26,9 +27,6 @@ export function footprintCheck(walls: PixelWall[], T: number, scale = 1) {
   const pass = Math.abs(width - TRUE_W * scale) <= tol && Math.abs(height - TRUE_H * scale) <= tol; // no walls → -Infinity → fails
   return { width, height, tol, pass };
 }
-
-/** Dominant axis of a wall: merged joints can tilt a wall slightly. */
-export const isH = (w: PixelWall) => Math.abs(w.b.x - w.a.x) >= Math.abs(w.b.y - w.a.y);
 
 /** Distinct wall lines: collinear walls (across the gaps and joints) count once. */
 export function wallLines(walls: PixelWall[]) {

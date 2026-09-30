@@ -1,11 +1,14 @@
 /**
  * vectorize-overlay.ts — runs the real image → deskew → mask → segments
  * pipeline (deskew.ts, hollowWalls.ts detectWalls, then vectorize.ts) on every
- * image in test-plans/, writes an overlay PNG per image to /tmp/vectorize/
- * (the deskewed image dimmed, wall centre lines red, shared joints blue, free
- * ends orange), and prints the deskew angle, the wall mode chosen (solid or
+ * image in test-plans/, then finds openings (openings.ts detectOpenings, on
+ * the deskewed unfilled image), writes an overlay PNG per image to
+ * /tmp/vectorize/ (the deskewed image dimmed, wall centre lines red, windows
+ * as green bars, doors as blue bars, unpaired free ends as orange dots), and
+ * prints the deskew angle, the wall mode chosen (solid or
  * hollow) and why, wall count, coverage, inkCapture (plus fillCapture in
- * hollow mode, see hollowWalls.ts) and joint problems. Images
+ * hollow mode, see hollowWalls.ts), doors, windows and unpaired ends (every
+ * opening with its kind and widthPx for 06 and 08), and joint problems. Images
  * decode with `sharp` (devDependency). Each overlay is stamped with the
  * commit, wall count and time, and replaces the image's older overlays
  * (stamp.ts).
@@ -22,57 +25,15 @@ import { detectWalls } from "../src/lib/blueprint/hollowWalls";
 import { vectorize } from "../src/lib/blueprint/vectorize";
 import { validatePlan } from "../src/lib/plan/validate";
 import { samplePlan } from "../src/data/samplePlan";
-import { footprintCheck, isH, wallLines } from "./footprint";
+import { detectOpenings } from "../src/lib/blueprint/openings";
+import { footprintCheck, wallLines } from "./footprint";
 import { clearOld, writeStamped } from "./stamp";
-import type { PixelWall } from "../src/types/blueprint";
 
 const IN = "test-plans";
 const OUT = "/tmp/vectorize";
 mkdirSync(OUT, { recursive: true });
 
 type P = { x: number; y: number };
-const k = (p: P) => `${p.x},${p.y}`;
-
-/** Endpoints used by only one wall. */
-function freeEnds(walls: PixelWall[]) {
-  const count = new Map<string, number>();
-  for (const w of walls)
-    for (const p of [w.a, w.b]) count.set(k(p), (count.get(k(p)) ?? 0) + 1);
-  return walls.flatMap((w) =>
-    [w.a, w.b].filter((p) => count.get(k(p)) === 1).map((p) => ({ p, w })),
-  );
-}
-
-/**
- * Openings: each free end looks along its own wall's direction for the nearest
- * endpoint of another collinear wall. That endpoint may itself be free (a gap
- * mid-wall) or a joint (a door right next to a corner). Pairs are counted once.
- */
-function gapPairs(ends: ReturnType<typeof freeEnds>, walls: PixelWall[]) {
-  const paired = new Set<string>();
-  let pairs = 0;
-  for (const e of ends) {
-    if (paired.has(k(e.p))) continue;
-    const other = e.w.a === e.p ? e.w.b : e.w.a;
-    const dir = { x: Math.sign(e.p.x - other.x), y: Math.sign(e.p.y - other.y) }; // outward from the wall
-    let best: P | null = null;
-    let bestGap = Infinity;
-    for (const w of walls) {
-      if (w === e.w || isH(w) !== isH(e.w)) continue;
-      for (const q of [w.a, w.b]) {
-        const across = isH(e.w) ? Math.abs(e.p.y - q.y) : Math.abs(e.p.x - q.x);
-        const gap = (q.x - e.p.x) * dir.x + (q.y - e.p.y) * dir.y;
-        if (gap > 0 && gap < bestGap && !paired.has(k(q)) && across <= Math.max(e.w.thickness, w.thickness) / 2)
-          [best, bestGap] = [q, gap];
-      }
-    }
-    if (best) {
-      paired.add(k(e.p)).add(k(best));
-      pairs++;
-    }
-  }
-  return { pairs, unpaired: ends.filter((e) => !paired.has(k(e.p))).length };
-}
 
 function draw(
   rgba: Buffer,
@@ -121,8 +82,8 @@ async function main() {
       continue;
     }
     const { walls, coverage } = vectorize(mask);
-    const ends = freeEnds(walls);
-    const gaps = gapPairs(ends, walls);
+    const { openings, unpaired } = detectOpenings(walls, pixels);
+    const doors = openings.filter((o) => o.kind === "door").length;
     const problems = validatePlan({
       ...samplePlan,
       walls: walls.map((w, i) => ({
@@ -141,9 +102,10 @@ async function main() {
     console.log(
       `  walls ${walls.length}, coverage ${(coverage * 100).toFixed(1)}%, inkCapture ${(mask.inkCapture * 100).toFixed(1)}%${mask.fillCapture === undefined ? "" : `, fillCapture ${(mask.fillCapture * 100).toFixed(1)}%`}`,
     );
-    console.log(
-      `  free ends ${ends.length}: ${gaps.pairs} facing pairs (openings), ${gaps.unpaired} unpaired`,
-    );
+    console.log(`  doors ${doors}, windows ${openings.length - doors}, unpaired ${unpaired.length}`);
+    if (/^0[68]_/.test(file))
+      for (const o of openings)
+        console.log(`    ${o.kind.padEnd(6)} widthPx ${o.widthPx.toFixed(1).padStart(6)} at (${o.centre.x.toFixed(0)}, ${o.centre.y.toFixed(0)})`);
     console.log(
       `  missing T-splits ${tSplits.length}${tSplits.length ? "\n    " + tSplits.slice(0, 5).join("\n    ") : ""}`,
     );
@@ -157,8 +119,8 @@ async function main() {
           fp.pass,
         ],
         [`wall lines ${wallLines(walls)} = 7`, wallLines(walls) === 7],
-        [`openings ${gaps.pairs} = 8 (4 doors + 4 windows)`, gaps.pairs === 8],
-        [`unpaired free ends ${gaps.unpaired} = 0`, gaps.unpaired === 0],
+        [`doors ${doors} = 4, windows ${openings.length - doors} = 4`, doors === 4 && openings.length === 8],
+        [`unpaired free ends ${unpaired.length} = 0`, unpaired.length === 0],
         [`missing T-splits ${tSplits.length} = 0`, tSplits.length === 0],
       ];
       for (const [label, ok] of checks)
@@ -184,17 +146,20 @@ async function main() {
           [220, 30, 30],
         );
     }
-    const free = new Set(ends.map((e) => k(e.p)));
-    for (const wl of walls)
-      for (const p of [wl.a, wl.b])
+    // Openings as bars along the gap (green window, blue door), unpaired ends as orange dots.
+    for (const o of openings) {
+      const n = Math.ceil(o.widthPx);
+      for (let s = 0; s <= n; s++)
         draw(
           out,
           width,
           height,
-          p,
-          5,
-          free.has(k(p)) ? [240, 140, 0] : [30, 60, 200],
+          { x: o.a.x + ((o.b.x - o.a.x) * s) / n, y: o.a.y + ((o.b.y - o.a.y) * s) / n },
+          Math.max(3, o.wallThicknessPx / 2),
+          o.kind === "window" ? [20, 170, 60] : [30, 90, 230],
         );
+    }
+    for (const p of unpaired) draw(out, width, height, p, 6, [240, 140, 0]);
     const png = path.join(
       OUT,
       file.replace(/\.[^.]+$/, "").replace(/[^\w-]+/g, "_") + ".png",

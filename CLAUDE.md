@@ -43,3 +43,6 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - Room-size labels give no scale for open-plan rooms, rooms bounded mostly by windows, or rooms whose edges are single thin lines. The label is measured against the walls around it, and those rooms don't have enough wall to measure against.
 - OCR sometimes splits a size label into fragments, and then the size is not read.
 - When no scale can be worked out, the fallback is the user clicking a wall and typing its length.
+- `OpeningCandidate.widthPx` is the clear gap between the wall ends as drawn, in deskewed pixels. A wall end next to a T-joint can be snapped into the joint, which makes that opening up to about one wall thickness too wide.
+- Gap pairing has no maximum width, so two collinear free ends across a room can pair into a fake door (06 has a 481 px one). Step 3.4 must classify by real width once the scale is known: over about 2.4 m is a passage, over about 4 m is dropped.
+- Door versus window is a guess from the pixels: a double door drawn in thin lines can read as a window, and grey outlines on wall faces can read as doors. The review screen lets the user change the kind.
