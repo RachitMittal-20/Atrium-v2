@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx scripts/validate-sample.ts && tsx scripts/test-store.ts && tsx scripts/test-geometry.ts && tsx scripts/test-rooms.ts && tsx scripts/test-vectorize.ts && tsx scripts/test-deskew.ts && tsx scripts/test-hollow.ts"
+    "test": "tsx scripts/validate-sample.ts && tsx scripts/test-store.ts && tsx scripts/test-geometry.ts && tsx scripts/test-rooms.ts && tsx scripts/test-vectorize.ts && tsx scripts/test-deskew.ts && tsx scripts/test-hollow.ts && tsx scripts/test-scale.ts"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",

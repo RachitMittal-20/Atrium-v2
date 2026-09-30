@@ -16,7 +16,10 @@
  *        between extractWalls (lib/blueprint/wallMask.ts) as-is, for solid
  *        walls, and extractWalls after fillHollowWalls, for walls drawn as
  *        two thin parallel lines
- *     -> detectRooms    (lib/blueprint/rooms.ts)      -> RoomMap
+ *     -> vectorize      (lib/blueprint/vectorize.ts)  -> PixelWall[]
+ *     -> estimateScale  (lib/blueprint/scale.ts)      -> pixels per metre, from
+ *        the OcrWord[] that lib/blueprint/ocr.ts reads off the straightened image
+ *     -> detectRooms   (lib/blueprint/rooms.ts)      -> RoomMap
  *     -> buildPlanModel (lib/blueprint/buildModel.ts) -> a three.js scene
  *     -> exported to a .glb File by lib/blueprintToModel.ts, which the
  *        landing screen (Invitation.tsx) feeds into the existing
@@ -87,6 +90,19 @@ export interface PixelRect {
   y0: number;
   x1: number;
   y1: number;
+}
+
+/** One word as OCR read it (lib/blueprint/ocr.ts), with its box in the pixel
+ *  space of the image that was read (the deskewed, unfilled plan). scale.ts
+ *  groups these into lines and looks for printed dimensions in them. */
+export interface OcrWord {
+  text: string;
+  box: PixelRect;
+  /** Tesseract's confidence, 0–100. */
+  confidence: number;
+  /** True when the word was read from the 90°-rotated copy: text that runs
+   *  bottom to top on the plan, so the box is taller than it is wide. */
+  vertical?: boolean;
 }
 
 /** Thrown for problems a person can act on (an image with no solid walls,
