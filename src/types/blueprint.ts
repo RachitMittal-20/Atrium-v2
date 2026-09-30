@@ -288,6 +288,10 @@ export interface BuildReport {
   /** Gaps that could not be bridged because no wall ends at one side (for
    *  example it was removed); their remaining wall ends stay free. */
   unbridged: { a: Vec2; b: Vec2; reason: string }[];
+  /** Walls whose two ends landed on the same joint (under 1 cm apart after
+   *  clustering and rounding), removed from the Plan. `lengthPx` is the
+   *  wall's length in deskewed pixels before clustering. */
+  removedWalls: { id: string; lengthPx: number; reason: string }[];
   /** Merged pieces whose thickness differed by more than 30%, and thicknesses
    *  clamped to 0.05–0.6 m. */
   thickness: string[];

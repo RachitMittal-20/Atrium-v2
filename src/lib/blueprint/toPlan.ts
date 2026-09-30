@@ -29,7 +29,11 @@
  *      of each other are first clustered, in pixels, into one joint with one
  *      shared coordinate pair; then everything is rounded to 1 cm. Thickness
  *      is rounded to 1 cm and clamped to 0.05–0.6 m (reported when clamped).
- *      Wall height is samplePlan's WALL_HEIGHT.
+ *      Wall height is samplePlan's WALL_HEIGHT. A wall whose two ends land
+ *      on the same point (under 1 cm apart once clustered and rounded, e.g. a
+ *      stub shorter than its own thickness between two joints) is removed, as
+ *      zero-length walls break outlines and the validator, and listed in
+ *      report.removedWalls; a gap that sat in it goes to report.unbridged.
  *   e. Openings: offset = distance from the merged wall's `a` to the gap's
  *      centre, width = the clear gap, both in metres; heights and sills from
  *      samplePlan's DOOR_SIZE and WINDOW_SIZE.
@@ -91,6 +95,7 @@ export function buildPlan(
     wideOpenings: [],
     droppedPairs: [],
     unbridged: [],
+    removedWalls: [],
     thickness: [],
     adjusted: [],
     freeEnds: [],
@@ -191,9 +196,19 @@ export function buildPlan(
     };
   });
 
+  // Collapsed walls: both ends on one joint.
+  planWalls = planWalls.filter((w, i) => {
+    if (wallLength(w) >= JOINT_EPS) return true;
+    const px = walls[i]; // planWalls is still index-aligned with walls here
+    report.removedWalls.push({ id: w.id, lengthPx: dist(px.a, px.b), reason: "both ends land on the same joint (under 1 cm apart), so the wall has no length" });
+    return false;
+  });
+
   // e. openings on the merged walls
   const wallById = new Map(planWalls.map((w) => [w.id, w]));
-  let openings: Opening[] = placed.map(({ id, o, widthM, wallId }) => {
+  const lost = placed.filter((g) => !wallById.has(g.wallId!));
+  for (const { o } of lost) report.unbridged.push({ a: o.a, b: o.b, reason: "its wall collapsed to a point and was removed" });
+  let openings: Opening[] = placed.filter((g) => !lost.includes(g)).map(({ id, o, widthM, wallId }) => {
     const w = wallById.get(wallId!)!;
     return {
       id,
@@ -205,7 +220,7 @@ export function buildPlan(
     };
   });
   for (const { id, o, widthM } of placed)
-    if (widthM > PASSAGE_M) report.wideOpenings.push({ openingId: id, kind: o.kind, widthM: cm(widthM) });
+    if (!lost.some((g) => g.id === id) && widthM > PASSAGE_M) report.wideOpenings.push({ openingId: id, kind: o.kind, widthM: cm(widthM) });
 
   // f. split at T-junctions: collect every landing end first, then split once per host
   const cuts = new Map<string, { s: number; q: Vec2 }[]>(); // host id → split points, by distance from its a

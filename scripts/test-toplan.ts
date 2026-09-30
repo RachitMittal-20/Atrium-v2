@@ -19,8 +19,9 @@
  *    and is reported; a 3 m gap stays an opening and is flagged wide; a window
  *    ending at a T-joint lands in one piece, and one whose T-joint falls
  *    inside it is moved into one piece and reported; removeWalls drops a wall
- *    (and a gap that loses its wall is reported, not dropped); a scale of 0,
- *    NaN or a negative number is refused.
+ *    (and a gap that loses its wall is reported, not dropped); a wall whose
+ *    two ends round onto one joint is removed and listed in removedWalls; a
+ *    scale of 0, NaN or a negative number is refused.
  * The tolerances were fixed before the first run and are not tuned.
  * Run: npx tsx scripts/test-toplan.ts
  */
@@ -212,9 +213,19 @@ const has = (list: { x: number; y: number }[], x: number, y: number) => list.som
   assert.equal(cut.report.unbridged.length, 1, "removed gap wall: reported in unbridged");
 }
 
+// A stub shorter than a centimetre whose ends go to two joints that round to one
+// point (08's p44 is the real case) is removed and reported, and the plan stays valid.
+{
+  const stub = { a: px([5, 0]), b: { x: px([5, 0]).x, y: px([5, 0]).y + 0.4 }, thickness: 20 }; // listed first, so it seeds both joints
+  const { plan, report } = buildPlan(input([stub, ...box([W([0, 0], [5, 0]), W([5, 0], [10, 0])])], []), MANUAL_100);
+  assert.equal(plan.walls.some((w) => w.id === "p1"), false, "collapsed wall: p1 not in the plan");
+  assert.deepEqual(report.removedWalls.map(({ id, lengthPx }) => ({ id, lengthPx: Math.round(lengthPx * 10) / 10 })), [{ id: "p1", lengthPx: 0.4 }], "collapsed wall: reported");
+  assert.deepEqual(validatePlan(plan), [], "collapsed wall: valid");
+}
+
 // A scale that is not a finite positive number is refused.
 for (const pxPerM of [0, NaN, -100, Infinity])
   assert.throws(() => buildPlan(input(box([W([0, 0], [10, 0])]), []), { pxPerM, source: "manual" }), /positive number/, `pxPerM ${pxPerM} refused`);
-console.log("\nhand-built: 4.5 m gap dropped, 3 m gap wide, window at a T-joint, window straddling a T-joint, removeWalls, bad scales");
+console.log("\nhand-built: 4.5 m gap dropped, 3 m gap wide, window at a T-joint, window straddling a T-joint, removeWalls, collapsed wall, bad scales");
 
 fixtures().then(() => console.log("OK"));
