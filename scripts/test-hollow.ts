@@ -11,6 +11,9 @@
  *    footprint (footprint.ts, tolerance scaled). Nothing in hollowWalls.ts is
  *    a pixel size, and this proves it. Furniture-like double lines shorter
  *    than 4× their gap, added inside a room, must not change the result.
+ *    The 1× house is also tilted by 0.25° and sent through deskew.ts, and
+ *    must still give 7 wall lines and the same footprint. A separate pair of
+ *    lines whose gap narrows slowly (16 → 14 px) must be filled as one pair.
  * 2. Furniture alone: a page of such short double lines has no pairs at all
  *    and produces no walls.
  * 3. Regression: the solid-wall plans must stay on the solid path with exactly
@@ -24,7 +27,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import sharp from "sharp";
 import { footprintCheck, wallLines } from "./footprint";
-import { deskew } from "../src/lib/blueprint/deskew";
+import { deskew, rotatePixels } from "../src/lib/blueprint/deskew";
 import { dilate } from "../src/lib/blueprint/grid";
 import { detectWalls, fillHollowWalls } from "../src/lib/blueprint/hollowWalls";
 import { vectorize } from "../src/lib/blueprint/vectorize";
@@ -92,6 +95,45 @@ for (const s of [1, 1.5]) {
     assert.ok(fp.pass, `${name}: footprint ${fp.width}×${fp.height}, want ${1000 * s}×${800 * s} ±${fp.tol}`);
     console.log(`${name}: 7 wall lines, footprint ${fp.width.toFixed(2)}×${fp.height.toFixed(2)} ±${fp.tol.toFixed(1)}, ${reason}`);
   }
+}
+
+// ------------------------------------------------------------ 1b. slow drift
+// The 1× house tilted by 0.25°, run the way the pipeline runs it (deskew, then
+// walls). deskew.ts measures to 0.1°, reads this tilt as 0.3° and turns it
+// back, which leaves a residue of about 0.05° and twice-resampled, soft lines.
+{
+  const { pixels } = deskew(rotatePixels(hollowHouse(1, false), 0.25));
+  const { mask, mode, reason } = detectWalls(pixels);
+  assert.equal(mode, "hollow", `tilted 0.25°: mode (${reason})`);
+  const { walls } = vectorize(mask);
+  const fp = footprintCheck(walls, mask.wallThickness);
+  assert.equal(wallLines(walls), 7, "tilted 0.25°: wall lines");
+  assert.ok(fp.pass, `tilted 0.25°: footprint ${fp.width}×${fp.height}, want 1000×800 ±${fp.tol}`);
+  console.log(`hollow house tilted 0.25°: 7 wall lines, footprint ${fp.width.toFixed(2)}×${fp.height.toFixed(2)} ±${fp.tol.toFixed(1)}, ${reason}`);
+}
+
+// Two 2 px lines that are not quite parallel: the gap is 16 px for 10 rows,
+// 15 for 40 and 14 for 40. No row differs from the one before by more than
+// 1 px, and 90 rows is over 4× the gap, so this is one pair and all of its
+// white must be filled. (Measured against the first row instead, the 14 px
+// part splits off and neither piece is long enough.)
+{
+  const W = 200;
+  const H = 200;
+  const ink = new Uint8Array(W * H);
+  let white = 0;
+  for (let i = 0; i < 90; i++) {
+    const gap = i < 10 ? 16 : i < 50 ? 15 : 14;
+    const row = (50 + i) * W;
+    ink.fill(1, row + 60, row + 62);
+    ink.fill(1, row + 62 + gap, row + 64 + gap);
+    white += gap;
+  }
+  const { filled, pairedInk } = fillHollowWalls(toPixels(ink, W, H));
+  let painted = 0;
+  for (let i = 0; i < W * H; i++) if (!ink[i] && filled.rgba[i * 4] === 0) painted++;
+  assert.equal(painted, white, "drifting pair: every gap pixel filled");
+  assert.equal(pairedInk, 1, "drifting pair: both lines counted");
 }
 
 // ------------------------------------------------------------ 2. furniture alone

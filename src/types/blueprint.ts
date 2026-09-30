@@ -49,8 +49,14 @@ export interface WallMask {
   /** Wall-mask pixels / dark pixels in the source (0–1): how much of the
    *  drawing's ink the mask kept. `coverage` in vectorize.ts only says how well
    *  the walls explain the mask, so a mask that missed the walls still scores
-   *  high there; this is the number that drops. Reported only, nothing gates on it yet. */
+   *  high there; this is the number that drops. Reported only, nothing gates on it yet.
+   *  In hollow mode (hollowWalls.ts) the mask comes from a filled image, so to
+   *  stay comparable this is instead the share of the ORIGINAL dark pixels on
+   *  or within one wall thickness of a found wall centre line. */
   inkCapture: number;
+  /** Hollow mode only: wall-mask pixels / dark pixels of the FILLED image, the
+   *  number `inkCapture` would have held. Absent in solid mode. */
+  fillCapture?: number;
 }
 
 /** One detected room: an id that is also its label value in RoomMap.labels. */

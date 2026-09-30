@@ -4,7 +4,8 @@
  * image in test-plans/, writes an overlay PNG per image to /tmp/vectorize/
  * (the deskewed image dimmed, wall centre lines red, shared joints blue, free
  * ends orange), and prints the deskew angle, the wall mode chosen (solid or
- * hollow) and why, wall count, coverage, inkCapture and joint problems. Images
+ * hollow) and why, wall count, coverage, inkCapture (plus fillCapture in
+ * hollow mode, see hollowWalls.ts) and joint problems. Images
  * decode with `sharp` (devDependency).
  *
  * For the synthetic plans 01–04 it also checks the known truth: a 10 × 8 m
@@ -135,7 +136,7 @@ async function main() {
 
     console.log(`  mask thickness T = ${mask.wallThickness} px`);
     console.log(
-      `  walls ${walls.length}, coverage ${(coverage * 100).toFixed(1)}%, inkCapture ${(mask.inkCapture * 100).toFixed(1)}%`,
+      `  walls ${walls.length}, coverage ${(coverage * 100).toFixed(1)}%, inkCapture ${(mask.inkCapture * 100).toFixed(1)}%${mask.fillCapture === undefined ? "" : `, fillCapture ${(mask.fillCapture * 100).toFixed(1)}%`}`,
     );
     console.log(
       `  free ends ${ends.length}: ${gaps.pairs} facing pairs (openings), ${gaps.unpaired} unpaired`,

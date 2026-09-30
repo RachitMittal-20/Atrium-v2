@@ -12,10 +12,12 @@
  * uses (`binarize`):
  *  1. Every row is read as dark run, light gap, dark run, ... Each light gap
  *     with ink on both sides is a candidate. A gap that reappears on the next
- *     row at the same place (each edge may move by 1 px, the width may differ
- *     from the first row's by 1 px: line edges are never pixel-exact) extends a
- *     "stretch". Columns are scanned the same way on the transposed map, so
- *     rows find vertical walls and columns horizontal ones.
+ *     row at the same place extends a "stretch". Each row is compared with the
+ *     row before it, never with the first: either edge may move by 1 px and
+ *     the width may change by 1 px per row, so lines that are slightly tilted
+ *     or not quite parallel stay one stretch. The stretch's gap width is the
+ *     median of its rows. Columns are scanned the same way on the transposed
+ *     map, so rows find vertical walls and columns horizontal ones.
  *  2. A stretch is a pair when it is at least 4× as long as its gap is wide
  *     (LENGTH_PER_GAP, the rule given for this stage) and the lines on both
  *     sides are thinner than the gap (median over the stretch, so a crossing
@@ -38,10 +40,18 @@
  * Mode choice (detectWalls): the hollow path is used only when parallel-line
  * pairs hold more of the drawing's ink than the solid-wall mask captured.
  *
- * Connects to: wallMask.ts (`binarize`, `extractWalls`); called by
+ * inkCapture in hollow mode: the mask there is made from the filled image, so
+ * mask pixels / filled-image ink (kept as `fillCapture`) cannot be compared
+ * with a solid plan's number. `inkCapture` is instead the share of the
+ * ORIGINAL dark pixels lying on or within one wall thickness of a wall centre
+ * line found by vectorize.ts (each wall's own thickness).
+ *
+ * Connects to: wallMask.ts (`binarize`, `extractWalls`); vectorize.ts (only to
+ * measure inkCapture in hollow mode); called by
  * scripts/vectorize-overlay.ts; exercised by scripts/test-hollow.ts.
  */
-import { BlueprintError, type PlanPixels, type WallMask } from "@/types/blueprint";
+import { BlueprintError, type PixelWall, type PlanPixels, type WallMask } from "@/types/blueprint";
+import { vectorize } from "./vectorize";
 import { binarize, extractWalls } from "./wallMask";
 
 const LENGTH_PER_GAP = 4; // a pair must run at least this many gap widths
@@ -51,7 +61,7 @@ const GAP_BAND = 3; // accepted gaps: peak / 3 … peak × 3 (see header, step 3
  *  [gap start, gap end (exclusive), dark run before, dark run after]. */
 interface Stretch {
   y0: number;
-  g: number; // gap width on the first row
+  g: number; // gap width: 0 while the stretch is open, the median of its rows once closed
   x0: number; // the latest row's gap, for matching the next row
   x1: number;
   rows: number[];
@@ -62,6 +72,12 @@ const median = (v: number[]) => [...v].sort((p, q) => p - q)[v.length >> 1];
 /** Every gap stretch in the map, scanning rows (so stretches run downward). */
 function findStretches(ink: Uint8Array, w: number, h: number): Stretch[] {
   const done: Stretch[] = [];
+  const close = (s: Stretch) => {
+    const widths: number[] = [];
+    for (let i = 0; i < s.rows.length; i += 4) widths.push(s.rows[i + 1] - s.rows[i]);
+    s.g = median(widths);
+    done.push(s);
+  };
   let open: Stretch[] = []; // stretches alive on the previous row, in x order
   for (let y = 0; y <= h; y++) {
     const next: Stretch[] = [];
@@ -77,20 +93,21 @@ function findStretches(ink: Uint8Array, w: number, h: number): Stretch[] {
         const x0 = prevEnd;
         const x1 = start;
         // Open stretches left of this gap can no longer be continued.
-        while (p < open.length && open[p].x0 < x0 - 1) done.push(open[p++]);
+        while (p < open.length && open[p].x0 < x0 - 1) close(open[p++]);
         const s = open[p];
-        if (s && Math.abs(s.x0 - x0) <= 1 && Math.abs(s.x1 - x1) <= 1 && Math.abs(x1 - x0 - s.g) <= 1) {
+        // Against the previous row only: both edges and the width within 1 px.
+        if (s && Math.abs(s.x0 - x0) <= 1 && Math.abs(s.x1 - x1) <= 1 && Math.abs(x1 - x0 - (s.x1 - s.x0)) <= 1) {
           p++;
           s.x0 = x0;
           s.x1 = x1;
           s.rows.push(x0, x1, prevLen, x - start);
           next.push(s);
-        } else next.push({ y0: y, g: x1 - x0, x0, x1, rows: [x0, x1, prevLen, x - start] });
+        } else next.push({ y0: y, g: 0, x0, x1, rows: [x0, x1, prevLen, x - start] });
       }
       prevEnd = x;
       prevLen = x - start;
     }
-    while (p < open.length) done.push(open[p++]);
+    while (p < open.length) close(open[p++]);
     open = next;
   }
   return done;
@@ -163,6 +180,32 @@ export function fillHollowWalls(pixels: PlanPixels): { filled: PlanPixels; paire
   return { filled: { width: w, height: h, rgba }, pairedInk: pairedCount / inkCount };
 }
 
+/** Share (0–1) of `ink` pixels within one wall thickness of a wall's centre
+ *  line (distance to the segment, each wall's own thickness). */
+function inkNearWalls(ink: Uint8Array, w: number, h: number, walls: PixelWall[]): number {
+  const near = new Uint8Array(w * h); // marked, not summed: walls overlap at joints
+  for (const { a, b, thickness: t } of walls) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    const y1 = Math.min(h, Math.ceil(Math.max(a.y, b.y) + t));
+    const x1 = Math.min(w, Math.ceil(Math.max(a.x, b.x) + t));
+    for (let y = Math.max(0, Math.floor(Math.min(a.y, b.y) - t)); y < y1; y++)
+      for (let x = Math.max(0, Math.floor(Math.min(a.x, b.x) - t)); x < x1; x++) {
+        // Nearest point of the segment to this pixel's centre.
+        const u = Math.min(1, Math.max(0, ((x + 0.5 - a.x) * dx + (y + 0.5 - a.y) * dy) / len2));
+        if (Math.hypot(x + 0.5 - a.x - u * dx, y + 0.5 - a.y - u * dy) <= t) near[y * w + x] = 1;
+      }
+  }
+  let inkCount = 0;
+  let hit = 0;
+  for (let i = 0; i < w * h; i++) {
+    inkCount += ink[i];
+    hit += ink[i] & near[i];
+  }
+  return inkCount === 0 ? 0 : hit / inkCount;
+}
+
 export interface DetectedWalls {
   mask: WallMask;
   mode: "solid" | "hollow";
@@ -174,7 +217,8 @@ export interface DetectedWalls {
  * The wall mask for an image of either drawing style. Rule: use the hollow
  * path only when parallel-line pairs hold more of the drawing's ink than the
  * solid-wall mask captured (pairedInk > inkCapture). In hollow mode the mask's
- * `inkCapture` is measured against the filled image, fill included.
+ * `inkCapture` is measured on the original ink (see header) and the
+ * filled-image number is kept as `fillCapture`.
  */
 export function detectWalls(pixels: PlanPixels): DetectedWalls {
   let solid: WallMask | null = null;
@@ -188,7 +232,12 @@ export function detectWalls(pixels: PlanPixels): DetectedWalls {
   const { filled, pairedInk } = fillHollowWalls(pixels);
   const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
   const numbers = `line pairs hold ${pct(pairedInk)} of the ink, the solid mask ${solid ? pct(solid.inkCapture) : "nothing (no solid walls found)"}`;
-  if (pairedInk > (solid?.inkCapture ?? 0)) return { mask: extractWalls(filled), mode: "hollow", reason: numbers };
+  if (pairedInk > (solid?.inkCapture ?? 0)) {
+    const mask = extractWalls(filled);
+    // ponytail: vectorize runs here and again in the caller; return the walls from here if that ever costs.
+    const inkCapture = inkNearWalls(binarize(pixels), mask.width, mask.height, vectorize(mask).walls);
+    return { mask: { ...mask, inkCapture, fillCapture: mask.inkCapture }, mode: "hollow", reason: numbers };
+  }
   if (!solid) throw solidError;
   return { mask: solid, mode: "solid", reason: numbers };
 }
