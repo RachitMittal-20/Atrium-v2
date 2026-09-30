@@ -313,4 +313,35 @@ for (const s of [1, 1.5]) {
   assert.equal(wall.samples.length, 0, "a wall is not taken for a dimension line");
 }
 
+// A faint, scanned dimension line (the kind in test-plans/04): 3 px thick, grey,
+// 10 m between ticks at x 100 and 1100 (100 px/m), with its label below it and
+// 21 px text. Its edge nearest the label (row 102) is solid on the left and
+// holed every 20 px on the right, and the whole line has two 3 px breaks.
+{
+  const W = 1200;
+  const H = 400;
+  const pixels = blank(W, H);
+  const grey = (x0: number, y0: number, x1: number, y1: number) => {
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) pixels.rgba.fill(90, (y * W + x) * 4, (y * W + x) * 4 + 3);
+  };
+  const paperAt = (x0: number, y0: number, x1: number, y1: number) => {
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) pixels.rgba.fill(255, (y * W + x) * 4, (y * W + x) * 4 + 3);
+  };
+  grey(100, 100, 1101, 103);
+  for (const x of [100, 1100]) grey(x, 84, x + 1, 119);
+  for (let x = 700; x < 1090; x += 20) paperAt(x, 102, x + 3, 103);
+  for (const x of [900, 1000]) paperAt(x, 100, x + 3, 103);
+  const below = (text: string, cx: number, y0: number): OcrWord => ({ text, confidence: 90, box: { x0: cx - 25, y0, x1: cx + 25, y1: y0 + 21 } });
+  const r = estimateScale({ words: [below("10.0 m", 600, 112)], walls: [], pixels });
+  near(r.pxPerM, 100, 0.5, `faint broken line measured end to end (${JSON.stringify(r.rejected)})`);
+  const d = r.dimensions[0];
+  assert.ok(d.chosen !== null && d.rows[d.chosen].len >= 999, "faint line: the chosen row runs tick to tick");
+
+  // Two dimension lines on one row, no ticks, half a text height apart: never one line.
+  grey(100, 300, 581, 302);
+  grey(591, 300, 1101, 302);
+  const two = estimateScale({ words: [below("4.8 m", 340, 306)], walls: [], pixels });
+  near(two.pxPerM, 100, 0.5, "two separate lines: the label measures only its own");
+}
+
 console.log("OK");

@@ -6,7 +6,9 @@
  * ends orange), and prints the deskew angle, the wall mode chosen (solid or
  * hollow) and why, wall count, coverage, inkCapture (plus fillCapture in
  * hollow mode, see hollowWalls.ts) and joint problems. Images
- * decode with `sharp` (devDependency).
+ * decode with `sharp` (devDependency). Each overlay is stamped with the
+ * commit, wall count and time, and replaces the image's older overlays
+ * (stamp.ts).
  *
  * For the synthetic plans 01–04 it also checks the known truth: a 10 × 8 m
  * house at 100 px/m (footprint.ts), 7 walls, 4 door gaps + 4 window gaps.
@@ -21,6 +23,7 @@ import { vectorize } from "../src/lib/blueprint/vectorize";
 import { validatePlan } from "../src/lib/plan/validate";
 import { samplePlan } from "../src/data/samplePlan";
 import { footprintCheck, isH, wallLines } from "./footprint";
+import { clearOld, writeStamped } from "./stamp";
 import type { PixelWall } from "../src/types/blueprint";
 
 const IN = "test-plans";
@@ -196,9 +199,8 @@ async function main() {
       OUT,
       file.replace(/\.[^.]+$/, "").replace(/[^\w-]+/g, "_") + ".png",
     );
-    await sharp(out, { raw: { width, height, channels: 4 } })
-      .png()
-      .toFile(png);
+    clearOld(OUT, file);
+    await writeStamped(sharp(out, { raw: { width, height, channels: 4 } }), width, height, png, walls.length);
     console.log(`  overlay ${png}`);
   }
 }

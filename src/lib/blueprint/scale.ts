@@ -42,10 +42,17 @@
  * SOURCE B, dimension-line labels (one length)
  *   Looks in the dark-pixel map (wallMask.ts `binarize`) for the nearest line
  *   that is parallel to the text, within two text heights of its box, and
- *   passes the label's centre. The line is followed both ways from there; it
- *   ends at paper (breaks of up to 2 px are bridged) or at a crossing stroke
+ *   passes the label's centre. Every row in that band is tried; a row also
+ *   reads one row either side of it, so a line a few pixels thick is found on
+ *   several neighbouring rows. Neighbouring rows that all find a line are one
+ *   line: the group nearest the label is taken and its longest row gives the
+ *   length (the row nearest the text may see only the line's ragged edge).
+ *   A row is followed both ways from the label's centre; it ends at paper
+ *   (breaks up to a quarter of the text height, at least 2 px, are bridged:
+ *   blur and JPEG noise break faint lines that much) or at a crossing stroke
  *   taller than half the text height (a tick or extension line, so chained
- *   dimensions are cut at their own ticks). The label's own box, with one text
+ *   dimensions are cut at their own ticks; the tick is checked before any
+ *   bridging, so a bridge never steps past one). The label's own box, with one text
  *   height of clearance at each end, counts as line, so a line broken to make
  *   room for its text is still one line. Accepted when it is long (at least 4
  *   text heights and 1.5× the label, and at least half of it drawn ink rather
@@ -146,6 +153,19 @@ export interface UnitlessScale {
   ifMetres: { pxPerM: number; width: number; depth: number };
 }
 
+/** How one single-length label looked for its dimension line (debugging).
+ *  Rows are in along/across terms: for horizontal text `c` is an image y and
+ *  s0..s1 run along x; for vertical text `c` is an image x and s0..s1 run along y. */
+export interface DimensionTrace {
+  text: string;
+  box: PixelRect;
+  vertical: boolean;
+  /** Every row that was followed, and why it was not a line (null = it was). */
+  rows: { c: number; s0: number; s1: number; len: number; why: string | null }[];
+  /** Index into `rows` of the line measured, null when none was found. */
+  chosen: number | null;
+}
+
 export interface ScaleEstimate {
   pxPerM: number | null;
   confidence: "good" | "check" | "none";
@@ -162,6 +182,8 @@ export interface ScaleEstimate {
   unitless: UnitlessScale | null;
   /** Every room-size label and how its rays went, accepted or not. */
   rooms: RoomTrace[];
+  /** Every single-length label and the rows searched for its line. */
+  dimensions: DimensionTrace[];
 }
 
 /** Proper median: the mean of the middle two for an even count. */
@@ -365,8 +387,15 @@ function traceRoom(hs: AxisWall[], vs: AxisWall[], text: string, size: [number, 
 // ---------------------------------------------------------------- Source B
 
 /** The dimension line a one-length label belongs to (see header), in
- *  along/across terms: `key` is [row, start, end]. */
-function dimensionLine(ink: Uint8Array, W: number, H: number, line: Line, parallelWalls: AxisWall[]): { len: number; key: number[] } | null {
+ *  along/across terms: `key` is [row, start, end]; `rows` and `chosen` are the
+ *  search, for DimensionTrace. */
+function dimensionLine(
+  ink: Uint8Array,
+  W: number,
+  H: number,
+  line: Line,
+  parallelWalls: AxisWall[],
+): { best: { len: number; key: number[] } | null; rows: DimensionTrace["rows"]; chosen: number | null } {
   const v = line.vertical;
   const [A, C] = v ? [H, W] : [W, H]; // along, across
   const raw = (s: number, c: number) => s >= 0 && s < A && c >= 0 && c < C && (v ? ink[s * W + c] : ink[c * W + s]) === 1;
@@ -377,6 +406,7 @@ function dimensionLine(ink: Uint8Array, W: number, H: number, line: Line, parall
   const inBox = (s: number, c: number) => s >= b0 - h && s < b1 + h && c >= c0 && c < c1;
   const thin = Math.max(3, h / 4);
   const crossing = h / 2;
+  const bridge = Math.max(2, Math.floor(h / 4)); // longest break followed across (see header)
 
   /** Dark pixels across the line at position s, through row c or a neighbour
    *  (so a line that steps by one pixel is still followed). 0 = paper. */
@@ -391,7 +421,7 @@ function dimensionLine(ink: Uint8Array, W: number, H: number, line: Line, parall
   };
 
   const sm = Math.round((b0 + b1) / 2); // the label's centre, where the line must pass
-  let best: { len: number; key: number[]; dist: number } | null = null;
+  const rows: DimensionTrace["rows"] = [];
   for (let c = Math.max(0, Math.floor(c0 - 2 * h)); c <= Math.min(C - 1, Math.ceil(c1 - 1 + 2 * h)); c++) {
     const seed = inBox(sm, c) ? 1 : extent(sm, c);
     if (seed === 0 || seed > crossing) continue;
@@ -407,8 +437,10 @@ function dimensionLine(ink: Uint8Array, W: number, H: number, line: Line, parall
         }
         let e = extent(n, c);
         if (e === 0) {
-          const hop = [1, 2].find((j) => extent(n + dir * j, c) > 0); // bridge a break of up to 2 px
-          if (hop === undefined) return s;
+          // Bridge a short break; the first ink after it may be a tick, which then ends the line.
+          let hop = 1;
+          while (hop <= bridge && extent(n + dir * hop, c) === 0) hop++;
+          if (hop > bridge) return s;
           n += dir * hop;
           e = extent(n, c);
         }
@@ -420,15 +452,40 @@ function dimensionLine(ink: Uint8Array, W: number, H: number, line: Line, parall
     const s0 = walk(-1);
     const s1 = walk(1);
     const len = s1 - s0;
-    if (len < Math.max(4 * h, 1.5 * (b1 - b0))) continue; // not long
-    if (extents.length < len / 2) continue; // mostly the label's own box, not a drawn line
-    if (median(extents) > thin) continue; // not thin
-    const onWall = parallelWalls.some((w) => Math.abs(w.c - c) <= w.t / 2 + 1 && Math.min(w.s1, s1) - Math.max(w.s0, s0) > len / 2);
-    if (onWall) continue;
-    const dist = c < c0 ? c0 - c : c >= c1 ? c - c1 + 1 : 0;
-    if (!best || dist < best.dist) best = { len, key: [c, s0, s1], dist };
+    const why =
+      len < Math.max(4 * h, 1.5 * (b1 - b0))
+        ? "not long"
+        : extents.length < len / 2
+          ? "mostly the label's own box, not a drawn line"
+          : median(extents) > thin
+            ? "not thin"
+            : parallelWalls.some((w) => Math.abs(w.c - c) <= w.t / 2 + 1 && Math.min(w.s1, s1) - Math.max(w.s0, s0) > len / 2)
+              ? "on a wall"
+              : null;
+    rows.push({ c, s0, s1, len, why });
   }
-  return best;
+
+  // Neighbouring accepted rows are one drawn line; take the group nearest the
+  // label, measured by its longest row.
+  const dist = (c: number) => (c < c0 ? c0 - c : c >= c1 ? c - c1 + 1 : 0);
+  const groups: number[][] = []; // indexes into rows
+  rows.forEach((r, i) => {
+    if (r.why !== null) return;
+    const last = groups[groups.length - 1];
+    if (last && rows[last[last.length - 1]].c === r.c - 1) last.push(i);
+    else groups.push([i]);
+  });
+  let chosen: number | null = null;
+  let nearest = Infinity;
+  for (const g of groups) {
+    const d = Math.min(...g.map((i) => dist(rows[i].c)));
+    if (d >= nearest) continue;
+    nearest = d;
+    chosen = g.reduce((p, q) => (rows[q].len > rows[p].len ? q : p));
+  }
+  if (chosen === null) return { best: null, rows, chosen };
+  const { c, s0, s1, len } = rows[chosen];
+  return { best: { len, key: [c, s0, s1] }, rows, chosen };
 }
 
 // ---------------------------------------------------------------- estimate
@@ -447,6 +504,7 @@ export function estimateScale({ words, walls, pixels }: { words: OcrWord[]; wall
   const samples: ScaleSample[] = [];
   const bare: number[] = []; // px per printed unit, from pairs with no unit
   const rooms: RoomTrace[] = [];
+  const dimensions: DimensionTrace[] = [];
   const rejected: ScaleEstimate["rejected"] = [];
   const unparsed: string[] = [];
   // Geometry already measured. `kind` keeps metre samples and unit-less ones apart.
@@ -495,7 +553,8 @@ export function estimateScale({ words, walls, pixels }: { words: OcrWord[]; wall
       if (!metres) continue;
       found = true;
       ink ??= binarize(pixels);
-      const hit = dimensionLine(ink, pixels.width, pixels.height, line, line.vertical ? vs : hs);
+      const { best: hit, rows, chosen } = dimensionLine(ink, pixels.width, pixels.height, line, line.vertical ? vs : hs);
+      dimensions.push({ text: label, box: line.box, vertical: line.vertical, rows, chosen });
       if (!hit) rejected.push({ text: label, why: "no dimension line found beside it" });
       else if (repeat(hit.key, line.vertical ? "v-line" : "h-line", hit.len / metres)) rejected.push({ text: label, why: ONCE });
       else samples.push({ source: "dimension", text: label, pxPerM: hit.len / metres, box: line.box });
@@ -518,7 +577,7 @@ export function estimateScale({ words, walls, pixels }: { words: OcrWord[]; wall
   }
 
   // The result rules from the header.
-  const rest = { samples, rejected, unparsed, unitless, rooms };
+  const rest = { samples, rejected, unparsed, unitless, rooms, dimensions };
   const CLICK = "Click one wall and type its length to set the scale.";
   const b = band(samples.map((x) => x.pxPerM));
   if (!b) return { pxPerM: null, confidence: "none", spreadPct: 0, reason: `No printed dimensions could be measured on this plan. ${CLICK}`, ...rest };
