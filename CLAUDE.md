@@ -34,3 +34,4 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - `Opening.offset` is measured from a wall's `a` end to the opening's centre.
 - Walls are split at T-junctions, so every joint is an endpoint of every wall touching it.
 - Blueprint pixel rooms are `PixelRoom` (`src/types/blueprint.ts`); plan rooms are `Room` (`src/types/plan.ts`).
+- The blueprint pipeline runs on the deskewed image. Coordinates from vectorize, scale and openings are in deskewed-pixel space, so the review screen must display the deskewed image, never the original.

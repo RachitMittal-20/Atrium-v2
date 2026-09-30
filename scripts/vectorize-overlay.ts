@@ -1,21 +1,24 @@
 /**
- * vectorize-overlay.ts — runs the real image → mask → segments pipeline
- * (wallMask.ts extractWalls, then vectorize.ts) on every image in test-plans/,
- * writes an overlay PNG per image to /tmp/vectorize/ (original dimmed, wall
- * centre lines red, shared joints blue, free ends orange), and prints wall
- * count, coverage and joint problems. Images decode with `sharp` (devDependency).
+ * vectorize-overlay.ts — runs the real image → deskew → mask → segments
+ * pipeline (deskew.ts, wallMask.ts extractWalls, then vectorize.ts) on every
+ * image in test-plans/, writes an overlay PNG per image to /tmp/vectorize/
+ * (the deskewed image dimmed, wall centre lines red, shared joints blue, free
+ * ends orange), and prints the deskew angle, wall count, coverage, inkCapture
+ * and joint problems. Images decode with `sharp` (devDependency).
  *
  * For the synthetic plans 01–04 it also checks the known truth: a 10 × 8 m
- * house at 100 px/m, 7 walls, 4 door gaps + 4 window gaps.
+ * house at 100 px/m (footprint.ts), 7 walls, 4 door gaps + 4 window gaps.
  * Run: npx tsx scripts/vectorize-overlay.ts
  */
 import { mkdirSync, readdirSync } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
+import { deskew } from "../src/lib/blueprint/deskew";
 import { vectorize } from "../src/lib/blueprint/vectorize";
 import { extractWalls } from "../src/lib/blueprint/wallMask";
 import { validatePlan } from "../src/lib/plan/validate";
 import { samplePlan } from "../src/data/samplePlan";
+import { footprintCheck } from "./footprint";
 import type { PixelWall } from "../src/types/blueprint";
 
 const IN = "test-plans";
@@ -109,17 +112,20 @@ async function main() {
   for (const file of readdirSync(IN)
     .filter((f) => !f.startsWith("."))
     .sort()) {
-    const { data, info } = await sharp(path.join(IN, file))
+    const { data: raw, info } = await sharp(path.join(IN, file))
       .rotate()
       .ensureAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
-    const { width, height } = info;
-    console.log(`\n${file}  (${width}×${height})`);
+    // Everything after this line, overlay included, works on the straightened image.
+    const { pixels, angleDeg } = deskew({ width: info.width, height: info.height, rgba: raw });
+    const { width, height, rgba: data } = pixels;
+    console.log(`\n${file}  (${info.width}×${info.height})`);
+    console.log(`  deskew angleDeg ${angleDeg.toFixed(1)}°${angleDeg ? ` → ${width}×${height}` : " (unchanged)"}`);
 
     let mask;
     try {
-      mask = extractWalls({ width, height, rgba: data });
+      mask = extractWalls(pixels);
     } catch (e) {
       console.log(`  mask failed: ${(e as Error).message}`);
       continue;
@@ -143,7 +149,7 @@ async function main() {
 
     console.log(`  mask thickness T = ${mask.wallThickness} px`);
     console.log(
-      `  walls ${walls.length}, coverage ${(coverage * 100).toFixed(1)}%`,
+      `  walls ${walls.length}, coverage ${(coverage * 100).toFixed(1)}%, inkCapture ${(mask.inkCapture * 100).toFixed(1)}%`,
     );
     console.log(
       `  free ends ${ends.length}: ${gaps.pairs} facing pairs (openings), ${gaps.unpaired} unpaired`,
@@ -153,22 +159,12 @@ async function main() {
     );
 
     if (/^0[1-4]_/.test(file)) {
-      // Truth: 10 × 8 m at 100 px/m. Footprint measured on the outer faces of the walls.
-      const xs = walls.flatMap((w) => [
-        Math.min(w.a.x, w.b.x) - w.thickness / 2,
-        Math.max(w.a.x, w.b.x) + w.thickness / 2,
-      ]);
-      const ys = walls.flatMap((w) => [
-        Math.min(w.a.y, w.b.y) - w.thickness / 2,
-        Math.max(w.a.y, w.b.y) + w.thickness / 2,
-      ]);
-      const fw = Math.max(...xs) - Math.min(...xs);
-      const fh = Math.max(...ys) - Math.min(...ys);
-      const tol = mask.wallThickness; // fixed rule, not tuned per image
+      // Truth: 10 × 8 m at 100 px/m, centre line to centre line (see footprint.ts).
+      const fp = footprintCheck(walls, mask.wallThickness);
       const checks: [string, boolean][] = [
         [
-          `footprint ${fw.toFixed(0)}×${fh.toFixed(0)} px ≈ 1000×800 (±${tol})`,
-          Math.abs(fw - 1000) <= tol && Math.abs(fh - 800) <= tol,
+          `footprint ${fp.width.toFixed(2)}×${fp.height.toFixed(2)} px ≈ 1000×800 (±${fp.tol.toFixed(1)}, centre lines)`,
+          fp.pass,
         ],
         [`wall lines ${wallLines(walls)} = 7`, wallLines(walls) === 7],
         [`openings ${gaps.pairs} = 8 (4 doors + 4 windows)`, gaps.pairs === 8],

@@ -8,6 +8,9 @@
  * erase everything thinner (a morphological opening). What survives is the
  * wall mask. Doors and windows, drawn thin, vanish and leave gaps — which
  * is exactly how the 3D model wants them.
+ *
+ * Connects to: deskew.ts runs before this and reuses `binarize`; vectorize.ts
+ * and rooms.ts consume the WallMask.
  */
 
 import { BlueprintError, type PlanPixels, type WallMask } from "@/types/blueprint";
@@ -39,8 +42,9 @@ function otsu(hist: Uint32Array, total: number): number {
   return best;
 }
 
-/** 1 = ink (dark), 0 = paper. Transparent pixels count as paper. */
-function binarize(pixels: PlanPixels): Uint8Array {
+/** 1 = ink (dark), 0 = paper. Transparent pixels count as paper. Exported so
+ *  deskew.ts measures the same dark pixels this stage does. */
+export function binarize(pixels: PlanPixels): Uint8Array {
   const { width, height, rgba } = pixels;
   const n = width * height;
   const lum = new Uint8Array(n);
@@ -98,6 +102,8 @@ export function extractWalls(pixels: PlanPixels): WallMask {
   const hist = runMassHistogram(ink, width, height, cap);
   let total = 0;
   for (let l = 1; l <= cap; l++) total += hist[l];
+  let inkCount = 0; // dark pixels in the source, the denominator of inkCapture
+  for (let i = 0; i < ink.length; i++) inkCount += ink[i];
 
   // Peak mass among lengths that can be walls (>= 4 px), ignoring the
   // pooled last bin unless nothing else stands out.
@@ -130,5 +136,5 @@ export function extractWalls(pixels: PlanPixels): WallMask {
   if (kept < 20 * mode) {
     throw new BlueprintError("The walls in this image are too faint or too small to read. Try a larger, higher-contrast image.");
   }
-  return { width, height, mask, wallThickness: mode };
+  return { width, height, mask, wallThickness: mode, inkCapture: kept / inkCount };
 }

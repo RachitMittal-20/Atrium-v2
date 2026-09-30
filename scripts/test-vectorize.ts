@@ -11,7 +11,7 @@ import type { PixelWall, WallMask } from "../src/types/blueprint";
 function mask(width: number, height: number, wallThickness: number, rects: number[][]): WallMask {
   const m = new Uint8Array(width * height);
   for (const [x0, y0, x1, y1] of rects) for (let y = y0; y < y1; y++) m.fill(1, y * width + x0, y * width + x1);
-  return { width, height, mask: m, wallThickness };
+  return { width, height, mask: m, wallThickness, inkCapture: 1 }; // hand-built: the mask is all the ink there is
 }
 
 /** Order-independent comparison: each wall as "ax,ay-bx,by t" with a/b sorted. */

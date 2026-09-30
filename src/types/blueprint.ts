@@ -11,6 +11,7 @@
  *
  * The pipeline, in order, and which type each hand-off carries:
  *   image pixels (PlanPixels)
+ *     -> deskew         (lib/blueprint/deskew.ts)     -> PlanPixels, straightened
  *     -> extractWalls   (lib/blueprint/wallMask.ts)   -> WallMask
  *     -> detectRooms    (lib/blueprint/rooms.ts)      -> RoomMap
  *     -> buildPlanModel (lib/blueprint/buildModel.ts) -> a three.js scene
@@ -42,6 +43,11 @@ export interface WallMask {
   mask: Uint8Array;
   /** The dominant wall thickness in pixels (the exterior walls, typically). */
   wallThickness: number;
+  /** Wall-mask pixels / dark pixels in the source (0–1): how much of the
+   *  drawing's ink the mask kept. `coverage` in vectorize.ts only says how well
+   *  the walls explain the mask, so a mask that missed the walls still scores
+   *  high there; this is the number that drops. Reported only, nothing gates on it yet. */
+  inkCapture: number;
 }
 
 /** One detected room: an id that is also its label value in RoomMap.labels. */
