@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx scripts/validate-sample.ts && tsx scripts/test-store.ts && tsx scripts/test-geometry.ts && tsx scripts/test-rooms.ts"
+    "test": "tsx scripts/validate-sample.ts && tsx scripts/test-store.ts && tsx scripts/test-geometry.ts && tsx scripts/test-rooms.ts && tsx scripts/test-vectorize.ts"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",
@@ -31,6 +31,7 @@
     "@types/three": "^0.185.4",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
+    "sharp": "^0.35.5",
     "tailwindcss": "^4",
     "three-stdlib": "^2.36.1",
     "tsx": "^4.23.15",

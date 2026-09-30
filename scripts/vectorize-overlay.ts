@@ -1,0 +1,223 @@
+/**
+ * vectorize-overlay.ts — runs the real image → mask → segments pipeline
+ * (wallMask.ts extractWalls, then vectorize.ts) on every image in test-plans/,
+ * writes an overlay PNG per image to /tmp/vectorize/ (original dimmed, wall
+ * centre lines red, shared joints blue, free ends orange), and prints wall
+ * count, coverage and joint problems. Images decode with `sharp` (devDependency).
+ *
+ * For the synthetic plans 01–04 it also checks the known truth: a 10 × 8 m
+ * house at 100 px/m, 7 walls, 4 door gaps + 4 window gaps.
+ * Run: npx tsx scripts/vectorize-overlay.ts
+ */
+import { mkdirSync, readdirSync } from "node:fs";
+import path from "node:path";
+import sharp from "sharp";
+import { vectorize } from "../src/lib/blueprint/vectorize";
+import { extractWalls } from "../src/lib/blueprint/wallMask";
+import { validatePlan } from "../src/lib/plan/validate";
+import { samplePlan } from "../src/data/samplePlan";
+import type { PixelWall } from "../src/types/blueprint";
+
+const IN = "test-plans";
+const OUT = "/tmp/vectorize";
+mkdirSync(OUT, { recursive: true });
+
+type P = { x: number; y: number };
+const k = (p: P) => `${p.x},${p.y}`;
+const isH = (w: PixelWall) => Math.abs(w.b.x - w.a.x) >= Math.abs(w.b.y - w.a.y); // dominant axis: merged joints can tilt a wall slightly
+
+/** Endpoints used by only one wall. */
+function freeEnds(walls: PixelWall[]) {
+  const count = new Map<string, number>();
+  for (const w of walls)
+    for (const p of [w.a, w.b]) count.set(k(p), (count.get(k(p)) ?? 0) + 1);
+  return walls.flatMap((w) =>
+    [w.a, w.b].filter((p) => count.get(k(p)) === 1).map((p) => ({ p, w })),
+  );
+}
+
+/**
+ * Openings: each free end looks along its own wall's direction for the nearest
+ * endpoint of another collinear wall. That endpoint may itself be free (a gap
+ * mid-wall) or a joint (a door right next to a corner). Pairs are counted once.
+ */
+function gapPairs(ends: ReturnType<typeof freeEnds>, walls: PixelWall[]) {
+  const paired = new Set<string>();
+  let pairs = 0;
+  for (const e of ends) {
+    if (paired.has(k(e.p))) continue;
+    const other = e.w.a === e.p ? e.w.b : e.w.a;
+    const dir = { x: Math.sign(e.p.x - other.x), y: Math.sign(e.p.y - other.y) }; // outward from the wall
+    let best: P | null = null;
+    let bestGap = Infinity;
+    for (const w of walls) {
+      if (w === e.w || isH(w) !== isH(e.w)) continue;
+      for (const q of [w.a, w.b]) {
+        const across = isH(e.w) ? Math.abs(e.p.y - q.y) : Math.abs(e.p.x - q.x);
+        const gap = (q.x - e.p.x) * dir.x + (q.y - e.p.y) * dir.y;
+        if (gap > 0 && gap < bestGap && !paired.has(k(q)) && across <= Math.max(e.w.thickness, w.thickness) / 2)
+          [best, bestGap] = [q, gap];
+      }
+    }
+    if (best) {
+      paired.add(k(e.p)).add(k(best));
+      pairs++;
+    }
+  }
+  return { pairs, unpaired: ends.filter((e) => !paired.has(k(e.p))).length };
+}
+
+/** Distinct wall lines: collinear walls (across the gaps and joints) count once. */
+function wallLines(walls: PixelWall[]) {
+  const lines: { h: boolean; c: number; t: number }[] = [];
+  for (const w of walls) {
+    const c = isH(w) ? w.a.y : w.a.x;
+    if (
+      !lines.some(
+        (l) =>
+          l.h === isH(w) && Math.abs(l.c - c) <= Math.max(l.t, w.thickness) / 2,
+      )
+    )
+      lines.push({ h: isH(w), c, t: w.thickness });
+  }
+  return lines.length;
+}
+
+function draw(
+  rgba: Buffer,
+  w: number,
+  h: number,
+  p: P,
+  r: number,
+  [R, G, B]: number[],
+) {
+  for (let y = Math.floor(p.y - r); y <= p.y + r; y++)
+    for (let x = Math.floor(p.x - r); x <= p.x + r; x++) {
+      if (
+        x < 0 ||
+        y < 0 ||
+        x >= w ||
+        y >= h ||
+        (x - p.x) ** 2 + (y - p.y) ** 2 > r * r
+      )
+        continue;
+      rgba.set([R, G, B, 255], (y * w + x) * 4);
+    }
+}
+
+async function main() {
+  for (const file of readdirSync(IN)
+    .filter((f) => !f.startsWith("."))
+    .sort()) {
+    const { data, info } = await sharp(path.join(IN, file))
+      .rotate()
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const { width, height } = info;
+    console.log(`\n${file}  (${width}×${height})`);
+
+    let mask;
+    try {
+      mask = extractWalls({ width, height, rgba: data });
+    } catch (e) {
+      console.log(`  mask failed: ${(e as Error).message}`);
+      continue;
+    }
+    const { walls, coverage } = vectorize(mask);
+    const ends = freeEnds(walls);
+    const gaps = gapPairs(ends, walls);
+    const problems = validatePlan({
+      ...samplePlan,
+      walls: walls.map((w, i) => ({
+        id: `w${i}`,
+        a: w.a,
+        b: w.b,
+        thickness: w.thickness,
+        height: 1,
+      })),
+      openings: [],
+      rooms: [],
+    });
+    const tSplits = problems.filter((m) => m.includes("lands on the middle"));
+
+    console.log(`  mask thickness T = ${mask.wallThickness} px`);
+    console.log(
+      `  walls ${walls.length}, coverage ${(coverage * 100).toFixed(1)}%`,
+    );
+    console.log(
+      `  free ends ${ends.length}: ${gaps.pairs} facing pairs (openings), ${gaps.unpaired} unpaired`,
+    );
+    console.log(
+      `  missing T-splits ${tSplits.length}${tSplits.length ? "\n    " + tSplits.slice(0, 5).join("\n    ") : ""}`,
+    );
+
+    if (/^0[1-4]_/.test(file)) {
+      // Truth: 10 × 8 m at 100 px/m. Footprint measured on the outer faces of the walls.
+      const xs = walls.flatMap((w) => [
+        Math.min(w.a.x, w.b.x) - w.thickness / 2,
+        Math.max(w.a.x, w.b.x) + w.thickness / 2,
+      ]);
+      const ys = walls.flatMap((w) => [
+        Math.min(w.a.y, w.b.y) - w.thickness / 2,
+        Math.max(w.a.y, w.b.y) + w.thickness / 2,
+      ]);
+      const fw = Math.max(...xs) - Math.min(...xs);
+      const fh = Math.max(...ys) - Math.min(...ys);
+      const tol = mask.wallThickness; // fixed rule, not tuned per image
+      const checks: [string, boolean][] = [
+        [
+          `footprint ${fw.toFixed(0)}×${fh.toFixed(0)} px ≈ 1000×800 (±${tol})`,
+          Math.abs(fw - 1000) <= tol && Math.abs(fh - 800) <= tol,
+        ],
+        [`wall lines ${wallLines(walls)} = 7`, wallLines(walls) === 7],
+        [`openings ${gaps.pairs} = 8 (4 doors + 4 windows)`, gaps.pairs === 8],
+        [`unpaired free ends ${gaps.unpaired} = 0`, gaps.unpaired === 0],
+        [`missing T-splits ${tSplits.length} = 0`, tSplits.length === 0],
+      ];
+      for (const [label, ok] of checks)
+        console.log(`  ${ok ? "PASS" : "FAIL"} ${label}`);
+    }
+
+    // Overlay: original dimmed towards white, then segments and joints.
+    const out = Buffer.from(data);
+    for (let i = 0; i < out.length; i += 4)
+      for (let c = 0; c < 3; c++) out[i + c] = 255 - (255 - out[i + c]) * 0.3;
+    for (const wl of walls) {
+      const n = Math.ceil(Math.hypot(wl.b.x - wl.a.x, wl.b.y - wl.a.y));
+      for (let s = 0; s <= n; s++)
+        draw(
+          out,
+          width,
+          height,
+          {
+            x: wl.a.x + ((wl.b.x - wl.a.x) * s) / n,
+            y: wl.a.y + ((wl.b.y - wl.a.y) * s) / n,
+          },
+          1.5,
+          [220, 30, 30],
+        );
+    }
+    const free = new Set(ends.map((e) => k(e.p)));
+    for (const wl of walls)
+      for (const p of [wl.a, wl.b])
+        draw(
+          out,
+          width,
+          height,
+          p,
+          5,
+          free.has(k(p)) ? [240, 140, 0] : [30, 60, 200],
+        );
+    const png = path.join(
+      OUT,
+      file.replace(/\.[^.]+$/, "").replace(/[^\w-]+/g, "_") + ".png",
+    );
+    await sharp(out, { raw: { width, height, channels: 4 } })
+      .png()
+      .toFile(png);
+    console.log(`  overlay ${png}`);
+  }
+}
+
+main();

@@ -188,3 +188,12 @@ export interface FurnitureItem {
   category: "Furniture" | "Fixture";
   boxes: FurnitureBox[];
 }
+
+/** One wall centre line found by vectorize.ts, in PIXELS (image x right,
+ *  image y down). `thickness` is the wall's width across the line, also in
+ *  pixels. Scale to metres is applied later (lib/blueprint/scale.ts). */
+export interface PixelWall {
+  a: { x: number; y: number };
+  b: { x: number; y: number };
+  thickness: number;
+}
