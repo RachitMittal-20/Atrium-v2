@@ -36,3 +36,10 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - Blueprint pixel rooms are `PixelRoom` (`src/types/blueprint.ts`); plan rooms are `Room` (`src/types/plan.ts`).
 - The blueprint pipeline runs on the deskewed image. Coordinates from vectorize, scale and openings are in deskewed-pixel space, so the review screen must display the deskewed image, never the original.
 - OCR reads the deskewed but UNFILLED image; the hollow-wall fill also fills some letter strokes. In hollow mode, windows drawn as lines inside walls are filled as wall, so their openings are not detected.
+
+## Known limitations
+- The hollow fill cannot tell a wall whose gap is outside the accepted range from furniture drawn as long parallel lines. Both are just two long lines with white between them.
+- Walls whose gap is more than 3x the commonest gap are missed. On a plan with lots of narrow line pairs (window lines, shelving), the commonest gap can be narrower than the real walls, and then real walls are skipped.
+- Room-size labels give no scale for open-plan rooms, rooms bounded mostly by windows, or rooms whose edges are single thin lines. The label is measured against the walls around it, and those rooms don't have enough wall to measure against.
+- OCR sometimes splits a size label into fragments, and then the size is not read.
+- When no scale can be worked out, the fallback is the user clicking a wall and typing its length.

@@ -1,7 +1,8 @@
 /**
- * test-scale.ts — offline checks for src/lib/blueprint/scale.ts. No real OCR
- * (tesseract downloads language data): the OCR words are written by hand, with
- * boxes, and so are the walls.
+ * test-scale.ts — offline checks for src/lib/blueprint/scale.ts, and for the
+ * rule in ocr.ts that picks between two OCR readings (`pickReading`). No real
+ * OCR (tesseract downloads language data): the OCR words are written by hand,
+ * with boxes, and so are the walls.
  *
  * The house is the 10 × 8 m test house (centre line to centre line) at
  * 100 px/m × `s`: 20 px exterior walls, 10 px interior walls, one wall down the
@@ -10,6 +11,7 @@
  * Run: npx tsx scripts/test-scale.ts
  */
 import assert from "node:assert/strict";
+import { pickReading } from "../src/lib/blueprint/ocr";
 import { estimateScale, parseLength, parseSizeLabel } from "../src/lib/blueprint/scale";
 import type { OcrWord, PixelWall, PlanPixels } from "../src/types/blueprint";
 
@@ -146,6 +148,96 @@ for (const s of [1, 1.5]) {
   const bare = estimateScale({ words: [...label("Kitchen", 250, 180, 1), ...label("12 x 14", 250, 200, 1)], walls: house(1), pixels: paper(1) });
   assert.deepEqual([bare.pxPerM, bare.confidence], [null, "none"], "bare numbers");
   assert.deepEqual(bare.unparsed, ["12 x 14"], "bare numbers are listed as unparsed");
+  // 14 × 12 fits the 485 × 385 px room within 8%, so it is measured, as a unit-less pair only.
+  assert.deepEqual([bare.unitless?.n, bare.unitless?.confidence], [1, "check"], "bare numbers feed only the unit-less result");
+
+  const misfit = estimateScale({ words: label("3 x 9", 250, 200, 1), walls: house(1), pixels: paper(1) });
+  assert.equal(misfit.unitless, null, "bare numbers that do not fit the room give no unit-less result");
+}
+
+// Unit-less pairs that fit their rooms: never a scale, but both footprints are returned.
+{
+  const words = [...label("4.85 x 3.85", 250, 200, 1), ...label("4.85 x 7.80", 750, 400, 1)];
+  const r = estimateScale({ words, walls: house(1), pixels: paper(1) });
+  assert.deepEqual([r.pxPerM, r.confidence, r.samples.length], [null, "none", 0], "unit-less: never sets pxPerM");
+  assert.match(r.reason, /Click one wall and type its length/, "unit-less: reason still asks for a wall");
+  const u = r.unitless;
+  assert.ok(u, "unit-less: result returned");
+  assert.deepEqual([u.n, u.confidence], [2, "good"], "unit-less: two pairs, good");
+  near(u.pxPerUnit, 100, 1e-6, "unit-less: px per printed unit");
+  // The house is 10 × 8 units, centre line to centre line.
+  near(u.ifMetres.pxPerM, 100, 1e-6, "unit-less: scale if metres");
+  near(u.ifMetres.width, 10, 1e-6, "unit-less: footprint width if metres");
+  near(u.ifMetres.depth, 8, 1e-6, "unit-less: footprint depth if metres");
+  near(u.ifFeet.pxPerM, 100 / FT, 1e-6, "unit-less: scale if feet");
+  near(u.ifFeet.width, 10 * FT, 1e-6, "unit-less: footprint width if feet");
+  near(u.ifFeet.depth, 8 * FT, 1e-6, "unit-less: footprint depth if feet");
+
+  // One pair alone is "check", and still never a scale.
+  const one = estimateScale({ words: label("4.85 x 3.85", 250, 200, 1), walls: house(1), pixels: paper(1) });
+  assert.deepEqual([one.pxPerM, one.unitless?.n, one.unitless?.confidence], [null, 1, "check"], "unit-less: one pair");
+}
+
+// Ray trace output (`rooms`): what scale-debug.ts and the review screen draw.
+{
+  // Top-left room, label centre at (350, 300) px: walls 250 px away left and right, 200 up and down.
+  const r = estimateScale({ words: label("4.85 m x 3.85 m", 250, 200, 1), walls: house(1), pixels: paper(1) });
+  assert.equal(r.rooms.length, 1, "trace: one room");
+  const t = r.rooms[0];
+  assert.deepEqual([t.text, t.hasUnit, t.cx, t.cy, t.why], ["4.85 m x 3.85 m", true, 350, 300, null], "trace: label");
+  assert.deepEqual(t.size, [4.85, 3.85], "trace: size in printed order");
+  assert.deepEqual([t.width, t.height], [485, 385], "trace: inner size in px");
+  near(t.pxPerUnit, 100, 1e-6, "trace: scale");
+  const across = t.rays.filter((ray) => ray.axis === "width");
+  const down = t.rays.filter((ray) => ray.axis === "height");
+  assert.deepEqual([across.length, down.length], [5, 5], "trace: five rays each way");
+  assert.deepEqual(across.map((ray) => ray.at), [140, 220, 300, 380, 460], "trace: width rays spread at 0, ±0.4, ±0.8 of the distance to the wall");
+  assert.deepEqual(down.map((ray) => ray.at), [150, 250, 350, 450, 550], "trace: height rays spread the same way");
+  assert.ok(t.rays.every((ray) => ray.agrees), "trace: every ray agrees");
+  // The centre width ray: left wall (20 px) at x 100, middle wall (10 px) at x 600.
+  assert.deepEqual(across[2].lo, { dist: 250, wall: { c: 100, s0: 100, s1: 500, t: 20 } }, "trace: left hit");
+  assert.deepEqual(across[2].hi, { dist: 250, wall: { c: 600, s0: 100, s1: 500, t: 10 } }, "trace: right hit");
+  assert.equal(across[2].inner, 485, "trace: inner = hits minus half of each wall");
+  assert.deepEqual(t.fits.map((f) => f.firstIs), ["width", "height"], "trace: both assignments reported");
+  near(t.fits[0].diffPct + 1, 1, 1e-6, "trace: first number = width fits exactly");
+  assert.ok(t.fits[1].diffPct > 8, "trace: the swapped assignment does not fit");
+
+  // A door in the way: the centre ray runs on to the far wall and is marked as disagreeing.
+  const door = estimateScale({ words: label("4.85 m x 3.85 m", 250, 200, 1), walls: house(1, true), pixels: paper(1) }).rooms[0];
+  const widths = door.rays.filter((ray) => ray.axis === "width");
+  assert.deepEqual(widths.map((ray) => ray.agrees), [true, true, false, true, true], "trace: only the ray through the door disagrees");
+  assert.deepEqual([widths[2].hi?.wall.c, widths[2].inner], [1100, 980], "trace: the door ray hit the far wall");
+  assert.equal(door.width, 485, "trace: the door does not change the width");
+
+  // A rejected label keeps its trace and says why; a ray that leaves the plan has a null hit.
+  const misfit = estimateScale({ words: label("3.0 m x 9.0 m", 250, 200, 1), walls: house(1), pixels: paper(1) }).rooms[0];
+  assert.equal(misfit.pxPerUnit, null, "trace: rejected label has no scale");
+  assert.match(misfit.why ?? "", /does not fit the room shape/, "trace: rejected label says why");
+  assert.equal(misfit.rays.length, 10, "trace: rejected label keeps its rays");
+  // The right-hand room with its outer wall (x 1100) missing: every width ray runs off to the right.
+  const noRightWall = house(1).filter((w) => !(w.a.x === 1100 && w.b.x === 1100));
+  const open = estimateScale({ words: label("4.85 m x 7.80 m", 750, 400, 1), walls: noRightWall, pixels: paper(1) }).rooms[0];
+  const openWidths = open.rays.filter((ray) => ray.axis === "width");
+  assert.ok(openWidths.every((ray) => ray.lo !== null && ray.hi === null && ray.inner === null && !ray.agrees), "trace: a ray that runs off the plan has a null hit and no inner distance");
+  assert.deepEqual([open.width, open.height, open.pxPerUnit], [null, 780, null], "trace: an open side leaves the width unmeasured and the label rejected");
+  assert.match(open.why ?? "", /rays across the room disagree/, "trace: open room says why");
+}
+
+// ------------------------------------------------------------ second OCR read (ocr.ts pickReading)
+{
+  const pick = (first: string, fc: number, second: string, sc: number) => pickReading({ text: first, confidence: fc }, { text: second, confidence: sc });
+  // Differ only by a missing "." or ",": the reading that has it wins, whatever the confidence.
+  assert.equal(pick("8.0m", 60, "80m", 95), "first", `"8.0m" vs "80m" keeps "8.0m"`);
+  assert.equal(pick("80m", 95, "8.0m", 60), "second", `"80m" vs "8.0m" keeps "8.0m"`);
+  assert.equal(pick("10.0 m", 60, "100m", 95), "first", `"10.0 m" vs "100m" keeps "10.0 m"`);
+  assert.equal(pick("3,8m", 60, "38m", 95), "first", `"3,8m" vs "38m" keeps "3,8m"`);
+  // Real digits differ: the higher confidence wins, as before.
+  assert.equal(pick("8.0m", 60, "9.0m", 95), "second", "different digits: higher confidence (second)");
+  assert.equal(pick("8.0m", 95, "9.0m", 60), "first", "different digits: higher confidence (first)");
+  assert.equal(pick("8.0m", 60, "90m", 95), "second", "different digits and a missing point: still by confidence");
+  // Same text, or nothing read the second time.
+  assert.equal(pick("8.0m", 60, "8.0m", 95), "second", "same text: higher confidence");
+  assert.equal(pick("8.0m", 60, "", 95), "first", "empty second read: the first stands");
 }
 
 // Exactly one sample is "check"; the same room labelled twice is still one sample.

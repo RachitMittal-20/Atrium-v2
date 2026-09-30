@@ -55,6 +55,7 @@ async function main() {
       table.push([id, "-", "-", "-", "-", "OCR failed", "FAIL"]);
       continue;
     }
+    for (const x of ocr.rereads) console.log(`    second read "${x.first}" (${x.firstConfidence.toFixed(0)}) -> "${x.second}" (${x.secondConfidence.toFixed(0)}), kept the ${x.kept}`);
     const r = estimateScale({ words: ocr.words, walls, pixels });
     const labels = r.samples.length + r.rejected.length;
     console.log(`  OCR words ${ocr.words.length} (${ocr.words.filter((w) => w.vertical).length} from the rotated pass); dimension labels read ${labels}, unparsed number lines ${r.unparsed.length}`);

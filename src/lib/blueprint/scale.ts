@@ -85,6 +85,67 @@ export interface ScaleSample {
   box: PixelRect;
 }
 
+/** One end of a ray: the wall it met (centre line `c`, spanning s0..s1 along
+ *  itself, `t` thick) and how far away its centre line was. */
+export interface RayHit {
+  dist: number;
+  wall: { c: number; s0: number; s1: number; t: number };
+}
+
+/** One of the parallel rays that measured a room (debugging and the review screen). */
+export interface RayTrace {
+  /** "width": the ray runs left-right along y = `at`, starting from x = `from`.
+   *  "height": it runs up-down along x = `at`, starting from y = `from`. */
+  axis: "width" | "height";
+  at: number;
+  from: number;
+  /** Hit towards smaller coordinates (left or up) and towards larger; null = ran off the plan. */
+  lo: RayHit | null;
+  hi: RayHit | null;
+  /** Both hit distances minus half of each wall's thickness. */
+  inner: number | null;
+  /** Within 8% of the median of its span. */
+  agrees: boolean;
+}
+
+/** How one room-size label ("W x D", with or without a unit) was measured. */
+export interface RoomTrace {
+  text: string;
+  /** The two numbers in printed order: metres when `hasUnit`, else as printed. */
+  size: [number, number];
+  hasUnit: boolean;
+  box: PixelRect;
+  /** Ray origin: the centre of the label's text line. */
+  cx: number;
+  cy: number;
+  rays: RayTrace[];
+  /** Inner room size in px (median of each axis' rays), null when its rays disagree. */
+  width: number | null;
+  height: number | null;
+  /** Both assignments of the two numbers: first number = width, then first number = height. */
+  fits: { firstIs: "width" | "height"; scaleW: number; scaleH: number; diffPct: number }[];
+  /** Pixels per metre (or per printed unit when `hasUnit` is false); null when rejected. */
+  pxPerUnit: number | null;
+  /** The exact rejection reason, null when accepted. */
+  why: string | null;
+}
+
+/** What bare "W x D" pairs (no unit printed) say, for the review screen to ask
+ *  "feet or metres?". Never used to set pxPerM. */
+export interface UnitlessScale {
+  /** Median pixels per printed unit. */
+  pxPerUnit: number;
+  /** Number of accepted pairs. */
+  n: number;
+  spreadPct: number;
+  /** Same bands as the main result; "none" is reported as `unitless: null`. */
+  confidence: "good" | "check";
+  /** The scale and the building footprint (wall centre line to centre line,
+   *  metres) if the printed numbers are feet, and if they are metres. */
+  ifFeet: { pxPerM: number; width: number; depth: number };
+  ifMetres: { pxPerM: number; width: number; depth: number };
+}
+
 export interface ScaleEstimate {
   pxPerM: number | null;
   confidence: "good" | "check" | "none";
@@ -96,6 +157,11 @@ export interface ScaleEstimate {
   rejected: { text: string; why: string }[];
   /** Text lines that contain a number but no usable length (no unit, for example). */
   unparsed: string[];
+  /** Bare pairs with no unit, measured with the same rules; null when there are
+   *  none or they disagree by more than 15%. */
+  unitless: UnitlessScale | null;
+  /** Every room-size label and how its rays went, accepted or not. */
+  rooms: RoomTrace[];
 }
 
 /** Proper median: the mean of the middle two for an even count. */
@@ -116,6 +182,8 @@ const LENGTH = `(?:${FEET}|${METRIC})`;
 const NOT_MID_NUMBER = String.raw`(?<![\d.'"])`;
 const SIZE_RE = new RegExp(String.raw`${NOT_MID_NUMBER}(?:${LENGTH}|${NUM})\s*x\s*${LENGTH}`, "g");
 const LENGTH_RE = new RegExp(NOT_MID_NUMBER + LENGTH, "g");
+// "12 x 14" with no unit anywhere: measured, but only ever reported as `unitless`.
+const BARE_SIZE_RE = new RegExp(String.raw`${NOT_MID_NUMBER}(${NUM})\s*x\s*(${NUM})(?![\d.'"a-z\u00b2])`, "g");
 
 /** Same text with OCR's usual variants folded together, lower-cased. */
 function normalise(raw: string): string {
@@ -245,23 +313,29 @@ function cast(ws: AxisWall[], from: number, at: number, dir: 1 | -1): AxisWall &
 /** Inner span between the walls `ws` either side of `from`: median over the
  *  parallel rays, null unless a majority of them agree. `lo` is the centre line
  *  of the wall on the low side, used to tell rooms apart. */
-function span(ws: AxisWall[], from: number, at: number, before: number, after: number): { inner: number; lo: number } | null {
-  const hits: { inner: number; lo: number }[] = [];
-  for (const k of RAY_OFFSETS) {
+function span(axis: RayTrace["axis"], ws: AxisWall[], from: number, at: number, before: number, after: number) {
+  const hit = (w: ReturnType<typeof cast>): RayHit | null => w && { dist: w.dist, wall: { c: w.c, s0: w.s0, s1: w.s1, t: w.t } };
+  const rays: RayTrace[] = RAY_OFFSETS.map((k) => {
     const o = at + k * (k < 0 ? before : after);
     const a = cast(ws, from, o, -1);
     const b = cast(ws, from, o, 1);
-    if (a && b) hits.push({ inner: a.dist + b.dist - a.t / 2 - b.t / 2, lo: a.c });
-  }
-  if (hits.length === 0) return null;
-  const med = median(hits.map((h) => h.inner));
-  const agree = hits.filter((h) => Math.abs(h.inner - med) <= AGREE * med);
-  if (med <= 0 || agree.length * 2 <= RAY_OFFSETS.length) return null;
-  return { inner: med, lo: median(agree.map((h) => h.lo)) };
+    return { axis, at: o, from, lo: hit(a), hi: hit(b), inner: a && b ? a.dist + b.dist - a.t / 2 - b.t / 2 : null, agrees: false };
+  });
+  const inners = rays.flatMap((r) => (r.inner === null ? [] : [r.inner]));
+  if (inners.length === 0) return { rays, inner: null, lo: 0 };
+  const med = median(inners);
+  for (const r of rays) r.agrees = r.inner !== null && Math.abs(r.inner - med) <= AGREE * med;
+  const agree = rays.filter((r) => r.agrees);
+  if (med <= 0 || agree.length * 2 <= RAY_OFFSETS.length) return { rays, inner: null, lo: 0 };
+  return { rays, inner: med, lo: median(agree.map((r) => from - r.lo!.dist)) };
 }
 
-/** The room around (cx, cy): inner width and height in px, or why not. */
-function measureRoom(hs: AxisWall[], vs: AxisWall[], cx: number, cy: number) {
+/** Measures the room around a size label and fits the label's two numbers to
+ *  it (header, Source A). `key` identifies the room, for counting it once. */
+function traceRoom(hs: AxisWall[], vs: AxisWall[], text: string, size: [number, number], hasUnit: boolean, box: PixelRect): RoomTrace & { key: number[] } {
+  const cx = (box.x0 + box.x1) / 2;
+  const cy = (box.y0 + box.y1) / 2;
+  const trace: RoomTrace & { key: number[] } = { text, size, hasUnit, box, cx, cy, rays: [], width: null, height: null, fits: [], pxPerUnit: null, why: null, key: [] };
   const up = cast(hs, cy, cx, -1)?.dist;
   const down = cast(hs, cy, cx, 1)?.dist;
   const left = cast(vs, cx, cy, -1)?.dist;
@@ -269,11 +343,23 @@ function measureRoom(hs: AxisWall[], vs: AxisWall[], cx: number, cy: number) {
   // A centre ray that escaped through an opening borrows the other side's distance.
   const v = up ?? down;
   const h = left ?? right;
-  if (v === undefined || h === undefined) return "no walls found around the label";
-  const w = span(vs, cx, cy, up ?? v, down ?? v);
-  const t = span(hs, cy, cx, left ?? h, right ?? h);
-  if (!w || !t) return `rays ${!w ? "across" : "down"} the room disagree by more than ${AGREE * 100}%`;
-  return { width: w.inner, height: t.inner, key: [w.lo, t.lo, w.inner, t.inner] };
+  if (v === undefined || h === undefined) return { ...trace, why: "no walls found around the label" };
+  const w = span("width", vs, cx, cy, up ?? v, down ?? v);
+  const t = span("height", hs, cy, cx, left ?? h, right ?? h);
+  trace.rays = [...w.rays, ...t.rays];
+  trace.width = w.inner;
+  trace.height = t.inner;
+  if (w.inner === null || t.inner === null) return { ...trace, why: `rays ${w.inner === null ? "across" : "down"} the room disagree by more than ${AGREE * 100}%` };
+  // Both assignments of the two numbers to width and height; keep the better fit.
+  trace.fits = (["width", "height"] as const).map((firstIs) => {
+    const scaleW = w.inner / (firstIs === "width" ? size[0] : size[1]);
+    const scaleH = t.inner / (firstIs === "width" ? size[1] : size[0]);
+    return { firstIs, scaleW, scaleH, diffPct: (Math.abs(scaleW - scaleH) / ((scaleW + scaleH) / 2)) * 100 };
+  });
+  const fit = trace.fits[0].diffPct <= trace.fits[1].diffPct ? trace.fits[0] : trace.fits[1];
+  if (fit.diffPct > AGREE * 100)
+    return { ...trace, why: `does not fit the room shape (${Math.round(w.inner)} × ${Math.round(t.inner)} px inside; the two sides imply scales ${fit.diffPct.toFixed(0)}% apart)` };
+  return { ...trace, pxPerUnit: (fit.scaleW + fit.scaleH) / 2, key: [w.lo, t.lo, w.inner, t.inner] };
 }
 
 // ---------------------------------------------------------------- Source B
@@ -347,26 +433,47 @@ function dimensionLine(ink: Uint8Array, W: number, H: number, line: Line, parall
 
 // ---------------------------------------------------------------- estimate
 
+/** The result rules from the header, applied to one list of samples. */
+function band(values: number[]): { median: number; spreadPct: number; confidence: ScaleEstimate["confidence"] } | null {
+  if (values.length === 0) return null;
+  const med = median(values);
+  const spreadPct = values.length < 2 ? 0 : Math.max(...values.map((v) => Math.abs(v - med) / med)) * 100;
+  const confidence = values.length === 1 || (spreadPct > GOOD_PCT && spreadPct <= CHECK_PCT) ? "check" : spreadPct > CHECK_PCT ? "none" : "good";
+  return { median: med, spreadPct, confidence };
+}
+
 export function estimateScale({ words, walls, pixels }: { words: OcrWord[]; walls: PixelWall[]; pixels: PlanPixels }): ScaleEstimate {
   const { hs, vs } = splitWalls(walls);
   const samples: ScaleSample[] = [];
+  const bare: number[] = []; // px per printed unit, from pairs with no unit
+  const rooms: RoomTrace[] = [];
   const rejected: ScaleEstimate["rejected"] = [];
   const unparsed: string[] = [];
-  const seen: { key: number[]; vertical: boolean | null; pxPerM: number }[] = []; // geometry already measured
+  // Geometry already measured. `kind` keeps metre samples and unit-less ones apart.
+  const seen: { key: number[]; kind: string; value: number }[] = [];
   let ink: Uint8Array | null = null; // binarized only if a dimension label turns up
 
-  /** Records a sample unless the same room or line already gave the same scale. */
-  const add = (sample: ScaleSample, key: number[], vertical: boolean | null) => {
-    const repeat = seen.some(
-      (o) =>
-        o.vertical === vertical &&
-        o.key.length === key.length &&
-        o.key.every((k, i) => Math.abs(k - key[i]) <= 2) &&
-        Math.abs(o.pxPerM - sample.pxPerM) <= (SAME_PCT / 100) * o.pxPerM,
+  /** True when the same room or line already gave the same scale; records it otherwise. */
+  const repeat = (key: number[], kind: string, value: number) => {
+    const hit = seen.some(
+      (o) => o.kind === kind && o.key.length === key.length && o.key.every((k, i) => Math.abs(k - key[i]) <= 2) && Math.abs(o.value - value) <= (SAME_PCT / 100) * o.value,
     );
-    if (repeat) return void rejected.push({ text: sample.text, why: "same room or line as an earlier label, counted once" });
-    seen.push({ key, vertical, pxPerM: sample.pxPerM });
-    samples.push(sample);
+    if (!hit) seen.push({ key, kind, value });
+    return hit;
+  };
+  const ONCE = "same room or line as an earlier label, counted once";
+
+  /** Source A for one "W x D" label, with a unit (a sample) or without (unit-less). */
+  const room = (label: string, size: [number, number], hasUnit: boolean, box: PixelRect) => {
+    const { key, ...trace } = traceRoom(hs, vs, label, size, hasUnit, box);
+    if (trace.pxPerUnit !== null && repeat(key, hasUnit ? "room" : "bare", trace.pxPerUnit)) {
+      trace.pxPerUnit = null;
+      trace.why = ONCE;
+    }
+    rooms.push(trace);
+    if (trace.pxPerUnit === null) rejected.push({ text: label, why: trace.why! });
+    else if (hasUnit) samples.push({ source: "room", text: label, pxPerM: trace.pxPerUnit, box });
+    else bare.push(trace.pxPerUnit);
   };
 
   for (const line of groupLines(words)) {
@@ -378,53 +485,47 @@ export function estimateScale({ words, walls, pixels }: { words: OcrWord[]; wall
       const size = parseSizeLabel(label);
       if (!size || size[0] <= 0 || size[1] <= 0) continue;
       found = true;
-      const room = measureRoom(hs, vs, (line.box.x0 + line.box.x1) / 2, (line.box.y0 + line.box.y1) / 2);
-      if (typeof room === "string") {
-        rejected.push({ text: label, why: room });
-        continue;
-      }
-      // Both assignments of the two numbers to width and height; keep the better fit.
-      const fits = [size, [size[1], size[0]]].map(([a, b]) => {
-        const sw = room.width / a;
-        const sh = room.height / b;
-        return { pxPerM: (sw + sh) / 2, diff: Math.abs(sw - sh) / ((sw + sh) / 2) };
-      });
-      const fit = fits[0].diff <= fits[1].diff ? fits[0] : fits[1];
-      if (fit.diff > AGREE) {
-        rejected.push({ text: label, why: `does not fit the room shape (${Math.round(room.width)} × ${Math.round(room.height)} px inside; the two sides imply scales ${(fit.diff * 100).toFixed(0)}% apart)` });
-        continue;
-      }
-      add({ source: "room", text: label, pxPerM: fit.pxPerM, box: line.box }, room.key, null);
+      room(label, size, true, line.box);
     }
+    const rest = text.replace(SIZE_RE, " ");
 
     // Source B: every single length left in the line.
-    for (const [label] of text.replace(SIZE_RE, " ").matchAll(LENGTH_RE)) {
+    for (const [label] of rest.matchAll(LENGTH_RE)) {
       const metres = parseLength(label);
       if (!metres) continue;
       found = true;
       ink ??= binarize(pixels);
       const hit = dimensionLine(ink, pixels.width, pixels.height, line, line.vertical ? vs : hs);
-      if (!hit) {
-        rejected.push({ text: label, why: "no dimension line found beside it" });
-        continue;
-      }
-      add({ source: "dimension", text: label, pxPerM: hit.len / metres, box: line.box }, hit.key, line.vertical);
+      if (!hit) rejected.push({ text: label, why: "no dimension line found beside it" });
+      else if (repeat(hit.key, line.vertical ? "v-line" : "h-line", hit.len / metres)) rejected.push({ text: label, why: ONCE });
+      else samples.push({ source: "dimension", text: label, pxPerM: hit.len / metres, box: line.box });
     }
 
+    // Pairs with no unit: measured the same way, but they only feed `unitless`
+    // and stay listed as unparsed. Skipped on a line that has real lengths.
+    if (!found) for (const [label, a, b] of rest.matchAll(BARE_SIZE_RE)) if (Number(a) > 0 && Number(b) > 0) room(label, [Number(a), Number(b)], false, line.box);
     if (!found && /\d/.test(text)) unparsed.push(line.text);
   }
 
+  // Unit-less pairs: same bands; the footprint is the extent of the wall centre lines.
+  const bareBand = band(bare);
+  let unitless: UnitlessScale | null = null;
+  if (bareBand && bareBand.confidence !== "none") {
+    const xs = walls.flatMap((w) => [w.a.x, w.b.x]);
+    const ys = walls.flatMap((w) => [w.a.y, w.b.y]);
+    const implied = (pxPerM: number) => ({ pxPerM, width: (Math.max(...xs) - Math.min(...xs)) / pxPerM, depth: (Math.max(...ys) - Math.min(...ys)) / pxPerM });
+    unitless = { pxPerUnit: bareBand.median, n: bare.length, spreadPct: bareBand.spreadPct, confidence: bareBand.confidence, ifFeet: implied(bareBand.median / FOOT), ifMetres: implied(bareBand.median) };
+  }
+
   // The result rules from the header.
+  const rest = { samples, rejected, unparsed, unitless, rooms };
   const CLICK = "Click one wall and type its length to set the scale.";
-  if (samples.length === 0)
-    return { pxPerM: null, confidence: "none", samples, spreadPct: 0, reason: `No printed dimensions could be measured on this plan. ${CLICK}`, rejected, unparsed };
-  const med = median(samples.map((s) => s.pxPerM));
-  const spreadPct = Math.max(...samples.map((s) => Math.abs(s.pxPerM - med) / med)) * 100;
-  if (samples.length === 1)
-    return { pxPerM: med, confidence: "check", samples, spreadPct: 0, reason: "Only one printed dimension could be measured. Check the scale against a wall you know.", rejected, unparsed };
-  if (spreadPct > CHECK_PCT)
-    return { pxPerM: null, confidence: "none", samples, spreadPct, reason: `The printed dimensions disagree by ${spreadPct.toFixed(0)}%. ${CLICK}`, rejected, unparsed };
-  if (spreadPct > GOOD_PCT)
-    return { pxPerM: med, confidence: "check", samples, spreadPct, reason: `${samples.length} printed dimensions differ by up to ${spreadPct.toFixed(0)}%. Check the scale against a wall you know.`, rejected, unparsed };
-  return { pxPerM: med, confidence: "good", samples, spreadPct, reason: `${samples.length} printed dimensions agree within ${GOOD_PCT}%.`, rejected, unparsed };
+  const b = band(samples.map((x) => x.pxPerM));
+  if (!b) return { pxPerM: null, confidence: "none", spreadPct: 0, reason: `No printed dimensions could be measured on this plan. ${CLICK}`, ...rest };
+  const { median: med, spreadPct, confidence } = b;
+  if (samples.length === 1) return { pxPerM: med, confidence, spreadPct, reason: "Only one printed dimension could be measured. Check the scale against a wall you know.", ...rest };
+  if (confidence === "none") return { pxPerM: null, confidence, spreadPct, reason: `The printed dimensions disagree by ${spreadPct.toFixed(0)}%. ${CLICK}`, ...rest };
+  if (confidence === "check")
+    return { pxPerM: med, confidence, spreadPct, reason: `${samples.length} printed dimensions differ by up to ${spreadPct.toFixed(0)}%. Check the scale against a wall you know.`, ...rest };
+  return { pxPerM: med, confidence, spreadPct, reason: `${samples.length} printed dimensions agree within ${GOOD_PCT}%.`, ...rest };
 }
