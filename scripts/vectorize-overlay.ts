@@ -1,10 +1,11 @@
 /**
  * vectorize-overlay.ts — runs the real image → deskew → mask → segments
- * pipeline (deskew.ts, wallMask.ts extractWalls, then vectorize.ts) on every
+ * pipeline (deskew.ts, hollowWalls.ts detectWalls, then vectorize.ts) on every
  * image in test-plans/, writes an overlay PNG per image to /tmp/vectorize/
  * (the deskewed image dimmed, wall centre lines red, shared joints blue, free
- * ends orange), and prints the deskew angle, wall count, coverage, inkCapture
- * and joint problems. Images decode with `sharp` (devDependency).
+ * ends orange), and prints the deskew angle, the wall mode chosen (solid or
+ * hollow) and why, wall count, coverage, inkCapture and joint problems. Images
+ * decode with `sharp` (devDependency).
  *
  * For the synthetic plans 01–04 it also checks the known truth: a 10 × 8 m
  * house at 100 px/m (footprint.ts), 7 walls, 4 door gaps + 4 window gaps.
@@ -14,11 +15,11 @@ import { mkdirSync, readdirSync } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
 import { deskew } from "../src/lib/blueprint/deskew";
+import { detectWalls } from "../src/lib/blueprint/hollowWalls";
 import { vectorize } from "../src/lib/blueprint/vectorize";
-import { extractWalls } from "../src/lib/blueprint/wallMask";
 import { validatePlan } from "../src/lib/plan/validate";
 import { samplePlan } from "../src/data/samplePlan";
-import { footprintCheck } from "./footprint";
+import { footprintCheck, isH, wallLines } from "./footprint";
 import type { PixelWall } from "../src/types/blueprint";
 
 const IN = "test-plans";
@@ -27,7 +28,6 @@ mkdirSync(OUT, { recursive: true });
 
 type P = { x: number; y: number };
 const k = (p: P) => `${p.x},${p.y}`;
-const isH = (w: PixelWall) => Math.abs(w.b.x - w.a.x) >= Math.abs(w.b.y - w.a.y); // dominant axis: merged joints can tilt a wall slightly
 
 /** Endpoints used by only one wall. */
 function freeEnds(walls: PixelWall[]) {
@@ -70,22 +70,6 @@ function gapPairs(ends: ReturnType<typeof freeEnds>, walls: PixelWall[]) {
   return { pairs, unpaired: ends.filter((e) => !paired.has(k(e.p))).length };
 }
 
-/** Distinct wall lines: collinear walls (across the gaps and joints) count once. */
-function wallLines(walls: PixelWall[]) {
-  const lines: { h: boolean; c: number; t: number }[] = [];
-  for (const w of walls) {
-    const c = isH(w) ? w.a.y : w.a.x;
-    if (
-      !lines.some(
-        (l) =>
-          l.h === isH(w) && Math.abs(l.c - c) <= Math.max(l.t, w.thickness) / 2,
-      )
-    )
-      lines.push({ h: isH(w), c, t: w.thickness });
-  }
-  return lines.length;
-}
-
 function draw(
   rgba: Buffer,
   w: number,
@@ -125,7 +109,9 @@ async function main() {
 
     let mask;
     try {
-      mask = extractWalls(pixels);
+      const found = detectWalls(pixels);
+      mask = found.mask;
+      console.log(`  mode ${found.mode}: ${found.reason}`);
     } catch (e) {
       console.log(`  mask failed: ${(e as Error).message}`);
       continue;

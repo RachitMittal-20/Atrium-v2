@@ -12,7 +12,10 @@
  * The pipeline, in order, and which type each hand-off carries:
  *   image pixels (PlanPixels)
  *     -> deskew         (lib/blueprint/deskew.ts)     -> PlanPixels, straightened
- *     -> extractWalls   (lib/blueprint/wallMask.ts)   -> WallMask
+ *     -> detectWalls    (lib/blueprint/hollowWalls.ts) -> WallMask; picks per image
+ *        between extractWalls (lib/blueprint/wallMask.ts) as-is, for solid
+ *        walls, and extractWalls after fillHollowWalls, for walls drawn as
+ *        two thin parallel lines
  *     -> detectRooms    (lib/blueprint/rooms.ts)      -> RoomMap
  *     -> buildPlanModel (lib/blueprint/buildModel.ts) -> a three.js scene
  *     -> exported to a .glb File by lib/blueprintToModel.ts, which the
