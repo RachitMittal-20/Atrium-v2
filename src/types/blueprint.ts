@@ -21,6 +21,8 @@
  *        the walls and the deskewed but unfilled image
  *     -> estimateScale  (lib/blueprint/scale.ts)      -> pixels per metre, from
  *        the OcrWord[] that lib/blueprint/ocr.ts reads off the straightened image
+ *     -> buildPlan      (lib/blueprint/toPlan.ts)     -> an editable Plan in metres
+ *        (types/plan.ts) plus a BuildReport, from BuildInput and a PlanScale
  *     -> detectRooms   (lib/blueprint/rooms.ts)      -> RoomMap
  *     -> buildPlanModel (lib/blueprint/buildModel.ts) -> a three.js scene
  *     -> exported to a .glb File by lib/blueprintToModel.ts, which the
@@ -248,4 +250,51 @@ export interface OpeningCandidate {
     /** A thin dark line runs along at least 80% of the gap inside the wall band. */
     glazingLine: boolean;
   };
+}
+
+/** Pixels per metre and where that number came from (scale.ts found it on
+ *  the plan, the user typed a length, or a unit-less size label was read
+ *  as feet or metres). */
+export interface PlanScale {
+  pxPerM: number;
+  source: "ocr" | "manual" | "unitless-feet" | "unitless-metres";
+}
+
+/** What lib/blueprint/toPlan.ts `buildPlan` turns into a Plan, all in
+ *  deskewed PIXELS. Wall ids default to "p1", "p2", ... in array (vectorize)
+ *  order; the review screen refers to walls by these ids. */
+export interface BuildInput {
+  walls: (PixelWall & { id?: string })[];
+  openings: OpeningCandidate[];
+  /** detectOpenings' unpaired free ends. buildPlan recomputes free ends from
+   *  the finished walls (report.freeEnds), which include these. */
+  unpaired: Vec2[];
+  imageSize: { width: number; height: number };
+  name: string;
+}
+
+/** Everything buildPlan changed, kept apart or could not place, so nothing is
+ *  lost silently. Pixel positions are deskewed-image pixels; metre positions
+ *  are plan coordinates (px = origin + m × pxPerM). */
+export interface BuildReport {
+  scale: PlanScale;
+  /** Pixel position of plan (0, 0). */
+  origin: Vec2;
+  /** Openings over 2.4 m up to 4 m wide: kept with their detected kind (a
+   *  passage stays a door) and flagged. */
+  wideOpenings: { openingId: string; kind: OpeningCandidate["kind"]; widthM: number }[];
+  /** Gaps over 4 m wide: not bridged, so their two wall ends stay free. */
+  droppedPairs: { a: Vec2; b: Vec2; widthM: number }[];
+  /** Gaps that could not be bridged because no wall ends at one side (for
+   *  example it was removed); their remaining wall ends stay free. */
+  unbridged: { a: Vec2; b: Vec2; reason: string }[];
+  /** Merged pieces whose thickness differed by more than 30%, and thicknesses
+   *  clamped to 0.05–0.6 m. */
+  thickness: string[];
+  /** Openings moved or narrowed by more than 1 cm to fit inside one wall. */
+  adjusted: string[];
+  /** Wall ends, in metres, that no other wall shares. */
+  freeEnds: Vec2[];
+  /** validatePlan(plan). */
+  problems: string[];
 }

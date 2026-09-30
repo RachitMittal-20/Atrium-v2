@@ -5,7 +5,9 @@
  * written, and `writeStamped` writes a picture with the git short hash
  * ("+changes" when tracked files differ from that commit), the wall count
  * and the time it was written in its bottom-left corner, on a strip added
- * below the picture (the picture's own pixels keep their coordinates).
+ * below the picture (the picture's own pixels keep their coordinates). An
+ * optional note (plan-overlay.ts: the scale and where it came from) goes in
+ * the same strip.
  */
 import { execSync } from "node:child_process";
 import { readdirSync, rmSync } from "node:fs";
@@ -24,10 +26,10 @@ export function clearOld(dir: string, image: string) {
 }
 
 /** Writes `img` (`width` × `height` px) as a PNG at `file`, stamped with the
- *  commit, `walls` and the time in a white strip added below it, so the stamp
- *  hides nothing and every pixel keeps its coordinates. */
-export async function writeStamped(img: ReturnType<typeof sharp>, width: number, height: number, file: string, walls: number) {
-  const text = `${commit} · ${walls} walls · ${new Date().toLocaleString("sv-SE")}`;
+ *  commit, `walls`, `note` if given and the time in a white strip added below
+ *  it, so the stamp hides nothing and every pixel keeps its coordinates. */
+export async function writeStamped(img: ReturnType<typeof sharp>, width: number, height: number, file: string, walls: number, note?: string) {
+  const text = `${commit} · ${walls} walls${note ? ` · ${note}` : ""} · ${new Date().toLocaleString("sv-SE")}`;
   const size = Math.max(14, Math.round(width / 80));
   const strip = Math.round(size * 1.6);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.min(width, Math.ceil(size * 0.62 * text.length + size))}" height="${strip}">

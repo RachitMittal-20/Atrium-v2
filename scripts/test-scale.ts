@@ -8,11 +8,13 @@
  * 100 px/m × `s`: 20 px exterior walls, 10 px interior walls, one wall down the
  * middle and one across the left half. That makes three rooms: two of
  * 4.85 × 3.85 m inside (left) and one of 4.85 × 7.80 m (right).
+ * Also checks scaleFromPoints, the manual fallback (two clicked points and a
+ * typed length).
  * Run: npx tsx scripts/test-scale.ts
  */
 import assert from "node:assert/strict";
 import { pickReading } from "../src/lib/blueprint/ocr";
-import { estimateScale, parseLength, parseSizeLabel } from "../src/lib/blueprint/scale";
+import { estimateScale, parseLength, parseSizeLabel, scaleFromPoints } from "../src/lib/blueprint/scale";
 import type { OcrWord, PixelWall, PlanPixels } from "../src/types/blueprint";
 
 const near = (got: number | null, want: number, tolPct: number, name: string) =>
@@ -343,5 +345,11 @@ for (const s of [1, 1.5]) {
   const two = estimateScale({ words: [below("4.8 m", 340, 306)], walls: [], pixels });
   near(two.pxPerM, 100, 0.5, "two separate lines: the label measures only its own");
 }
+
+// ------------------------------------------------------------ scaleFromPoints
+assert.equal(scaleFromPoints({ x: 90, y: 90 }, { x: 1090, y: 90 }, 10), 100, "10 m across 1000 px");
+near(scaleFromPoints({ x: 0, y: 0 }, { x: 300, y: 400 }, 2.5), 200, 1e-9, "diagonal: 500 px over 2.5 m");
+assert.throws(() => scaleFromPoints({ x: 5, y: 5 }, { x: 5, y: 5 }, 3), /same place/, "zero distance");
+for (const bad of [0, -2, NaN, Infinity]) assert.throws(() => scaleFromPoints({ x: 0, y: 0 }, { x: 100, y: 0 }, bad), /greater than zero/, `length ${bad}`);
 
 console.log("OK");

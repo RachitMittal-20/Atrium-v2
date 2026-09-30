@@ -30,7 +30,10 @@ const P: Record<string, Vec2> = {
 
 const EXTERIOR = 0.2;
 const INTERIOR = 0.1;
-const HEIGHT = 2.7;
+/** Default heights, shared with the blueprint importer (lib/blueprint/toPlan.ts). */
+export const WALL_HEIGHT = 2.7;
+export const DOOR_SIZE = { height: 2.1, sillHeight: 0 };
+export const WINDOW_SIZE = { height: 1.2, sillHeight: 0.9 };
 
 // id is the two node letters it joins; thickness follows exterior/interior.
 const wall = (from: string, to: string, exterior: boolean): Wall => ({
@@ -38,7 +41,7 @@ const wall = (from: string, to: string, exterior: boolean): Wall => ({
   a: P[from],
   b: P[to],
   thickness: exterior ? EXTERIOR : INTERIOR,
-  height: HEIGHT,
+  height: WALL_HEIGHT,
 });
 
 const walls: Wall[] = [
@@ -66,8 +69,7 @@ const door = (id: string, wallId: string, offset: number, width = 0.9): Opening 
   kind: "door",
   offset,
   width,
-  height: 2.1,
-  sillHeight: 0,
+  ...DOOR_SIZE,
 });
 
 const window_ = (id: string, wallId: string, offset: number, width = 1.2): Opening => ({
@@ -76,8 +78,7 @@ const window_ = (id: string, wallId: string, offset: number, width = 1.2): Openi
   kind: "window",
   offset,
   width,
-  height: 1.2,
-  sillHeight: 0.9,
+  ...WINDOW_SIZE,
 });
 
 const openings: Opening[] = [

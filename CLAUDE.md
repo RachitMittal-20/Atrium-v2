@@ -35,6 +35,7 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - Walls are split at T-junctions, so every joint is an endpoint of every wall touching it.
 - Blueprint pixel rooms are `PixelRoom` (`src/types/blueprint.ts`); plan rooms are `Room` (`src/types/plan.ts`).
 - The blueprint pipeline runs on the deskewed image. Coordinates from vectorize, scale and openings are in deskewed-pixel space, so the review screen must display the deskewed image, never the original.
+- Pixel to plan: `buildPlan` maps deskewed pixels to metres as x = (px − origin.x) / pxPerM, y = (py − origin.y) / pxPerM, where origin is the top-left of the walls' bounding box. No flip: plan y points south, the same way image y points down.
 - OCR reads the deskewed but UNFILLED image; the hollow-wall fill also fills some letter strokes. In hollow mode, windows drawn as lines inside walls are filled as wall, so their openings are not detected.
 
 ## Known limitations
@@ -44,5 +45,5 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - OCR sometimes splits a size label into fragments, and then the size is not read.
 - When no scale can be worked out, the fallback is the user clicking a wall and typing its length.
 - `OpeningCandidate.widthPx` is the clear gap between the wall ends as drawn, in deskewed pixels. A wall end next to a T-joint can be snapped into the joint, which makes that opening up to about one wall thickness too wide.
-- Gap pairing has no maximum width, so two collinear free ends across a room can pair into a fake door (06 has a 481 px one). Step 3.4 must classify by real width once the scale is known: over about 2.4 m is a passage, over about 4 m is dropped.
+- Gap pairing has no maximum width, so two collinear free ends across a room can pair into a fake door (06 has a 481 px one). `buildPlan` (`src/lib/blueprint/toPlan.ts`) classifies each gap by real width once the scale is known: up to 2.4 m is a normal opening; over 2.4 m up to 4 m is a wide opening, kept and listed in `report.wideOpenings` (a wide passage stays a door, because the Plan has only door and window kinds); over 4 m is not bridged, its two wall ends stay free, and it is listed in `report.droppedPairs`.
 - Door versus window is a guess from the pixels: a double door drawn in thin lines can read as a window, and grey outlines on wall faces can read as doors. The review screen lets the user change the kind.

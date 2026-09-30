@@ -38,6 +38,7 @@ import { detectOpenings, gapDarkness, inkLevel, isH } from "../src/lib/blueprint
 import { vectorize } from "../src/lib/blueprint/vectorize";
 import { binarize, luminance } from "../src/lib/blueprint/wallMask";
 import type { OpeningCandidate, PixelWall, PlanPixels } from "../src/types/blueprint";
+import { GENERATOR_T, TRUTH, exterior } from "./footprint";
 
 const CENTRE_TOL = 15; // px along the wall
 const WIDTH_TOL = 20; // px, against the drawn width (see header)
@@ -50,28 +51,6 @@ async function load(file: string) {
 }
 
 // ------------------------------------------------------------ 1. fixtures
-/** h: the wall runs along x at y = line; v: along y at x = line. from/to along the wall. */
-type Truth = { kind: "window" | "door"; h: boolean; line: number; from: number; to: number };
-const TRUTH: Truth[] = [
-  { kind: "door", h: true, line: 3.5, from: 1.0, to: 1.9 },
-  { kind: "door", h: true, line: 3.5, from: 6.0, to: 6.9 },
-  { kind: "door", h: false, line: 7, from: 5.0, to: 5.9 },
-  { kind: "door", h: true, line: 8, from: 2.0, to: 3.0 },
-  { kind: "window", h: true, line: 0, from: 1.5, to: 3.0 },
-  { kind: "window", h: true, line: 0, from: 6.5, to: 8.0 },
-  { kind: "window", h: false, line: 10, from: 5.0, to: 6.5 },
-  { kind: "window", h: false, line: 0, from: 5.0, to: 6.5 },
-];
-/** The outer walls of the 10 × 8 m house; every other line is interior. */
-const exterior = (t: Truth) => t.line === 0 || t.line === (t.h ? 8 : 10);
-/** Wall thickness the fixture generator drew, [exterior, interior], in px. */
-const GENERATOR_T: Record<string, [number, number]> = {
-  "01_clean_uniform.png": [15, 15],
-  "02_thick_exterior_thin_interior.png": [25, 8],
-  "03_with_dimensions.png": [20, 10],
-  "04_fake_scan.jpg": [20, 10],
-};
-
 const oH = (o: OpeningCandidate) => isH({ a: o.a, b: o.b, thickness: 0 });
 
 async function fixtures() {

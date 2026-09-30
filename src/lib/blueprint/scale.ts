@@ -70,7 +70,8 @@
  * wallMask.ts (`binarize`); exercised by scripts/test-scale.ts (offline) and
  * scripts/scale-report.ts (real OCR on test-plans/).
  */
-import type { OcrWord, PixelRect, PixelWall, PlanPixels } from "@/types/blueprint";
+import { BlueprintError, type OcrWord, type PixelRect, type PixelWall, type PlanPixels } from "@/types/blueprint";
+import type { Vec2 } from "@/types/plan";
 import { binarize } from "./wallMask";
 
 const MIN_WORD_CONFIDENCE = 55;
@@ -587,4 +588,15 @@ export function estimateScale({ words, walls, pixels }: { words: OcrWord[]; wall
   if (confidence === "check")
     return { pxPerM: med, confidence, spreadPct, reason: `${samples.length} printed dimensions differ by up to ${spreadPct.toFixed(0)}%. Check the scale against a wall you know.`, ...rest };
   return { pxPerM: med, confidence, spreadPct, reason: `${samples.length} printed dimensions agree within ${GOOD_PCT}%.`, ...rest };
+}
+
+/** Pixels per metre from two points the user clicked on the (deskewed) image
+ *  and the real length between them they typed, in metres. The manual
+ *  fallback when estimateScale finds no scale. Throws BlueprintError for two
+ *  identical points or a length that is not a finite positive number. */
+export function scaleFromPoints(a: Vec2, b: Vec2, lengthM: number): number {
+  const px = Math.hypot(b.x - a.x, b.y - a.y);
+  if (!(px > 0)) throw new BlueprintError("The two points are in the same place. Click both ends of a wall you know the length of.");
+  if (!Number.isFinite(lengthM) || lengthM <= 0) throw new BlueprintError("Type the length as a number of metres greater than zero.");
+  return px / lengthM;
 }
