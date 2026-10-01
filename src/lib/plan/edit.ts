@@ -3,16 +3,18 @@
  * hit-testing a pointer, snapping a dragged point, moving a joint, finding the
  * run of pieces one straight wall was split into, sliding a whole run sideways,
  * drawing new walls (where a click lands, whether a new wall is allowed, and
- * splitting the wall it joins at a T-junction), and the tolerances the editor
- * works to. Every number the editor rounds or limits to is declared here and
+ * splitting the wall it joins at a T-junction), placing and editing doors and
+ * windows (usable span, placement, slide, resize, height and sill, picking, the
+ * door swing side and its migration), and the tolerances the editor works to. Every number the editor rounds or limits to is declared here and
  * printed by scripts/test-edit.ts. Connects to: src/types/plan.ts, ./geometry.ts;
- * called by src/components/plan2d/PlanCanvas.tsx,
- * src/components/studio/WallPanel.tsx and src/store/planStore.ts (drawWall).
+ * src/lib/plan2d/openings.ts; called by src/components/plan2d/PlanCanvas.tsx,
+ * src/components/studio/{WallPanel,OpeningPanel}.tsx and src/store/planStore.ts.
  *
  * Plan space: x → east, y → south. A wall's normal is the left of a→b.
  */
-import { WALL_HEIGHT } from "@/data/samplePlan";
-import type { Opening, Plan, Vec2, Wall } from "@/types/plan";
+import { DOOR_SIZE, LEGACY_SWING, WALL_HEIGHT, WINDOW_SIZE } from "@/data/samplePlan";
+import { doorSwing, openingFrame } from "@/lib/plan2d/openings";
+import type { Opening, OpeningKind, Plan, SwingSide, Vec2, Wall } from "@/types/plan";
 import { dist, JOINT_EPS, pointToWallDistance, snapPoint, wallDirection, wallLength, wallNormal, type SnapKind } from "./geometry";
 
 // ---------------------------------------------------------------- tolerances
@@ -563,4 +565,299 @@ export function typedTarget(from: Vec2, toward: Vec2, length: number): Vec2 | nu
   const d = dist(from, toward);
   if (d < JOINT_EPS) return null;
   return roundPoint({ x: from.x + ((toward.x - from.x) / d) * length, y: from.y + ((toward.y - from.y) / d) * length });
+}
+
+// ---------------------------------------------------------------- doors and windows
+
+export { LEGACY_SWING };
+
+/** How wide an opening may be (metres). */
+export const OPENING_WIDTH_RANGE = [0.3, 4] as const;
+/** What the Door and Window tools place; heights and sills are the importer's own. */
+export const OPENING_DEFAULTS = {
+  door: { width: 0.9, ...DOOR_SIZE },
+  window: { width: 1.2, ...WINDOW_SIZE },
+} as const;
+export const DOOR_HEIGHT_MIN = 1.8;
+export const WINDOW_HEIGHT_MIN = 0.3;
+/** An opening's centre snaps to this step along its wall when not at the midpoint. */
+export const OPENING_STEP = 0.05;
+/** At a shallow joint the joining wall's face crosses the centre line far out;
+ *  its clearance is capped at this many half-thicknesses, like the mitre limit. */
+const CLEAR_CAP = 4;
+
+type Openings = Pick<Plan, "walls" | "openings">;
+type NewOpening = Omit<Opening, "id"> & { id?: string };
+
+/** The other side. A door with no side yet counts as LEGACY_SWING. */
+export const flipSide = (side: SwingSide | undefined): SwingSide => ((side ?? LEGACY_SWING) === "left" ? "right" : "left");
+
+/**
+ * Migration for plans made before swing sides were stored: every door without a
+ * valid side gets LEGACY_SWING ("left" of a→b, which is what the 2D plan always
+ * drew), and a window loses any side. Openings that need nothing come back as
+ * the same objects. Run by planStore on the initial plan and on loadPlan.
+ */
+export function withSwingSides(openings: Opening[]): Opening[] {
+  return openings.map((o) => {
+    if (o.kind === "door") return o.swing === "left" || o.swing === "right" ? o : { ...o, swing: LEGACY_SWING };
+    if (o.swing === undefined) return o;
+    const rest = { ...o };
+    delete rest.swing;
+    return rest;
+  });
+}
+
+/**
+ * The part of a wall an opening may use, as distances from its a end. Each end
+ * loses the room the walls joined there take up across it — half the thickest
+ * one's thickness, more at a slanted joint (capped) — so no opening cuts into a
+ * corner or a T. A collinear neighbour (the rest of a split run) takes nothing,
+ * and a free end loses nothing. Null for an unknown wall.
+ */
+export function usableSpan(walls: Wall[], wallId: string): { start: number; end: number } | null {
+  const wall = walls.find((w) => w.id === wallId);
+  if (!wall) return null;
+  const u = wallDirection(wall);
+  const clearAt = (J: Vec2) => {
+    let c = 0;
+    for (const w of walls) {
+      if (w.id === wall.id || wallLength(w) < JOINT_EPS) continue;
+      const spoke = spokeAt(w, J);
+      if (!spoke) continue;
+      const sin = Math.abs(crossOf(u, spoke));
+      if (sin <= RUN_SIN) continue; // the run carries straight on: nothing in the way
+      c = Math.max(c, Math.min(CLEAR_CAP, 1 / sin) * (w.thickness / 2));
+    }
+    return c;
+  };
+  return { start: clean(clearAt(wall.a)), end: clean(wallLength(wall) - clearAt(wall.b)) };
+}
+
+const onWall = (plan: Openings, wallId: string, except?: string) => plan.openings.filter((o) => o.wallId === wallId && o.id !== except);
+const edges = (o: Pick<Opening, "offset" | "width">) => [o.offset - o.width / 2, o.offset + o.width / 2] as const;
+
+/**
+ * Why an opening can't be in the plan as given, or null when it can: its wall
+ * exists, it is at least the minimum width, it sits inside the wall's usable
+ * span, it overlaps no other opening on that wall, and it doesn't reach above
+ * the wall. The rule every placement and edit is checked against.
+ */
+export function openingProblem(plan: Openings, o: NewOpening): string | null {
+  const wall = plan.walls.find((w) => w.id === o.wallId);
+  if (!wall) return "That wall is no longer in the plan.";
+  if (o.width < OPENING_WIDTH_RANGE[0] - 1e-9) return `Openings can't be narrower than ${OPENING_WIDTH_RANGE[0]} m.`;
+  const span = usableSpan(plan.walls, wall.id)!;
+  const [start, end] = edges(o);
+  if (start < span.start - 1e-9 || end > span.end + 1e-9) {
+    const room = Math.max(0, span.end - span.start);
+    return room < o.width - 1e-9
+      ? `This wall only has room for an opening ${room.toFixed(2)} m wide.`
+      : `A ${o.kind} must sit fully inside its wall, clear of the walls at its ends.`;
+  }
+  for (const x of onWall(plan, wall.id, o.id)) {
+    const [xs, xe] = edges(x);
+    if (start < xe - 1e-9 && xs < end - 1e-9) return `It would overlap the ${x.kind} already on this wall.`;
+  }
+  if (o.sillHeight < -1e-9 || o.sillHeight + o.height > wall.height + 1e-9) return `A ${o.kind} can't reach above the top of its wall (${wall.height} m).`;
+  return null;
+}
+
+export interface OpeningSnap {
+  wallId: string;
+  /** Where the centre would go, from the wall's a end. */
+  offset: number;
+  kind: "midpoint" | "grid";
+}
+
+/**
+ * The wall a Door or Window tool pointer is over, and where along it the
+ * opening's centre would go. The nearest wall whose band (half its thickness
+ * plus `tol`) holds the pointer wins; the pointer is projected onto that wall's
+ * centre line — the same line Opening.offset is measured along — and snaps to
+ * the midpoint within `radius`, else to OPENING_STEP. Null away from every wall.
+ */
+export function snapOpening(p: Vec2, walls: Wall[], opts: { tol: number; radius: number }): OpeningSnap | null {
+  let best: Wall | null = null;
+  let bestD = Infinity;
+  for (const w of walls) {
+    if (wallLength(w) < JOINT_EPS) continue;
+    const d = pointToWallDistance(p, w);
+    if (d <= w.thickness / 2 + opts.tol && d < bestD) [best, bestD] = [w, d];
+  }
+  if (!best) return null;
+  const len = wallLength(best);
+  const along = Math.max(0, Math.min(len, dotOf(sub(p, best.a), wallDirection(best))));
+  if (Math.abs(along - len / 2) <= opts.radius) return { wallId: best.id, offset: clean(len / 2), kind: "midpoint" };
+  return { wallId: best.id, offset: Math.max(0, Math.min(len, roundTo(along, OPENING_STEP))), kind: "grid" };
+}
+
+/**
+ * A new door or window of the default size centred `centre` metres along
+ * `wallId`, or why not. A centre outside the wall's usable span (on or past an
+ * end, or in a corner) is refused; one inside it slides just far enough for the
+ * whole opening to fit. A wall too short for it, or an overlap with an opening
+ * already there, is refused. Doors get LEGACY_SWING; the inspector flips them.
+ */
+export function placeOpening(plan: Openings, kind: OpeningKind, wallId: string, centre: number): { opening: Omit<Opening, "id"> } | { error: string } {
+  const span = usableSpan(plan.walls, wallId);
+  if (!span) return { error: "That wall is no longer in the plan." };
+  const d = OPENING_DEFAULTS[kind];
+  const room = span.end - span.start;
+  if (room < d.width - 1e-9) return { error: `This wall is too short for a ${d.width.toFixed(2)} m ${kind}: it has room for ${Math.max(0, room).toFixed(2)} m.` };
+  if (centre < span.start || centre > span.end) return { error: `Too close to the end of the wall: a ${kind} has to sit clear of the corner.` };
+  const offset = clean(Math.min(span.end - d.width / 2, Math.max(span.start + d.width / 2, centre)));
+  const opening: Omit<Opening, "id"> = { wallId, kind, offset, width: d.width, height: d.height, sillHeight: d.sillHeight, ...(kind === "door" ? { swing: LEGACY_SWING } : {}) };
+  const problem = openingProblem(plan, opening);
+  return problem ? { error: problem } : { opening };
+}
+
+interface FreeRange {
+  /** The free stretch of wall around the opening: span ends or neighbours' edges. */
+  loEdge: number;
+  hiEdge: number;
+  /** What bounds each side, in words. */
+  loBy: string;
+  hiBy: string;
+}
+
+/** The stretch of its wall an opening can move and grow in without leaving the
+ *  usable span or touching a neighbour. Null for an unknown opening or wall. */
+export function freeRange(plan: Openings, id: string): FreeRange | null {
+  const o = plan.openings.find((x) => x.id === id);
+  const span = o && usableSpan(plan.walls, o.wallId);
+  if (!o || !span) return null;
+  const r: FreeRange = { loEdge: span.start, hiEdge: span.end, loBy: "the end of the wall", hiBy: "the end of the wall" };
+  for (const x of onWall(plan, o.wallId, o.id)) {
+    const [xs, xe] = edges(x);
+    if (x.offset < o.offset) {
+      if (xe > r.loEdge) [r.loEdge, r.loBy] = [xe, `the ${x.kind} next to it`];
+    } else if (xs < r.hiEdge) [r.hiEdge, r.hiBy] = [xs, `the ${x.kind} next to it`];
+  }
+  return r;
+}
+
+/** Slide an opening along its wall to centre `offset`, stopping at the usable
+ *  span's ends and at its neighbours, and saying what stopped it. */
+export function slideOpening(plan: Openings, id: string, offset: number): { offset: number; limited?: string } {
+  const o = plan.openings.find((x) => x.id === id);
+  const r = freeRange(plan, id);
+  if (!o || !r) return { offset };
+  const [lo, hi] = [r.loEdge + o.width / 2, r.hiEdge - o.width / 2];
+  if (lo > hi + 1e-9) return { offset: o.offset, limited: "There's no room to move it here." };
+  if (offset < lo) return { offset: clean(lo), limited: `Stopped here: it can't go past ${r.loBy}.` };
+  if (offset > hi) return { offset: clean(hi), limited: `Stopped here: it can't go past ${r.hiBy}.` };
+  return { offset };
+}
+
+/**
+ * A typed width for an opening: clamped to OPENING_WIDTH_RANGE and to the free
+ * stretch it sits in, with the reason. The centre stays put when the new width
+ * fits around it, and shifts just enough when it doesn't.
+ */
+export function resizeOpening(plan: Openings, id: string, width: number): { width: number; offset: number; note?: string } | { error: string } {
+  const o = plan.openings.find((x) => x.id === id);
+  const r = freeRange(plan, id);
+  if (!o || !r) return { error: "That opening is no longer in the plan." };
+  const [min, max] = OPENING_WIDTH_RANGE;
+  const room = r.hiEdge - r.loEdge;
+  if (room < min - 1e-9) return { error: "There's no room for it to be any wider here." };
+  let w = width;
+  let note: string | undefined;
+  if (w < min) [w, note] = [min, `Openings can't be narrower than ${min} m, so it's ${min} m.`];
+  if (w > max) [w, note] = [max, `Openings can't be wider than ${max} m, so it's ${max} m.`];
+  if (w > room + 1e-9) [w, note] = [room, `Only ${room.toFixed(2)} m fits here, between ${r.loBy} and ${r.hiBy}.`];
+  const offset = Math.min(r.hiEdge - w / 2, Math.max(r.loEdge + w / 2, o.offset));
+  return { width: clean(w), offset: clean(offset), ...(note ? { note } : {}) };
+}
+
+/**
+ * A typed height or sill, clamped so the opening stays between the floor and
+ * the top of its wall, with the reason. Doors start at the floor: their sill is
+ * not editable. Door heights start at DOOR_HEIGHT_MIN, window heights at
+ * WINDOW_HEIGHT_MIN.
+ */
+export function openingSize(plan: Openings, id: string, key: "height" | "sillHeight", value: number): { value: number; note?: string } | { error: string } {
+  const o = plan.openings.find((x) => x.id === id);
+  const wall = o && plan.walls.find((w) => w.id === o.wallId);
+  if (!o || !wall) return { error: "That opening is no longer in the plan." };
+  if (key === "sillHeight") {
+    if (o.kind === "door") return { error: "Doors start at the floor, so they have no sill." };
+    const max = wall.height - o.height;
+    if (value < 0) return { value: 0, note: "The sill can't be below the floor, so it's 0 m." };
+    if (value > max) return { value: clean(max), note: `With a ${o.height} m window the sill can't be over ${max.toFixed(2)} m, or it would pass the top of the wall.` };
+    return { value };
+  }
+  const min = o.kind === "door" ? DOOR_HEIGHT_MIN : WINDOW_HEIGHT_MIN;
+  const max = wall.height - o.sillHeight;
+  if (value < min) return { value: min, note: `A ${o.kind} can't be under ${min} m tall, so it's ${min} m.` };
+  if (value > max) return { value: clean(max), note: `It can't reach past the top of its ${wall.height} m wall, so it's ${max.toFixed(2)} m.` };
+  return { value };
+}
+
+/** An opening hit: which one, and whether it was on the opening's own stretch
+ *  of wall band (`band`) or only inside a door's swing. */
+export interface OpeningHit {
+  id: string;
+  band: boolean;
+}
+
+/**
+ * The opening under `p` (plan metres), or null. A hit is either the opening's
+ * own stretch of wall band — half the wall's thickness plus `tol` across, and
+ * only JOINT_EPS past each end, so the wall beside the gap stays the wall's at
+ * any zoom — or, for a door, the quarter circle its leaf sweeps, grown by
+ * `tol` on every side. The growth matters: the drawn leaf lies on one straight
+ * edge of that quarter circle and the drawn arc on its rim, so with no tolerance
+ * half of every click on the visible symbol fell outside it (the 4.5 manual
+ * failure). The nearest band hit wins and beats any swing hit.
+ */
+export function pickOpeningAt(p: Vec2, plan: Openings, tol: number): OpeningHit | null {
+  let best: (OpeningHit & { d: number }) | null = null;
+  for (const o of plan.openings) {
+    const wall = plan.walls.find((w) => w.id === o.wallId);
+    if (!wall || wallLength(wall) < JOINT_EPS) continue;
+    const f = openingFrame(wall, o);
+    const along = dotOf(sub(p, f.start), f.dir);
+    const across = Math.abs(dotOf(sub(p, f.centre), f.normal));
+    let hit: (OpeningHit & { d: number }) | null = null;
+    if (along >= -JOINT_EPS && along <= o.width + JOINT_EPS && across <= wall.thickness / 2 + tol) hit = { id: o.id, band: true, d: across };
+    else if (o.kind === "door") {
+      const sw = doorSwing(wall, o);
+      const v = sub(p, sw.hinge);
+      const leafLen = Math.hypot(sw.leafEnd.x - sw.hinge.x, sw.leafEnd.y - sw.hinge.y);
+      const leaf = leafLen > 0 ? { x: (sw.leafEnd.x - sw.hinge.x) / leafLen, y: (sw.leafEnd.y - sw.hinge.y) / leafLen } : f.normal;
+      // The swing quarter circle, every edge pushed out by `tol`: past the arc, behind the leaf, before the hinge.
+      if (Math.hypot(v.x, v.y) <= o.width + tol && dotOf(v, f.dir) >= -tol && dotOf(v, leaf) >= -tol) hit = { id: o.id, band: false, d: wall.thickness / 2 + tol };
+    }
+    if (hit && hit.d < (best?.d ?? Infinity)) best = hit;
+  }
+  return best && { id: best.id, band: best.band };
+}
+
+/** The id of the opening under `p`, or null: pickOpeningAt without the detail. */
+export const pickOpening = (p: Vec2, plan: Openings, tol: number): string | null => pickOpeningAt(p, plan, tol)?.id ?? null;
+
+/** What one Select-tool press picks. */
+export type PickTarget = { kind: "handle"; wallId: string; end: "a" | "b" } | { kind: "opening"; id: string } | { kind: "wall"; wallId: string };
+
+/**
+ * What a Select-tool press at `p` selects, in this order: a wall's end handle
+ * (so joints stay draggable), then a door or window — its stretch of wall band
+ * always, its swing unless the press is physically ON a wall (within half its
+ * thickness, not merely within the pick tolerance: at low zoom that tolerance
+ * covers the drawn leaf) — then a wall body, then nothing (empty space). Tolerances are metres: the caller divides
+ * its pixel tolerances by the view scale. `prefer` breaks ties at a shared
+ * joint in favour of the selected wall, as in pickWall.
+ */
+export function pickTarget(p: Vec2, plan: Openings, tol: { wall: number; handle: number; opening: number }, prefer?: string | null): PickTarget | null {
+  const wall = pickWall(p, plan.walls, tol.wall, tol.handle, prefer);
+  if (wall?.end) return { kind: "handle", wallId: wall.wallId, end: wall.end };
+  const op = pickOpeningAt(p, plan, tol.opening);
+  if (op) {
+    const near = wall && plan.walls.find((w) => w.id === wall.wallId);
+    const onWall = !!near && pointToWallDistance(p, near) <= near.thickness / 2;
+    if (op.band || !onWall) return { kind: "opening", id: op.id };
+  }
+  return wall ? { kind: "wall", wallId: wall.wallId } : null;
 }

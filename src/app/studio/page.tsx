@@ -4,9 +4,9 @@
  * src/app/studio/page.tsx — the editor shell. Top bar and tool rail (cyanotype
  * chrome), the canvas area (3D, a 2D placeholder, or both) and the right panel
  * (vellum). The plan in usePlanStore is shown in 3D (Scene3D) and 2D
- * (PlanCanvas); walls are edited and drawn in 2D. Choosing the Wall tool while
- * only 3D is showing opens the 2D plan beside it (Split), or instead of it on a
- * phone, since drawing happens there. Owns the m² / sq ft unit so the panel and
+ * (PlanCanvas); walls, doors and windows are edited and placed in 2D. Choosing
+ * the Wall, Door or Window tool while only 3D is showing opens the 2D plan
+ * beside it (Split), or instead of it on a phone, since they work there. Owns the m² / sq ft unit so the panel and
  * the 2D labels agree. Mounts the undo/redo shortcuts from planStore.
  * Connects to src/components/studio/*, src/components/plan2d/* and
  * src/store/toolStore.ts.
@@ -38,13 +38,13 @@ export default function Studio() {
   const wide = useSyncExternalStore(watchWide, () => window.matchMedia(SPLIT_QUERY).matches, () => true);
   const shown = view === "split" && !wide ? "3d" : view; // a phone that was split on a wider window shows 3D
 
-  // Drawing needs the 2D plan: picking Wall from 3D alone brings it up. Done in the
+  // Drawing and placing need the 2D plan: picking a tool from 3D alone brings it up. Done in the
   // store subscription (an event, not an effect on render state) so it fires once
   // per pick and the user can still go back to 3D alone afterwards.
   useEffect(
     () =>
       useToolStore.subscribe((s, prev) => {
-        if (s.tool !== "wall" || prev.tool === "wall") return;
+        if (s.tool === "select" || s.tool === prev.tool) return;
         const isWide = window.matchMedia(SPLIT_QUERY).matches;
         setView((v) => (v === "2d" || (v === "split" && isWide) ? v : isWide ? "split" : "2d"));
       }),

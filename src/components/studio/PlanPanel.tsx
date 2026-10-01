@@ -5,7 +5,8 @@
  * selected: counts, total net floor area, an m² / sq ft toggle (display only;
  * the plan stays in metres) and the Rooms list, where each name is editable in
  * place through planStore.renameRoom. While a wall is selected the Summary is
- * replaced by WallPanel.tsx. Anything an edit broke is listed underneath as a
+ * replaced by WallPanel.tsx, and while a door or window is selected by
+ * OpeningPanel.tsx. Anything an edit broke is listed underneath as a
  * warning, never silently. A right column at 768 px and wider; below that a
  * collapsible sheet under the canvas. The unit lives in the studio page, so the
  * 2D plan's area labels follow the same toggle.
@@ -15,6 +16,7 @@ import { useState } from "react";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
 import { EditableText } from "./EditableText";
+import { OpeningPanel } from "./OpeningPanel";
 import { WallPanel } from "./WallPanel";
 
 const SQFT_PER_M2 = 10.7639;
@@ -32,6 +34,7 @@ export function PlanPanel({ unit, setUnit }: { unit: Unit; setUnit: (u: Unit) =>
   const renameRoom = usePlanStore((s) => s.renameRoom);
   const rooms = useDerivedRooms();
   const selectedId = useSelectionStore((s) => s.selectedId);
+  const openingId = useSelectionStore((s) => s.openingId);
   const warnings = useSelectionStore((s) => s.warnings);
   const [open, setOpen] = useState(false); // the phone sheet; ignored at md and wider
 
@@ -59,6 +62,8 @@ export function PlanPanel({ unit, setUnit }: { unit: Unit; setUnit: (u: Unit) =>
         {/* A selected wall takes the Summary's place; "Back to summary" clears the selection. */}
         {selectedId ? (
           <WallPanel unit={unit} />
+        ) : openingId ? (
+          <OpeningPanel key={openingId} unit={unit} /> // keyed: a note about one opening never shows on the next
         ) : (
           <section aria-labelledby="summary-h">
             <h2 id="summary-h" className="mb-2 text-sm font-medium">

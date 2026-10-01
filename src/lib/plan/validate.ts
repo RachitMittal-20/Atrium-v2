@@ -1,7 +1,8 @@
 /**
  * validate.ts — structural checks on a Plan, returning readable problems (empty
  * array = valid). Enforces the CLAUDE.md conventions: walls are split at
- * T-junctions and Opening.offset is wall.a → opening centre. Connects to:
+ * T-junctions, Opening.offset is wall.a → opening centre, and a door (only a
+ * door) carries an explicit swing side. Connects to:
  * src/types/plan.ts; run on the sample by scripts/validate-sample.ts.
  */
 import type { Plan } from "@/types/plan";
@@ -37,6 +38,8 @@ export function validatePlan(plan: Plan): string[] {
       problems.push(`Opening ${o.id} references missing wall ${o.wallId}.`);
       continue;
     }
+    if (o.kind === "door" && o.swing !== "left" && o.swing !== "right") problems.push(`Door ${o.id} has no swing side.`);
+    if (o.kind === "window" && o.swing !== undefined) problems.push(`Window ${o.id} has a swing side; only doors swing.`);
     const start = o.offset - o.width / 2;
     const end = o.offset + o.width / 2;
     const len = wallLength(w);

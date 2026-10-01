@@ -2,10 +2,10 @@
 
 /*
  * src/components/studio/ToolRail.tsx — the editor's tool rail: a left column at
- * 768 px and wider, a bottom bar below. Select and Wall work (step 4.4); the
- * active one is aria-pressed and set in src/store/toolStore.ts. The other tools
- * are aria-disabled (still focusable, so keyboard users can read why) until
- * their steps. Mounted by src/app/studio/page.tsx.
+ * 768 px and wider, a bottom bar below. Select, Wall (step 4.4), Door and
+ * Window (step 4.5) work; the active one is aria-pressed and set in
+ * src/store/toolStore.ts. Measure is aria-disabled (still focusable, so
+ * keyboard users can read why) until its step. Mounted by src/app/studio/page.tsx.
  */
 import type { ReactNode } from "react";
 import { useToolStore, type Tool } from "@/store/toolStore";
@@ -20,8 +20,8 @@ const svg = (children: ReactNode) => (
 const TOOLS: { id: string; label: string; tool?: Tool; tip?: string; icon: ReactNode }[] = [
   { id: "select", label: "Select", tool: "select", tip: "Select and inspect", icon: svg(<path d="M6 3l12 8-5.5 1.5L10 18 6 3z" />) },
   { id: "wall", label: "Wall", tool: "wall", tip: "Draw walls", icon: svg(<><path d="M3 9h18v6H3z" /><path d="M9 9v6M15 9v6" /></>) },
-  { id: "door", label: "Door", icon: svg(<><path d="M5 20V4M5 20h14" /><path d="M5 4a16 16 0 0 1 14 16" /></>) },
-  { id: "window", label: "Window", icon: svg(<><path d="M4 6h16v12H4z" /><path d="M12 6v12M4 12h16" /></>) },
+  { id: "door", label: "Door", tool: "door", tip: "Place a door on a wall", icon: svg(<><path d="M5 20V4M5 20h14" /><path d="M5 4a16 16 0 0 1 14 16" /></>) },
+  { id: "window", label: "Window", tool: "window", tip: "Place a window on a wall", icon: svg(<><path d="M4 6h16v12H4z" /><path d="M12 6v12M4 12h16" /></>) },
   { id: "measure", label: "Measure", icon: svg(<><path d="M3 15L15 3l6 6L9 21z" /><path d="M7 11l2 2M10 8l2 2M13 5l2 2" /></>) },
 ];
 

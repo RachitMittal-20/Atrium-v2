@@ -34,6 +34,21 @@
  * With a wall started, typing a length (3.5, 350 cm, 11' 6") and Enter adds a
  * wall exactly that long towards the pointer.
  *
+ * Doors and windows (step 4.5): with the Select tool, every press goes through
+ * edit.pickTarget: a wall end handle, else a door or window (its stretch of
+ * wall, or a door's swing grown by the pick tolerance so the drawn leaf and arc
+ * are clickable from either side), else a wall body, else nothing. Picking is
+ * geometry on the pointer's plan coordinates, done on the <svg> itself, so the
+ * stacking order of the shapes never decides what a click hits. A click on an
+ * opening selects THAT opening instead of the wall behind it, and dragging it slides it along its
+ * wall (edit.slideOpening: it stops at the wall's usable ends and at its
+ * neighbours, one undo step per drag); Delete removes it. The selected opening
+ * is outlined in cyanotype, so it never reads as a selected wall (gilt). The
+ * Door and Window tools preview a default-size opening on the wall under the
+ * pointer (edit.snapOpening + edit.placeOpening) with its width, and a click or
+ * tap places it (planStore.placeOpening, one undo step); a spot where it can't
+ * go shows the reason instead. Escape goes back to Select.
+ *
  * Pan/zoom lives here, not in the store. Nothing animates, so
  * prefers-reduced-motion needs no special case.
  * Mounted by src/app/studio/page.tsx (2D view and the 2D half of Split).
@@ -49,6 +64,13 @@ import {
   drawDefaults,
   drawProblem,
   HANDLE_TOL_PX,
+  OPENING_DEFAULTS,
+  OPENING_STEP,
+  pickTarget,
+  placeOpening as planOpening,
+  slideOpening,
+  snapOpening,
+  type OpeningSnap,
   HANDLE_TOL_TOUCH_PX,
   landsOnPlan,
   newProblems,
@@ -57,7 +79,6 @@ import {
   NUDGE_MERGE_MS,
   NUDGE_SHIFT_M,
   PICK_TOL_PX,
-  pickWall,
   roundPoint,
   roundTo,
   snapDrag,
@@ -73,7 +94,7 @@ import { fitView, niceScaleBar, screenToWorld, worldToScreen, zoomAt, type Bound
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { useSelectedRun, useSelectionStore } from "@/store/selectionStore";
 import { useToolStore } from "@/store/toolStore";
-import type { Vec2, Wall } from "@/types/plan";
+import type { Opening, OpeningKind, Vec2, Wall } from "@/types/plan";
 
 const NAME_PX = 15; // text-sm
 const AREA_PX = 13; // text-xs
@@ -108,7 +129,23 @@ type Drag =
    *  drag started, and `walls` the plan it started from: snap targets must not
    *  drift under the cursor as the preview moves. */
   | { kind: "endpoint"; wallId: string; end: "a" | "b"; joint: Vec2; other: Vec2; walls: Wall[]; baseline: string[] }
-  | { kind: "body"; wallId: string; from: Vec2; wall: Wall; baseline: string[] };
+  | { kind: "body"; wallId: string; from: Vec2; wall: Wall; baseline: string[] }
+  /** Sliding an opening: `grab` keeps the pointer where it took hold of it. */
+  | { kind: "opening"; id: string; wall: Wall; grab: number; baseline: string[] };
+
+/** Distance of `p` along `wall` from its a end: the axis Opening.offset is measured on. */
+const alongWall = (wall: Wall, p: Vec2) => {
+  const len = wallLength(wall);
+  return len === 0 ? 0 : ((p.x - wall.a.x) * (wall.b.x - wall.a.x) + (p.y - wall.a.y) * (wall.b.y - wall.a.y)) / len;
+};
+
+/** What the Door or Window tool would place under the pointer, or why it can't. */
+interface Placement {
+  kind: OpeningKind;
+  snap: OpeningSnap;
+  opening: Omit<Opening, "id"> | null;
+  error: string | null;
+}
 
 /** The walls' outlines (mitred, so thickness counts) and their bounding box. */
 function outlinesOf(walls: Wall[]) {
@@ -137,6 +174,8 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
   const run = useSelectedRun(); // every piece a body drag will move
   const hoveredId = useSelectionStore((s) => s.hoveredId);
   const select = useSelectionStore((s) => s.select);
+  const openingId = useSelectionStore((s) => s.openingId);
+  const selectOpening = useSelectionStore((s) => s.selectOpening);
   const hover = useSelectionStore((s) => s.hover);
   const setWarnings = useSelectionStore((s) => s.setWarnings);
   const tool = useToolStore((s) => s.tool);
@@ -160,6 +199,10 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
   const [ghost, setGhost] = useState<{ snap: Snap; problem: string | null } | null>(null);
   const [typed, setTyped] = useState(""); // a length being typed
   const [drawMsg, setDrawMsg] = useState<string | null>(null);
+
+  // ---- Door and Window tools, and opening hover: local too
+  const [place, setPlace] = useState<Placement | null>(null);
+  const [hoverOp, setHoverOp] = useState<string | null>(null);
 
   // Bounds are read at fit time from the store, so plan edits never move the camera by themselves.
   const fit = (s: { width: number; height: number }) => fitView(outlinesOf(usePlanStore.getState().plan.walls).bounds, s);
@@ -279,7 +322,18 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
   const finishRef = useRef(finishChain);
   finishRef.current = finishChain;
   // Leaving the Wall tool (the rail, or Escape) ends the chain.
-  useEffect(() => useToolStore.subscribe((st, prev) => prev.tool === "wall" && st.tool !== "wall" && finishRef.current()), []);
+  useEffect(
+    () =>
+      useToolStore.subscribe((st, prev) => {
+        if (prev.tool === "wall" && st.tool !== "wall") finishRef.current();
+        if (st.tool !== prev.tool) {
+          setPlace(null); // a preview belongs to the tool that made it
+          setDrawMsg(null);
+          setHoverOp(null);
+        }
+      }),
+    [],
+  );
 
   /** Where a pointer at canvas pixel `p` lands; angles are measured from the chain's last point. */
   const landing = (p: Vec2, free: boolean) =>
@@ -346,14 +400,60 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
     addSegment(c, to);
   };
 
+  // ---- doors and windows
+  /** Slide the dragged opening to centre `target` along its wall; edit.slideOpening
+   *  stops it at the usable ends and at its neighbours, and says why. */
+  const applyOpening = (d: Extract<Drag, { kind: "opening" }>, target: number) => {
+    restart();
+    const out = slideOpening(usePlanStore.getState().plan, d.id, target);
+    commit(() => usePlanStore.getState().updateOpening(d.id, { offset: out.offset }));
+    const o = usePlanStore.getState().plan.openings.find((x) => x.id === d.id);
+    const at = o ? openingFrame(d.wall, o).centre : d.wall.a;
+    setHud({ at, snap: null, text: `${formatLength(out.offset, unit)} from the wall's start`, message: out.limited });
+  };
+
+  const placeKind: OpeningKind = tool === "window" ? "window" : "door";
+  /** What the Door or Window tool would do at canvas pixel `p`. */
+  const placementAt = (p: Vec2): Placement | null => {
+    const now = usePlanStore.getState().plan;
+    const snap = snapOpening(world(p), now.walls, { tol: PICK_TOL_PX / view.scale, radius: snapRadius(view.scale) });
+    if (!snap) return null;
+    const out = planOpening(now, placeKind, snap.wallId, snap.offset);
+    return "error" in out ? { kind: placeKind, snap, opening: null, error: out.error } : { kind: placeKind, snap, opening: out.opening, error: null };
+  };
+  /** A click or tap with the Door or Window tool: place one, or say why not. */
+  const placeAt = (p: Vec2) => {
+    const pl = placementAt(p);
+    if (!pl) {
+      setPlace(null);
+      setDrawMsg(`Click on a wall to place a ${placeKind}.`);
+      return;
+    }
+    if (!pl.opening) {
+      setPlace(pl);
+      setDrawMsg(pl.error);
+      return;
+    }
+    usePlanStore.getState().placeOpening(pl.kind, pl.snap.wallId, pl.snap.offset);
+    setPlace(null); // the next pointer move previews again, against the new opening
+    setDrawMsg(null);
+  };
+
   // ---- pointers: a wall under the cursor is edited, otherwise one pans and two pinch-zoom
   const local = (e: ReactPointerEvent): Vec2 => {
     const r = root.current!.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   };
   const world = (p: Vec2) => screenToWorld(view, p);
-  const pickAt = (p: Vec2, touch: boolean) =>
-    pickWall(world(p), plan.walls, PICK_TOL_PX / view.scale, (touch ? HANDLE_TOL_TOUCH_PX : HANDLE_TOL_PX) / view.scale, selectedId);
+  /** What a Select-tool press at canvas pixel `p` picks. Touch gets bigger handles
+   *  and a bigger opening reach: a fingertip covers more than a cursor. */
+  const targetAt = (p: Vec2, touch: boolean) =>
+    pickTarget(
+      world(p),
+      plan,
+      { wall: PICK_TOL_PX / view.scale, handle: (touch ? HANDLE_TOL_TOUCH_PX : HANDLE_TOL_PX) / view.scale, opening: (touch ? HANDLE_TOL_PX : PICK_TOL_PX) / view.scale },
+      selectedId,
+    );
 
   const onPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
     if (e.button === 2) return;
@@ -368,12 +468,21 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
 
     root.current!.focus({ preventScroll: true }); // so Escape, Delete and the arrows reach this canvas
     burst.current.at = 0;
-    // The Wall tool never grabs walls: a press is a click (place a point) or a pan.
-    const hit = tool === "select" ? pickAt(local(e), e.pointerType === "touch") : null;
-    if (!hit) {
+    // The other tools never grab walls: a press is a click (place something) or a pan.
+    const target = tool === "select" ? targetAt(local(e), e.pointerType === "touch") : null;
+    if (target?.kind === "opening") {
+      const opHit = target.id;
+      selectOpening(opHit); // selection only: not an edit, so no history
+      const o = plan.openings.find((x) => x.id === opHit)!;
+      const wall = plan.walls.find((w) => w.id === o.wallId)!;
+      drag.current = { kind: "opening", id: opHit, wall, grab: alongWall(wall, world(local(e))) - o.offset, baseline: validatePlan(plan) };
+      return;
+    }
+    if (!target) {
       drag.current = { kind: "pan", from: local(e), moved: 0 };
       return;
     }
+    const hit = { wallId: target.wallId, end: target.kind === "handle" ? target.end : null };
     select(hit.wallId);
     const wall = plan.walls.find((w) => w.id === hit.wallId)!;
     const baseline = validatePlan(plan);
@@ -387,11 +496,26 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
     if (!prev) {
       if (drag.current) return;
       if (tool === "wall") updateGhost(local(e), e.altKey); // the preview follows the mouse
-      else hover(pickAt(local(e), false)?.wallId ?? null); // plain hover, no button down
+      else if (tool !== "select") {
+        const pl = placementAt(local(e));
+        setPlace(pl);
+        if (!pl) setDrawMsg(null); // off every wall: nothing to explain
+      } else {
+        const t = targetAt(local(e), false); // plain hover, no button down: the same rule as a click
+        setHoverOp(t?.kind === "opening" ? t.id : null);
+        hover(t && t.kind !== "opening" ? t.wallId : null);
+      }
       return;
     }
     const pos = local(e);
     const d = drag.current;
+
+    if (d?.kind === "opening") {
+      pointers.current.set(e.pointerId, pos);
+      const target = alongWall(d.wall, world(pos)) - d.grab;
+      applyOpening(d, e.altKey ? target : roundTo(target, OPENING_STEP)); // Alt: no 5 cm steps
+      return;
+    }
 
     if (d?.kind === "endpoint" || d?.kind === "body") {
       pointers.current.set(e.pointerId, pos);
@@ -437,12 +561,16 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
       drag.current = null;
       if (d.moved > CLICK_SLOP_PX || d.multi || e.type !== "pointerup") return; // a pan, a pinch or a cancel: not a click
       if (tool === "wall") placePoint(local(e), e.altKey);
+      else if (tool === "door" || tool === "window") placeAt(local(e));
       else select(null); // a click on empty space clears the selection
       return;
     }
     // Round to 1 cm on release, then say what the edit broke, if anything.
     if (live.current) {
-      if (d.kind === "endpoint") {
+      if (d.kind === "opening") {
+        const o = usePlanStore.getState().plan.openings.find((x) => x.id === d.id);
+        if (o) applyOpening(d, roundTo(o.offset)); // 1 cm, still inside the free stretch
+      } else if (d.kind === "endpoint") {
         const wall = usePlanStore.getState().plan.walls.find((w) => w.id === d.wallId);
         if (wall) applyEndpoint(d, roundPoint(wall[d.end]), null);
       } else {
@@ -487,12 +615,23 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
       }
     }
 
+    if ((tool === "door" || tool === "window") && e.key === "Escape") {
+      e.stopPropagation();
+      setTool("select");
+      return;
+    }
+
     if (e.key === "Escape") {
       e.stopPropagation(); // beat the page-wide Escape in selectionStore
       if (drag.current) {
         cancelDrag();
         pointers.current.clear(); // a finger still down must not start panning instead
       } else select(null);
+      return;
+    }
+    if ((e.key === "Delete" || e.key === "Backspace") && openingId) {
+      e.preventDefault();
+      usePlanStore.getState().deleteOpening(openingId); // only the opening: its wall stays
       return;
     }
     if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
@@ -580,7 +719,29 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
     const u = { x: (q.x - p.x) / len, y: (q.y - p.y) / len };
     return { from: add(p, u, -GUIDE_PX), to: add(p, u, GUIDE_PX) };
   })();
-  const message = hud?.message ?? drawMsg ?? ghost?.problem ?? undefined;
+  const message = hud?.message ?? drawMsg ?? ghost?.problem ?? place?.error ?? undefined;
+
+  /** An opening's stretch of wall band as a screen polygon, `pad` px proud of the wall faces. */
+  const bandOf = (wall: Wall, o: Pick<Opening, "offset" | "width">, pad: number) => {
+    const f = openingFrame(wall, o);
+    const [s, e] = [S(f.start), S(f.end)];
+    const h = (wall.thickness / 2) * view.scale + pad;
+    return pts([add(s, f.normal, h), add(e, f.normal, h), add(e, f.normal, -h), add(s, f.normal, -h)]);
+  };
+  /** A door's leaf (hinge → open tip) and its quarter arc to the closed position, in screen space. */
+  const doorShape = (wall: Wall, o: Pick<Opening, "offset" | "width" | "swing">) => {
+    const sw = doorSwing(wall, o);
+    const [hinge, leaf, arcEnd] = [S(sw.hinge), S(sw.leafEnd), S(sw.arcEnd)];
+    const r = o.width * view.scale;
+    // The sweep flag follows the turn direction, so a flipped door draws its arc on the other side.
+    const sweep = (leaf.x - hinge.x) * (arcEnd.y - hinge.y) - (leaf.y - hinge.y) * (arcEnd.x - hinge.x) > 0 ? 1 : 0;
+    return { hinge, leaf, arc: `M${leaf.x},${leaf.y}A${r},${r} 0 0 ${sweep} ${arcEnd.x},${arcEnd.y}` };
+  };
+  const selectedOpening = plan.openings.find((o) => o.id === openingId);
+  const selectedOpeningWall = selectedOpening && plan.walls.find((w) => w.id === selectedOpening.wallId);
+  const hoverOpening = tool === "select" && hoverOp !== openingId ? plan.openings.find((o) => o.id === hoverOp) : undefined;
+  const hoverOpeningWall = hoverOpening && plan.walls.find((w) => w.id === hoverOpening.wallId);
+  const placeWall = place && plan.walls.find((w) => w.id === place.snap.wallId);
 
   /** A snap marker with its word, and a text read-out beside it. */
   const readout = (at: Vec2, snap: Snap | null, text: string) => {
@@ -615,13 +776,16 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
       aria-label={
         tool === "wall"
           ? "2D plan, drawing walls. Click to start a wall and click again to add it; keep clicking to add joined walls. Type a length and press Enter for an exact one. Escape, Enter or double-click finishes; Escape again goes back to Select."
-          : "2D plan. Click a wall to select it, arrow keys nudge the selected wall or pan when none is selected, Delete removes it, Escape clears the selection. Plus and minus zoom, 0 fits the plan."
+          : tool === "door" || tool === "window"
+            ? `2D plan, placing ${tool}s. Click a wall to place a ${tool} there. Escape goes back to Select.`
+            : "2D plan. Click a wall, door or window to select it; drag a door or window to slide it along its wall. Arrow keys nudge the selected wall or pan when no wall is selected, Delete removes the selection, Escape clears it. Plus and minus zoom, 0 fits the plan."
       }
       data-testid="plan-canvas"
       data-scale={view.scale.toFixed(4)}
       data-tx={view.tx.toFixed(2)}
       data-ty={view.ty.toFixed(2)}
       data-selected={selectedId ?? ""}
+      data-opening={openingId ?? ""}
       data-run={run.join(" ")}
       data-tool={tool}
       data-drawing={chain ? "true" : "false"}
@@ -636,12 +800,17 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
           role="img"
           aria-label={`Floor plan with ${rooms.length} ${rooms.length === 1 ? "room" : "rooms"}`}
           data-testid="plan-svg"
-          className={`block touch-none ${tool === "wall" ? "cursor-crosshair" : hoveredId ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
+          className={`block touch-none ${tool !== "select" ? "cursor-crosshair" : hoveredId || hoverOp ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerEnd}
           onPointerCancel={onPointerEnd}
-          onPointerLeave={() => !drag.current && hover(null)}
+          onPointerLeave={() => {
+            if (drag.current) return;
+            hover(null);
+            setHoverOp(null);
+            setPlace(null);
+          }}
           onDoubleClick={() => tool === "wall" && finishChain()}
         >
           {/* room floors, tinted by the floor material */}
@@ -661,10 +830,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
           {plan.openings.map((op) => {
             const wall = plan.walls.find((w) => w.id === op.wallId);
             if (!wall || outlines.get(wall.id) === undefined) return null;
-            const f = openingFrame(wall, op);
-            const [s, e] = [S(f.start), S(f.end)];
-            const h = (wall.thickness / 2) * view.scale + GAP_OVERSHOOT_PX;
-            return <polygon key={`gap-${op.id}`} points={pts([add(s, f.normal, h), add(e, f.normal, h), add(e, f.normal, -h), add(s, f.normal, -h)])} className="fill-limestone" data-testid="plan-gap" />;
+            return <polygon key={`gap-${op.id}`} points={bandOf(wall, op, GAP_OVERSHOOT_PX)} className="fill-limestone" data-testid="plan-gap" data-opening={op.id} />;
           })}
 
           {/* door and window symbols */}
@@ -674,15 +840,11 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
             const f = openingFrame(wall, op);
             const [s, e] = [S(f.start), S(f.end)];
             if (op.kind === "door") {
-              const sw = doorSwing(wall, op);
-              const [hinge, leaf, arcEnd] = [S(sw.hinge), S(sw.leafEnd), S(sw.arcEnd)];
-              const r = op.width * view.scale;
-              // Quarter circle from the leaf tip to the closed position; the sweep flag follows the turn direction.
-              const sweep = (leaf.x - hinge.x) * (arcEnd.y - hinge.y) - (leaf.y - hinge.y) * (arcEnd.x - hinge.x) > 0 ? 1 : 0;
+              const { hinge, leaf, arc } = doorShape(wall, op);
               return (
-                <g key={`door-${op.id}`} fill="none" className="stroke-iron" strokeWidth={1.2} data-testid="plan-door">
-                  <line x1={hinge.x} y1={hinge.y} x2={leaf.x} y2={leaf.y} />
-                  <path d={`M${leaf.x},${leaf.y}A${r},${r} 0 0 ${sweep} ${arcEnd.x},${arcEnd.y}`} strokeWidth={0.8} />
+                <g key={`door-${op.id}`} fill="none" className="stroke-iron" strokeWidth={1.2} data-testid="plan-door" data-opening={op.id} data-swing={op.swing}>
+                  <line x1={hinge.x} y1={hinge.y} x2={leaf.x} y2={leaf.y} data-testid="door-leaf" />
+                  <path d={arc} strokeWidth={0.8} />
                 </g>
               );
             }
@@ -692,13 +854,76 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
               return <line x1={p.x} y1={p.y} x2={q.x} y2={q.y} className={cls} strokeWidth={sw} />;
             };
             return (
-              <g key={`win-${op.id}`} data-testid="plan-window">
+              <g key={`win-${op.id}`} data-testid="plan-window" data-opening={op.id}>
                 {line(h, "stroke-iron", 1.2)}
                 {line(-h, "stroke-iron", 1.2)}
                 {line(0, "stroke-cyanotype", 1)}
               </g>
             );
           })}
+
+          {/* the door or window under the cursor: a light cyanotype wash */}
+          {hoverOpening && hoverOpeningWall && <polygon points={bandOf(hoverOpeningWall, hoverOpening, 3)} className="fill-cyanotype" fillOpacity={0.2} data-testid="plan-opening-hover" />}
+
+          {/* the selected door or window: a cyanotype outline (a selected wall is gilt),
+              and its symbol redrawn over it in cyanotype — a door's leaf and arc, so its
+              side reads at a glance, or a window's two frame lines and glazing line */}
+          {selectedOpening && selectedOpeningWall && (
+            <g data-testid="plan-opening-selection" data-opening={selectedOpening.id} data-swing={selectedOpening.swing ?? ""}>
+              <polygon points={bandOf(selectedOpeningWall, selectedOpening, 4)} className="fill-cyanotype stroke-cyanotype" fillOpacity={0.25} strokeWidth={2} />
+              {selectedOpening.kind === "door" &&
+                (() => {
+                  const { hinge, leaf, arc } = doorShape(selectedOpeningWall, selectedOpening);
+                  return (
+                    <g fill="none" className="stroke-cyanotype" strokeWidth={2} data-testid="selected-door-symbol">
+                      <line x1={hinge.x} y1={hinge.y} x2={leaf.x} y2={leaf.y} />
+                      <path d={arc} strokeWidth={1.5} />
+                    </g>
+                  );
+                })()}
+              {selectedOpening.kind === "window" &&
+                (() => {
+                  const f = openingFrame(selectedOpeningWall, selectedOpening);
+                  const [s, e] = [S(f.start), S(f.end)];
+                  const h = (selectedOpeningWall.thickness / 2) * view.scale;
+                  return (
+                    <g className="stroke-cyanotype" strokeWidth={2} data-testid="selected-window-symbol">
+                      {[h, 0, -h].map((k) => {
+                        const [p, q] = [add(s, f.normal, k), add(e, f.normal, k)];
+                        return <line key={k} x1={p.x} y1={p.y} x2={q.x} y2={q.y} />;
+                      })}
+                    </g>
+                  );
+                })()}
+            </g>
+          )}
+
+          {/* Door / Window tool: the opening it would place, dashed where it can't go */}
+          {place && placeWall && (
+            <g data-testid="place-preview" data-valid={place.opening ? "true" : "false"} data-wall={place.snap.wallId}>
+              {place.opening ? (
+                <>
+                  <polygon points={bandOf(placeWall, place.opening, 3)} className="fill-gilt stroke-gilt" fillOpacity={0.45} strokeWidth={1.5} />
+                  {place.opening.kind === "door" &&
+                    (() => {
+                      const { hinge, leaf, arc } = doorShape(placeWall, place.opening);
+                      return (
+                        <g fill="none" className="stroke-gilt" strokeWidth={1.5} strokeDasharray="4 3">
+                          <line x1={hinge.x} y1={hinge.y} x2={leaf.x} y2={leaf.y} />
+                          <path d={arc} />
+                        </g>
+                      );
+                    })()}
+                  {readout(openingFrame(placeWall, place.opening).centre, null, `${place.kind === "door" ? "Door" : "Window"} ${formatLength(place.opening.width, unit)}`)}
+                </>
+              ) : (
+                (() => {
+                  const c = S(openingFrame(placeWall, { offset: place.snap.offset, width: 0 }).centre); // where it was asked for
+                  return <circle cx={c.x} cy={c.y} r={6} className="fill-none stroke-smoke" strokeWidth={2} strokeDasharray="3 3" />;
+                })()
+              )}
+            </g>
+          )}
 
           {/* hover: a light gilt wash over the wall under the cursor */}
           {tool === "select" && hoveredId && hoveredId !== selectedId && outlines.get(hoveredId) && (
@@ -794,6 +1019,15 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
         <p role="status" data-testid="drag-message" className="pointer-events-none absolute bottom-3 left-1/2 w-max max-w-[calc(100%-2rem)] -translate-x-1/2 rounded border border-stone bg-vellum px-3 py-1.5 text-xs text-iron shadow">
           {message}
         </p>
+      )}
+
+      {/* Door / Window tool: what to do */}
+      {(tool === "door" || tool === "window") && (
+        <div data-testid="place-bar" className="absolute left-2 right-14 top-2 flex flex-wrap items-center gap-2">
+          <p className="rounded border border-stone bg-vellum px-2 py-1 text-xs text-iron shadow">
+            Click a wall to place a {tool} ({formatLength(OPENING_DEFAULTS[tool].width, unit)} wide)
+          </p>
+        </div>
       )}
 
       {/* Wall tool: what to do next, and Finish for touch screens with no Escape key */}

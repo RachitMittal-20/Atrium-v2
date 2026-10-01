@@ -1,8 +1,9 @@
 /**
- * toolStore.ts — which editor tool is active: Select (pick and edit walls) or
- * Wall (draw new ones). Editor state, not plan state, so switching tools is
- * never an undo step. Choosing Wall clears the selection: the right panel then
- * shows the Summary, whose room list and areas follow every wall drawn.
+ * toolStore.ts — which editor tool is active: Select (pick and edit walls,
+ * doors and windows), Wall (draw new walls), Door or Window (place one on a
+ * wall). Editor state, not plan state, so switching tools is never an undo
+ * step. Choosing any tool but Select clears the selection: the right panel then
+ * shows the Summary, whose counts and room areas follow every edit.
  *
  * Connects to: src/store/selectionStore.ts; set by
  * src/components/studio/ToolRail.tsx and read by
@@ -11,7 +12,7 @@
 import { create } from "zustand";
 import { useSelectionStore } from "./selectionStore";
 
-export type Tool = "select" | "wall";
+export type Tool = "select" | "wall" | "door" | "window";
 
 interface ToolState {
   tool: Tool;
@@ -21,7 +22,7 @@ interface ToolState {
 export const useToolStore = create<ToolState>((set) => ({
   tool: "select",
   setTool: (tool) => {
-    if (tool === "wall") useSelectionStore.getState().select(null);
+    if (tool !== "select") useSelectionStore.getState().select(null);
     set({ tool });
   },
 }));
