@@ -10,7 +10,9 @@
  *   - 01 with no labels gives four rooms with default names;
  *   - on 01's plan, direct nameRooms calls: two labels in one room are joined
  *     in reading order; a size label is ignored; a label outside every room
- *     and one on a wall band go to `unplaced`.
+ *     and one on a wall band go to `unplaced`; "Dining", "Room" and the
+ *     misread size "13 X 16°" (and "18 x 1%", "15 x19") in one room name it
+ *     "Dining / Room".
  * analyseBlueprint:
  *   - 03 with two hand-written room-size labels (4.85 m × 3.35 m, the inner
  *     size of the two top rooms) gives 4 doors, 4 windows and no warnings;
@@ -20,6 +22,7 @@
  *     downscaled: imageScale is not 1 and the footprint shrinks by that factor,
  *     within footprint.ts's tolerance scaled the same way;
  *   - onProgress gets all five stages in order.
+ * parseTypedLength (import screen): 3.8, 3.8 m, 380 cm, 12'6", 12 ft 6 in.
  * Run: npx tsx scripts/test-analyse.ts
  */
 import assert from "node:assert/strict";
@@ -30,6 +33,7 @@ import type { PlanLabel } from "../src/lib/blueprint/roomLabels";
 import { deriveRooms, pointInPolygon } from "../src/lib/plan/rooms";
 import { usePlanStore } from "../src/store/planStore";
 import type { OcrWord, PlanPixels } from "../src/types/blueprint";
+import { parseTypedLength } from "../src/app/studio/import/importFile";
 import { footprintCheck } from "./footprint";
 
 const MANUAL_100 = { pxPerM: 100, source: "manual" as const };
@@ -86,7 +90,12 @@ async function main() {
     assert.deepEqual(report.unplaced, ["Garden", "Hall"], "outside and wall-band labels unplaced");
     assert.deepEqual(plan.rooms.map((r) => r.name).sort(), ["Room 1", "Room 2", "Room 3", "Room 4"], "sizes never become names");
   }
-  console.log("nameRooms: fixtures 02, 03 named; 01 default; joined, size ignored, outside and wall band unplaced");
+  // OCR's misread size labels (foot marks read as ° or %, a lost space) are still sizes, never names.
+  {
+    const { plan } = named([at("Dining", 2.5, 1.2), at("Room", 2.5, 1.6), at("13 X 16°", 2.5, 2.0), at("18 x 1%", 2.5, 2.4), at("15 x19", 2.5, 2.8)]);
+    assert.equal(nameAt(plan, 2.5, 1.75), "Dining / Room", "size-like labels are not names");
+  }
+  console.log("nameRooms: fixtures 02, 03 named; 01 default; joined, size ignored, outside and wall band unplaced, size-like ignored");
 
   // ------------------------------------------------------------ analyseBlueprint
   // 03: two room-size labels centred in the two top rooms (inner 4.85 × 3.35 m at
@@ -124,6 +133,14 @@ async function main() {
   }
   // A scale that is not a finite positive number is refused.
   for (const pxPerM of [0, NaN, -1, Infinity]) assert.throws(() => buildFromAnalysis(a01, { pxPerM, source: "manual" }), /positive number/, `pxPerM ${pxPerM} refused`);
+
+  // What the import screen accepts as a typed length, in metres.
+  const typed: [string, number | null][] = [["3.8", 3.8], ["3.8 m", 3.8], ["380 cm", 3.8], ["12'6\"", 3.81], ["12 ft 6 in", 3.81], ["12 ft", 3.6576], ["10m", 10], ["abc", null], ["3 x 4", null]];
+  for (const [text, want] of typed) {
+    const got = parseTypedLength(text);
+    assert.ok(want === null ? got === null : got !== null && Math.abs(got - want) < 1e-9, `parseTypedLength("${text}") = ${got}, want ${want}`);
+  }
+  console.log("parseTypedLength: metres, centimetres, feet and inches, bare numbers");
   console.log("OK");
 }
 

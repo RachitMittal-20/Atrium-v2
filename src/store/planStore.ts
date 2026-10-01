@@ -251,3 +251,8 @@ export function installPlanShortcuts(): () => void {
   window.addEventListener("keydown", onKeyDown);
   return () => window.removeEventListener("keydown", onKeyDown);
 }
+
+// Development only: lets scripts/e2e-import.ts read the loaded plan from the page.
+if (process.env.NODE_ENV === "development" && typeof window !== "undefined") {
+  (window as unknown as { __planStore?: typeof usePlanStore }).__planStore = usePlanStore;
+}

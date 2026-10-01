@@ -31,6 +31,7 @@
     "@types/three": "^0.185.4",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
+    "playwright": "^1.63.0",
     "sharp": "^0.35.5",
     "tailwindcss": "^4",
     "three-stdlib": "^2.36.1",

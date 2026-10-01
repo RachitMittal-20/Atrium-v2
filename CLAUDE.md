@@ -15,7 +15,8 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - `src/types/blueprint.ts`, `src/lib/blueprint/{grid,wallMask,rooms,ocr,roomLabels}.ts`: blueprint detection and OCR imported unchanged from Atrium v1. Reuse them; don't rewrite them unless a prompt says to.
 - `src/components/motion/SmoothScrollProvider.tsx` + `src/store/scrollStore.ts`: the single GSAP-ticker clock for Lenis and ScrollTrigger. Nothing else calls `requestAnimationFrame`.
 - `src/components/landing/LandingTour.tsx` + `src/data/landingScenes.ts`: the scroll-driven photo tour.
-- `/studio` is the editor route.
+- `/studio` is the editor route. `/studio/import` is the upload and review screen.
+- Blueprint analysis (`analyseBlueprint`) must never run on the main thread. The browser runs it in `src/workers/analyse.worker.ts`; only decoding the image and drawing the results happen on the page.
 - Atrium v1 (for porting viewer controls) is cloned at `../Atrium`. Read from it, never modify it.
 
 ## Design tokens (use these, never hard-code colours)
@@ -47,3 +48,13 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - `OpeningCandidate.widthPx` is the clear gap between the wall ends as drawn, in deskewed pixels. A wall end next to a T-joint can be snapped into the joint, which makes that opening up to about one wall thickness too wide.
 - Gap pairing has no maximum width, so two collinear free ends across a room can pair into a fake door (06 has a 481 px one). `buildPlan` (`src/lib/blueprint/toPlan.ts`) classifies each gap by real width once the scale is known: up to 2.4 m is a normal opening; over 2.4 m up to 4 m is a wide opening, kept and listed in `report.wideOpenings` (a wide passage stays a door, because the Plan has only door and window kinds); over 4 m is not bridged, its two wall ends stay free, and it is listed in `report.droppedPairs`.
 - Door versus window is a guess from the pixels: a double door drawn in thin lines can read as a window, and grey outlines on wall faces can read as doors. The review screen lets the user change the kind.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

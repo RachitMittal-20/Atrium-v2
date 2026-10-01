@@ -23,6 +23,10 @@
   --color-gilt: #a9823f;      /* the one accent: calls to action, focus */
   --color-cyanotype: #1f3a5c; /* blueprint ink, editor chrome */
   --color-dusk: #f0b25e;      /* sunset light, used only inside imagery overlays */
+  /* Detection overlay on the import screen only (studio/import/PlanViewer.tsx) */
+  --color-overlay-window: #2e8b57; /* detected windows */
+  --color-overlay-door: #2563c9;   /* detected doors */
+  --color-overlay-end: #e07a1f;    /* free wall ends */
 
   /* Type families (bound to next/font variables in layout.tsx) */
   --font-display: var(--font-marcellus), serif; /* inscriptional headlines */

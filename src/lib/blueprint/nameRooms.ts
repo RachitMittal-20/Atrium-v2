@@ -15,7 +15,9 @@
  *     centres less than ROW_M apart vertically are one row, so two words OCR
  *     placed a pixel or two apart on the same line keep their left-to-right order.
  *   - Not names: anything that parses as a size or a length (scale.ts
- *     parseSizeLabel / parseLength), a bare "12 x 14" pair, and text with no
+ *     parseSizeLabel / parseLength), any text holding two numbers joined by x
+ *     or × even with stray symbols around them ("12 x 14", "13 x 16°",
+ *     "18 x 1%", "15 x19": OCR's misreads of foot marks), and text with no
  *     letter at all (OCR noise such as "|" or "—").
  *   - Names are title-cased: "BEDROOM 1" -> "Bedroom 1", "BATH / KITCHEN" ->
  *     "Bath / Kitchen". Rooms with no label keep deriveRooms' "Room N".
@@ -45,10 +47,11 @@ export interface NamingReport {
   unplaced: string[];
 }
 
-const BARE_PAIR = /^\d+(?:\.\d+)?\s*[x×]\s*\d+(?:\.\d+)?$/i;
+/** Two numbers joined by x or ×, with only non-letters (spaces, quote marks, °, %) between. */
+const SIZE_LIKE = /\d[^\p{L}\d]*[x×][^\p{L}\d]*\d/iu;
 
 /** True for text that is a size or length rather than a name. */
-const notAName = (t: string) => parseSizeLabel(t) !== null || parseLength(t) !== null || BARE_PAIR.test(t) || !/\p{L}/u.test(t);
+const notAName = (t: string) => parseSizeLabel(t) !== null || parseLength(t) !== null || SIZE_LIKE.test(t) || !/\p{L}/u.test(t);
 
 /** "BATH / KITCHEN" -> "Bath / Kitchen": each word's first letter upper case, the rest lower. */
 export const titleCase = (t: string) =>
