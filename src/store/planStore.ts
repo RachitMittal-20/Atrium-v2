@@ -3,8 +3,10 @@
  * through `edit()`, which uses Immer patches so history stores small diffs, not
  * whole plans. `transaction()` folds many edits (e.g. a drag) into one undo
  * step. Every wall edit re-derives `plan.rooms` in the same recipe, so undo
- * restores room names and loops together with the walls. Connects to:
- * src/types/plan.ts, src/lib/plan/{validate,geometry,rooms}.ts,
+ * restores room names and loops together with the walls. `drawWall` adds a
+ * drawn wall in one step, splitting any wall it joins in the middle (the
+ * T-junction convention) inside the same transaction. Connects to:
+ * src/types/plan.ts, src/lib/plan/{validate,geometry,rooms,edit}.ts,
  * src/lib/keyboard.ts; the 3D scene, 2D plan and exports read `plan` from here.
  */
 import { applyPatches, enablePatches, produceWithPatches, type Draft, type Patch } from "immer";
@@ -12,6 +14,7 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import { samplePlan } from "@/data/samplePlan";
 import { isTypingTarget } from "@/lib/keyboard";
+import { drawProblem, hostAt, splitWallAt } from "@/lib/plan/edit";
 import { clampOpening, JOINT_EPS, wallLength } from "@/lib/plan/geometry";
 import { deriveRooms, toStoredRoom, type DerivedRoom } from "@/lib/plan/rooms";
 import { validatePlan } from "@/lib/plan/validate";
@@ -38,6 +41,14 @@ interface PlanState {
   updateWall: (id: string, changes: Partial<Omit<Wall, "id">>) => void;
   deleteWall: (id: string) => void;
   moveWallEndpoint: (wallId: string, end: "a" | "b", to: Vec2) => void;
+  /** Split a wall in two at `at` (see edit.splitWallAt); returns the second piece's id, or null when refused. */
+  splitWall: (wallId: string, at: Vec2) => string | null;
+  /**
+   * Add a drawn wall from `a` to `b` as ONE undo step: an end landing in the
+   * middle of a wall splits that wall there first, so the new wall meets it in a
+   * T-junction. Refused (null, nothing recorded) when edit.drawProblem objects.
+   */
+  drawWall: (a: Vec2, b: Vec2, size: Pick<Wall, "thickness" | "height">) => string | null;
   addOpening: (opening: Omit<Opening, "id">) => string;
   updateOpening: (id: string, changes: Partial<Omit<Opening, "id">>) => void;
   deleteOpening: (id: string) => void;
@@ -161,6 +172,34 @@ export const usePlanStore = create<PlanState>((set, get) => {
           }
         }),
       );
+    },
+
+    splitWall: (wallId, at) => {
+      const id = newId("w");
+      const split = splitWallAt(get().plan, wallId, at, id);
+      if ("error" in split) return null;
+      editWalls((d) => {
+        const i = d.walls.findIndex((w) => w.id === wallId);
+        d.walls.splice(i, 1, ...split.pieces); // the second piece sits right after the first
+        for (const m of split.moved) {
+          const o = d.openings.find((x) => x.id === m.id);
+          if (o) Object.assign(o, m);
+        }
+      });
+      return id;
+    },
+    drawWall: (a, b, size) => {
+      if (drawProblem(get().plan, a, b)) return null;
+      let id: string | null = null;
+      get().transaction(() => {
+        // Re-read the plan per end: splitting at a can create the wall b lands on.
+        for (const p of [a, b]) {
+          const host = hostAt(get().plan.walls, p);
+          if (host) get().splitWall(host, p);
+        }
+        id = get().addWall({ a: { ...a }, b: { ...b }, ...size });
+      });
+      return id;
     },
 
     addOpening: (opening) => {

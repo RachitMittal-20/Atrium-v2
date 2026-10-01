@@ -10,6 +10,9 @@
  * ones lighter, and the other pieces of the straight wall the selection belongs
  * to (its run, which a 2D body drag moves as one) lighter still.
  * Walls are NOT draggable in 3D; editing happens in the 2D plan.
+ * In development the wall ids of the meshes actually in the scene are exposed
+ * as window.__scene3d.wallIds(), so scripts/e2e-studio.ts can check a drawn
+ * wall really reached the 3D model, not just the store.
  *
  * Coordinates: plan (x, y) → world (x, 0, y); plan units are metres; world up
  * is +Y. Seen from above (+Y looking down) with -Z at screen-top, the model
@@ -134,8 +137,19 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
   /** The wall id a raycast hit, read back out of the mesh's userData. */
   const idOf = (object: THREE.Object3D) => String(object.userData.wallId);
 
+  // Development only: read the wall meshes back out of the live scene graph.
+  const groupRef = useRef<THREE.Group>(null);
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
+    const hook = { wallIds: () => (groupRef.current?.children ?? []).filter((c) => c.userData.wallId).map((c) => String(c.userData.wallId)) };
+    (window as unknown as { __scene3d?: typeof hook }).__scene3d = hook;
+    return () => {
+      if ((window as unknown as { __scene3d?: typeof hook }).__scene3d === hook) delete (window as unknown as { __scene3d?: typeof hook }).__scene3d;
+    };
+  }, []);
+
   return (
-    <group>
+    <group ref={groupRef}>
       {plan.walls.map((wall) => (
         <mesh
           key={wall.id}

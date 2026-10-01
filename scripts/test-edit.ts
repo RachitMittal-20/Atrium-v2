@@ -3,7 +3,10 @@
  * and for the store path the editor components take when they apply it: picking,
  * snapping, dragging a joint, sliding a wall sideways, wall runs (the pieces one
  * straight wall was split into at its T-junctions), the 0.2 m minimum, how rooms
- * and their names survive an edit, one-drag-one-undo, Escape-cancel and delete.
+ * and their names survive an edit, one-drag-one-undo, Escape-cancel and delete;
+ * and, from (10), drawing walls (step 4.4): snapDraw, drawProblem, splitting a
+ * wall at a T-junction, planStore.drawWall as one undo step, rooms re-derived
+ * when a drawn wall closes a loop, and a drawn wall editing like any other.
  * Pure Node, no browser. Each block prints what it covers.
  * Run: npx tsx scripts/test-edit.ts (throws on the first failure).
  */
@@ -11,8 +14,16 @@ import assert from "node:assert/strict";
 import { samplePlan } from "../src/data/samplePlan";
 import {
   clampField,
+  DRAW_THICKNESS,
   dragEndpoint,
   dragWallBody,
+  drawDefaults,
+  drawProblem,
+  hostAt,
+  landsOnPlan,
+  splitWallAt,
+  snapDraw,
+  typedTarget,
   HANDLE_TOL_PX,
   HANDLE_TOL_TOUCH_PX,
   HEIGHT_RANGE,
@@ -33,7 +44,7 @@ import {
   THICKNESS_RANGE,
   wallRun,
 } from "../src/lib/plan/edit";
-import { JOINT_EPS, wallLength } from "../src/lib/plan/geometry";
+import { dist, JOINT_EPS, wallLength } from "../src/lib/plan/geometry";
 import { deriveRooms } from "../src/lib/plan/rooms";
 import { validatePlan } from "../src/lib/plan/validate";
 import { usePlanStore } from "../src/store/planStore";
@@ -413,6 +424,191 @@ console.log(
   assert.match(clampField(0.9, THICKNESS_RANGE, "Thickness").note ?? "", /can't be over 0\.6 m/, "too thick is clamped with a reason");
   assert.match(clampField(0.4, HEIGHT_RANGE, "Height").note ?? "", /can't be under 1 m/, "too short is clamped with a reason");
   console.log("(9) thickness and height clamp to their ranges and say why");
+}
+
+// ---------------------------------------------------------------- drawing walls (step 4.4)
+
+/** Where an opening's centre is in plan space: must not move when its wall is split. */
+const openingCentres = (plan: Plan) =>
+  Object.fromEntries(
+    plan.openings.map((o) => {
+      const w = wallIn(plan, o.wallId);
+      const len = wallLength(w);
+      return [o.id, { x: +(w.a.x + ((w.b.x - w.a.x) / len) * o.offset).toFixed(9), y: +(w.a.y + ((w.b.y - w.a.y) / len) * o.offset).toFixed(9) }];
+    }),
+  );
+const size = () => drawDefaults(s().plan.walls);
+
+// --- (10) a valid drawn wall is a normal Wall: id, a, b, thickness, height; one undo step
+{
+  reset();
+  const before = structuredClone(s().plan);
+  const past = s().past.length;
+  assert.deepEqual(drawDefaults(samplePlan.walls), { thickness: DRAW_THICKNESS, height: 2.7 }, "the plan's commonest height, the draw thickness");
+  assert.deepEqual(drawDefaults([]), { thickness: DRAW_THICKNESS, height: 2.7 }, "2.7 m in an empty plan");
+  const id = s().drawWall({ x: 6, y: 1 }, { x: 6, y: 3 }, size()); // free-standing, inside the living room
+  assert.ok(id, "drawWall returns the new wall's id");
+  assert.deepEqual(wallIn(s().plan, id!), { id, a: { x: 6, y: 1 }, b: { x: 6, y: 3 }, thickness: DRAW_THICKNESS, height: 2.7 }, "a plain Wall, nothing else");
+  assert.equal(s().plan.walls.length, before.walls.length + 1, "exactly one wall added");
+  assert.equal(s().past.length, past + 1, "one undo step");
+  const fresh = newProblems(validatePlan(before), validatePlan(s().plan));
+  assert.equal(fresh.length, 2, "a free-standing wall has two unjoined ends, and the validator says so");
+  assert.ok(fresh.every((p) => p.includes("isn't shared")), "as unjoined ends");
+  close(typedTarget({ x: 6, y: 3 }, { x: 6, y: 4.2 }, 1.5)!.y, 4.5, 1e-9, "a typed 1.5 m goes 1.5 m towards the pointer");
+  assert.equal(typedTarget({ x: 6, y: 3 }, { x: 6, y: 3 }, 1.5), null, "no direction, no typed wall");
+  console.log(`(10) drawWall adds one plain Wall (${DRAW_THICKNESS} m thick, the plan's commonest height) as one undo step; typedTarget measures towards the pointer`);
+}
+
+// --- (11) the 0.2 m minimum: refused with a reason, and a refused draw records nothing
+{
+  reset();
+  const before = structuredClone(s().plan);
+  assert.match(drawProblem(s().plan, { x: 6, y: 1 }, { x: 6, y: 1.19 }) ?? "", /shorter than 0\.20 m/, "0.19 m is refused");
+  assert.match(drawProblem(s().plan, { x: 6, y: 1 }, { x: 6, y: 1 }) ?? "", /shorter than 0\.20 m/, "zero length is refused");
+  assert.equal(drawProblem(s().plan, { x: 6, y: 1 }, { x: 6, y: 1.2 }), null, "exactly 0.2 m is allowed");
+  assert.equal(s().drawWall({ x: 6, y: 1 }, { x: 6, y: 1.1 }, size()), null, "the store refuses it too");
+  assert.deepEqual(s().plan, before, "and the plan is untouched");
+  assert.equal(s().past.length, 0, "with nothing in history");
+  console.log(`(11) walls under ${MIN_WALL_LENGTH} m (and zero-length ones) are refused with a reason and leave plan and history alone`);
+}
+
+// --- (12) endpoint connection: a click near a joint lands exactly on it, and the new wall shares it
+{
+  reset();
+  const K = { x: 7, y: 5 };
+  const snap = snapDraw({ x: 7.05, y: 5.04 }, s().plan.walls, { radius: 0.15 });
+  assert.deepEqual(snap, { point: K, kind: "endpoint" }, "lands on joint K exactly");
+  assert.equal(landsOnPlan(s().plan.walls, K), true, "K is on the plan");
+  const before = structuredClone(s().plan);
+  const id = s().drawWall(snap.point, { x: 7, y: 3 }, size())!;
+  const w = wallIn(s().plan, id);
+  assert.deepEqual(w.a, K, "the new wall starts at K");
+  assert.equal(s().plan.walls.filter((x) => dist(x.a, K) < JOINT_EPS || dist(x.b, K) < JOINT_EPS).length, 3, "three walls now share joint K");
+  assert.equal(s().plan.walls.length, before.walls.length + 1, "no wall was split: K was already a joint");
+  const fresh = newProblems(validatePlan(before), validatePlan(s().plan));
+  assert.deepEqual(fresh, [`Wall ${id} end b (7, 3) isn't shared with any other wall.`], "only the free end is unjoined");
+  console.log("(12) a wall drawn to an existing joint shares it exactly; only its free end is reported");
+}
+
+// --- (13) T-junctions: landing on a wall's middle or body splits that wall there
+{
+  reset();
+  const before = structuredClone(s().plan);
+  const centres = openingCentres(before);
+  // The midpoint of w-AB A(0,0)–B(4,0) beats the grid, then splits w-AB.
+  const mid = snapDraw({ x: 2.03, y: 0.04 }, s().plan.walls, { radius: 0.15 });
+  assert.deepEqual(mid, { point: { x: 2, y: 0 }, kind: "midpoint" }, "the midpoint of w-AB");
+  assert.equal(hostAt(s().plan.walls, mid.point), "w-AB", "which is the middle of w-AB");
+  // A point near the body of w-BI B(4,0)–I(4,4), away from its midpoint, lands ON its centre line.
+  const onWall = snapDraw({ x: 4.04, y: 1.52 }, s().plan.walls, { radius: 0.15 });
+  assert.deepEqual(onWall, { point: { x: 4, y: 1.52 }, kind: "wall" }, "on w-BI's centre line, 1 cm grid kept");
+  // A 0° ray from (4, 1.5) that ends near w-CM C(10,0)–M(10,5) meets it on the ray, so the angle is kept.
+  const ray = snapDraw({ x: 9.95, y: 1.53 }, s().plan.walls, { from: { x: 4, y: 1.5 }, radius: 0.15 });
+  assert.deepEqual(ray, { point: { x: 10, y: 1.5 }, kind: "wall" }, "where the 0° ray crosses w-CM");
+
+  const past = s().past.length;
+  const id = s().drawWall({ x: 4, y: 1.5 }, { x: 10, y: 1.5 }, size())!; // splits the living room in two
+  assert.equal(s().past.length, past + 1, "two splits and a new wall are ONE undo step");
+  assert.equal(s().plan.walls.length, before.walls.length + 3, "the new wall plus one extra piece of each wall it joins");
+  assert.deepEqual(newProblems(validatePlan(before), validatePlan(s().plan)), [], "every end is a shared joint: no new problems");
+  assert.deepEqual(wallIn(s().plan, "w-BI").b, { x: 4, y: 1.5 }, "w-BI keeps its id and now ends at the T");
+  assert.deepEqual(wallIn(s().plan, "w-CM").b, { x: 10, y: 1.5 }, "so does w-CM");
+  assert.equal(wallRun(s().plan, "w-BI").length, 3, "and its two pieces are one straight run with w-IF beyond I");
+  assert.deepEqual(openingCentres(s().plan), centres, "no door or window moved");
+  assert.ok(s().plan.openings.some((o) => o.id === "d-bed1" && o.wallId !== "w-BI"), "d-bed1, past the split, moved to the second piece");
+  assert.equal(hostAt(s().plan.walls, { x: 4, y: 1.5 }), null, "nothing is left landing on a wall's middle");
+  assert.ok(wallIn(s().plan, id), "the drawn wall is in");
+
+  // A split through a door or window, or too near a wall's end, is refused.
+  assert.match(drawProblem(before, { x: 7, y: 2.5 }, { x: 10, y: 2.5 }) ?? "", /middle of a window/, "w-CM's window is at 1.9–3.1 m");
+  assert.match(drawProblem(before, { x: 0, y: 2 }, { x: 2, y: 2 }) ?? "", /middle of a window/, "w-HA's window sits on its midpoint");
+  const tooClose = splitWallAt(before, "w-AB", { x: 0.1, y: 0 }, "x");
+  assert.ok("error" in tooClose && /too close/i.test(tooClose.error), "0.1 m from A is too close to split");
+  // ...and snapDraw never offers that: within 0.2 m of an end it takes the end itself.
+  assert.deepEqual(snapDraw({ x: 3.88, y: 0.02 }, before.walls, { radius: 0.05 }), { point: { x: 4, y: 0 }, kind: "endpoint" }, "near B on w-AB: B itself");
+  console.log("(13) landing on a wall's midpoint or body splits it into a straight run at that point in the same undo step; openings keep their place; splits through openings or within 0.2 m of an end are refused");
+}
+
+// --- (14) crossing, running along, and the snapping order the Wall tool uses
+{
+  reset();
+  const plan = s().plan;
+  assert.match(drawProblem(plan, { x: 2, y: 1 }, { x: 2, y: 6 }) ?? "", /cross another wall/, "through w-HI is a crossing");
+  assert.match(drawProblem(plan, { x: 1, y: 0 }, { x: 3, y: 0 }) ?? "", /run along/, "along w-AB overlaps it");
+  assert.equal(drawProblem(plan, { x: 4, y: 0 }, { x: 4, y: -2 }), null, "carrying on from a joint, straight out, is fine");
+  // Same order as snapDrag (endpoint > midpoint > angle > grid), with "on wall" after midpoint.
+  const r = 0.15;
+  assert.equal(snapDraw({ x: 4.05, y: 0.05 }, plan.walls, { radius: r }).kind, "endpoint", "endpoint first");
+  assert.equal(snapDraw({ x: 2.05, y: 0.05 }, plan.walls, { radius: r }).kind, "midpoint", "midpoint beats the wall body under it");
+  assert.equal(snapDraw({ x: 2.53, y: 0.03 }, plan.walls, { radius: r }).kind, "wall", "the body beats the grid");
+  assert.deepEqual(snapDraw({ x: 6.0, y: 2.03 }, plan.walls, { from: { x: 4, y: 4 }, radius: r }), snapDrag({ x: 6.0, y: 2.03 }, plan.walls, { from: { x: 4, y: 4 }, radius: r }), "angle, as snapDrag");
+  assert.deepEqual(snapDraw({ x: 6.37, y: 2.03 }, plan.walls, { radius: r }), { point: { x: 6.35, y: 2.05 }, kind: "grid" }, "then the 5 cm grid");
+  assert.deepEqual(snapDraw({ x: 2.531, y: 0.017 }, plan.walls, { radius: r, free: true }), { point: { x: 2.53, y: 0.02 }, kind: null }, "Alt: no snapping, 1 cm rounding");
+  console.log("(14) crossing or overlapping an existing wall is refused; snapDraw order endpoint > midpoint > on wall > angle > grid, Alt disables");
+}
+
+// --- (15) closing a loop re-derives the rooms; undo and redo walk it back and forth
+{
+  reset();
+  const original = structuredClone(s().plan);
+  const bed1 = () => deriveRooms(s().plan).find((r) => r.name === "Bedroom 1")!;
+  const bed1Area = bed1().area;
+  // A cupboard in Bedroom 1's north-east corner: (2,0) [midpoint of w-AB] → (2,1.5) → (4,1.5) [on w-BI].
+  assert.equal(landsOnPlan(s().plan.walls, { x: 2, y: 1.5 }), false, "(2, 1.5) is open floor: the chain goes on");
+  s().drawWall({ x: 2, y: 0 }, { x: 2, y: 1.5 }, size());
+  assert.equal(s().plan.rooms.length, 4, "one wall alone closes nothing");
+  const half = structuredClone(s().plan);
+  assert.equal(landsOnPlan(s().plan.walls, { x: 4, y: 1.5 }), true, "(4, 1.5) is on w-BI: the chain ends there");
+  s().drawWall({ x: 2, y: 1.5 }, { x: 4, y: 1.5 }, size());
+  const closed = structuredClone(s().plan);
+  const rooms = deriveRooms(closed);
+  assert.equal(closed.rooms.length, 5, "the second wall closes a fifth room");
+  assert.deepEqual(names(closed).filter((n) => !names(original).includes(n)).length, 1, "with a new default name; the old names stay");
+  // Net area: x 2.075–3.95 (half of 0.15 drawn, half of 0.1 interior), y 0.1–1.425 (half of 0.2 exterior).
+  const cupboard = rooms.find((r) => !names(original).includes(r.name))!;
+  close(cupboard.area, (3.95 - 2.075) * (1.425 - 0.1), 1e-6, "the new room's net area");
+  assert.ok(bed1().area < bed1Area - cupboard.area, "Bedroom 1 lost the cupboard and its walls");
+  assert.deepEqual(newProblems(validatePlan(original), validatePlan(closed)), [], "and the plan is valid");
+
+  assert.equal(s().past.length, 2, "two walls, two undo steps");
+  s().undo();
+  assert.deepEqual(s().plan, half, "undo takes the closing wall off, its split and the fifth room with it");
+  s().undo();
+  assert.deepEqual(s().plan, original, "a second undo is the sample again");
+  s().redo();
+  s().redo();
+  assert.deepEqual(s().plan, closed, "redo twice: walls, splits and rooms are back");
+  console.log(`(15) closing a loop adds a room (net ${cupboard.area.toFixed(3)} m²) and shrinks Bedroom 1; undo and redo restore each wall exactly`);
+}
+
+// --- (16) a drawn wall edits like any other: pick, handles, body drag, typed length, size, delete
+{
+  reset();
+  const id = s().drawWall({ x: 4, y: 1.5 }, { x: 10, y: 1.5 }, size())!;
+  const baseline = validatePlan(s().plan);
+  assert.deepEqual(pickWall({ x: 7, y: 1.52 }, s().plan.walls, 0.16, 0.24), { wallId: id, end: null }, "picked by its body");
+  // Body drag: the whole wall slides 0.5 m south; the walls it joins stretch and stay straight.
+  const body = applyBody(id, 0.5);
+  assert.equal(body.limited, undefined, "within reach");
+  assert.deepEqual([wallIn(s().plan, id).a, wallIn(s().plan, id).b], [{ x: 4, y: 2 }, { x: 10, y: 2 }], "slid with its T-joints on w-BI and w-CM");
+  straight(s().plan, wallRun(s().plan, "w-BI"), 90, "the split w-BI after the slide");
+  assert.deepEqual(newProblems(baseline, validatePlan(s().plan)), [], "still valid");
+  s().undo();
+  // Free end handle and typed length, on a free-standing drawn wall.
+  const free = s().drawWall({ x: 6, y: 3 }, { x: 6, y: 4 }, size())!;
+  applyEndpoint(free, "b", { x: 6, y: 4.4 });
+  close(wallLength(wallIn(s().plan, free)), 1.4, 1e-9, "its b handle drags");
+  applyEndpoint(free, "b", lengthTarget(wallIn(s().plan, free), 2.25));
+  close(wallLength(wallIn(s().plan, free)), 2.25, 1e-9, "a typed length takes");
+  s().updateWall(free, { thickness: 0.2, height: 3 });
+  assert.equal(wallIn(s().plan, free).thickness, 0.2, "thickness edits");
+  assert.equal(wallIn(s().plan, free).height, 3, "height edits");
+  const kept = structuredClone(s().plan);
+  s().deleteWall(free);
+  assert.equal(s().plan.walls.some((w) => w.id === free), false, "delete removes it");
+  s().undo();
+  assert.deepEqual(s().plan, kept, "and undo brings it back");
+  console.log("(16) a drawn wall is picked, body-dragged with its T-joints, handle-dragged, typed to a length, resized and deleted through the same paths as any wall");
 }
 
 console.log("test-edit: ok");

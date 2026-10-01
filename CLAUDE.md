@@ -45,6 +45,16 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - Selection lives in `src/store/selectionStore.ts`, not in the plan, so it is never undoable. It clears itself when the selected wall leaves the plan.
 - The drag maths is pure, in `src/lib/plan/edit.ts`; components only turn pointers into metres and call the store. A drag is one undo step because every pointer move re-applies the whole drag after `planStore.rollback()`.
 
+## Drawing walls (step 4.4, Wall tool)
+- The active tool lives in `src/store/toolStore.ts` (`select` | `wall`), not in the plan, so switching is never undoable. Choosing Wall clears the selection; choosing it while only 3D shows opens Split (2D on a phone), because drawing happens only in the 2D plan.
+- Click (or tap) to start, click again to add a wall; each click after that adds a joined wall. The chain ends on Escape, double-click, the Finish button (for touch), or by itself when a click lands on a wall already in the plan (closing a room). A second Escape with nothing being drawn goes back to Select. A drag still pans. Implemented but not covered by any test: Enter with nothing typed also ends the chain, and lifting fingers after a pinch is not read as a tap.
+- With a wall started, typing a length (3.5, 350 cm, 11' 6", read by `parseTypedLength`) and pressing Enter adds a wall exactly that long towards the pointer. Needs a mouse: on touch there is no pointer direction.
+- Where a click lands is `snapDraw` (`src/lib/plan/edit.ts`): `snapPoint`'s order (endpoint, midpoint, 45°/90° ray, 5 cm grid) with one step after midpoint, **on wall**. A pointer within snap reach of a wall's body lands exactly on its centre line; if a 45°/90° ray also crosses that wall in reach, the crossing is used. Landing within 0.2 m of a wall's end takes the end itself. Joint and wall landings keep exact coordinates so they stay shared; free landings are on the grid or a ray; Alt turns snapping off and rounds to 1 cm.
+- `planStore.drawWall(a, b, size)` is the only way a drawn wall enters the plan: one transaction, so one undo step. An end that lands on a wall's middle (`hostAt`) splits that wall there first (`splitWall` / `splitWallAt`): the first piece keeps the old id, the second is new, and openings past the split move to it at the same place. The result is an ordinary `Wall`; rooms re-derive through the normal wall-edit path.
+- `drawProblem` refuses, with a message, a wall under 0.2 m, a wall that crosses or runs along an existing wall, and a T-junction inside a door or window or within 0.2 m of a wall's end. A refused or cancelled wall records nothing; the preview (outline, snap marker, guide line, live length) is local to PlanCanvas.
+- New walls are 0.15 m thick (`DRAW_THICKNESS`) and take the plan's commonest wall height (2.7 m in an empty plan). Change either in the panel afterwards.
+- When a chain ends, the panel lists anything it left unjoined (a free end is a validator problem), the same as after a drag.
+
 ## Known limitations
 - The hollow fill cannot tell a wall whose gap is outside the accepted range from furniture drawn as long parallel lines. Both are just two long lines with white between them.
 - Walls whose gap is more than 3x the commonest gap are missed. On a plan with lots of narrow line pairs (window lines, shelving), the commonest gap can be narrower than the real walls, and then real walls are skipped.
@@ -56,6 +66,9 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - A body drag moves the whole **wall run**: `wallRun` (`src/lib/plan/edit.ts`) finds every piece one straight wall was split into at its T-junctions (collinear within 1°, sharing a joint within 1 cm; a stem at the joint neither joins the run nor breaks it), and `dragWallBody` slides all of them by the same perpendicular offset, so no piece tilts. Dragging a joint **handle** still moves only the walls joined at that joint, so a collinear neighbour tilts — that is what moving a vertex means, and it is expected.
 - A joint shared by more than two non-parallel walls can only keep one of them pointing the same way during a body drag. `dragWallBody` keeps the least parallel one (its line crosses at the steepest angle) and the rest follow the joint, so their directions change.
 - A wall body drag checks the 0.2 m minimum at 64 points along the slide, so a joining wall that dips below the minimum and comes back inside one 64th of a drag step is not caught.
+- Drawing never splits the NEW wall. A wall that would cross an existing wall is refused (tested); so, by the same check, is one passing through an existing joint or touching an existing free end with its middle (not separately tested). Draw up to the meeting point and carry on from there.
+- Drawing checks centre lines only: a wall drawn parallel to an existing one and closer than their thicknesses is allowed, and the two overlap visually.
+- A T-junction on a diagonal wall keeps the landing exactly on the wall's line, so its coordinates are not on the 1 cm grid.
 - Door versus window is a guess from the pixels: a double door drawn in thin lines can read as a window, and grey outlines on wall faces can read as doors. The review screen lets the user change the kind.
 
 <!-- BEGIN:nextjs-agent-rules -->

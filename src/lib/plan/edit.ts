@@ -2,15 +2,17 @@
  * edit.ts — pure maths for selecting and editing walls (no React, no store):
  * hit-testing a pointer, snapping a dragged point, moving a joint, finding the
  * run of pieces one straight wall was split into, sliding a whole run sideways,
- * and the tolerances the editor works to. Every number the
- * editor rounds or limits to is declared here and printed by
- * scripts/test-edit.ts. Connects to: src/types/plan.ts, ./geometry.ts;
- * called by src/components/plan2d/PlanCanvas.tsx and
- * src/components/studio/WallPanel.tsx, which feed the results to planStore.
+ * drawing new walls (where a click lands, whether a new wall is allowed, and
+ * splitting the wall it joins at a T-junction), and the tolerances the editor
+ * works to. Every number the editor rounds or limits to is declared here and
+ * printed by scripts/test-edit.ts. Connects to: src/types/plan.ts, ./geometry.ts;
+ * called by src/components/plan2d/PlanCanvas.tsx,
+ * src/components/studio/WallPanel.tsx and src/store/planStore.ts (drawWall).
  *
  * Plan space: x → east, y → south. A wall's normal is the left of a→b.
  */
-import type { Plan, Vec2, Wall } from "@/types/plan";
+import { WALL_HEIGHT } from "@/data/samplePlan";
+import type { Opening, Plan, Vec2, Wall } from "@/types/plan";
 import { dist, JOINT_EPS, pointToWallDistance, snapPoint, wallDirection, wallLength, wallNormal, type SnapKind } from "./geometry";
 
 // ---------------------------------------------------------------- tolerances
@@ -82,8 +84,9 @@ export function pickWall(p: Vec2, walls: Wall[], tol: number, handleTol: number,
 
 export interface Snap {
   point: Vec2;
-  /** null when snapping was off (Alt held): the point is only rounded to 1 cm. */
-  kind: SnapKind | null;
+  /** null when snapping was off (Alt held): the point is only rounded to 1 cm.
+   *  "wall" only comes from snapDraw: the point sits on a wall's centre line. */
+  kind: SnapKind | "wall" | null;
 }
 
 /**
@@ -378,3 +381,186 @@ export function clampField(value: number, [min, max]: readonly [number, number],
 
 /** Problems `after` has that `before` didn't: what the panel warns about after an edit. */
 export const newProblems = (before: string[], after: string[]) => after.filter((p) => !before.includes(p));
+
+// ---------------------------------------------------------------- drawing walls
+
+/** A newly drawn wall's thickness (metres); the panel edits it afterwards. */
+export const DRAW_THICKNESS = 0.15;
+
+const sub = (p: Vec2, q: Vec2): Vec2 => ({ x: p.x - q.x, y: p.y - q.y });
+const crossOf = (p: Vec2, q: Vec2) => p.x * q.y - p.y * q.x;
+const dotOf = (p: Vec2, q: Vec2) => p.x * q.x + p.y * q.y;
+
+/**
+ * Where a click lands while drawing. The same priority as snapDrag (wall
+ * endpoints, midpoints, 45°/90° rays from `from`, the 5 cm grid), with one step
+ * added after midpoints: a pointer within `radius` of a wall's body lands ON that
+ * wall's centre line ("wall"), so the new wall meets it in a T-junction instead
+ * of stopping a few millimetres short. When a 45°/90° ray from `from` crosses
+ * that wall in reach, the crossing is used, so the angle is kept. A landing
+ * closer than MIN_WALL_LENGTH to the wall's end takes the end itself: splitting
+ * there would leave a piece too short to keep.
+ *
+ * Landings on existing geometry (endpoint, midpoint, wall) keep their exact
+ * coordinates, so the new wall shares the joint; free landings are on the 5 cm
+ * grid or a ray, and Alt (`free`) rounds to 1 cm with no snapping at all.
+ */
+export function snapDraw(p: Vec2, walls: Wall[], opts: { from?: Vec2; radius: number; free?: boolean }): Snap {
+  if (opts.free) return { point: roundPoint(p), kind: null };
+  const base = snapPoint(p, walls, { from: opts.from, radius: opts.radius });
+  if (base.kind === "endpoint" || base.kind === "midpoint") return base;
+
+  let host: Wall | null = null;
+  let best = opts.radius;
+  for (const w of walls) {
+    if (wallLength(w) < JOINT_EPS) continue;
+    const d = pointToWallDistance(p, w);
+    if (d <= best) [best, host] = [d, w];
+  }
+  if (!host) return base;
+
+  const len = wallLength(host);
+  const u = wallDirection(host);
+  const alongOf = (q: Vec2) => dotOf(sub(q, host.a), u);
+  let at: Vec2 | null = null;
+  const { from } = opts;
+  if (base.kind === "angle" && from) {
+    // Where the ray from `from` through the angle snap crosses the wall's centre line.
+    const ray = sub(base.point, from);
+    const rayLen = Math.hypot(ray.x, ray.y);
+    const c = crossOf(ray, u);
+    if (rayLen > JOINT_EPS && Math.abs(c) > 1e-9) {
+      const t = crossOf(sub(host.a, from), u) / c; // fraction of `ray`
+      const q = { x: from.x + ray.x * t, y: from.y + ray.y * t };
+      const s = alongOf(q);
+      if (t > 0 && s >= 0 && s <= len && dist(q, p) <= opts.radius) at = q;
+    }
+  }
+  if (!at) {
+    // Project the 1 cm-rounded pointer onto the centre line: on an axis-aligned
+    // wall that keeps the landing on the 1 cm grid as well as on the wall.
+    const s = Math.max(0, Math.min(len, alongOf(roundPoint(p))));
+    at = { x: host.a.x + u.x * s, y: host.a.y + u.y * s };
+  }
+  const s = alongOf(at);
+  if (s < MIN_WALL_LENGTH) return { point: host.a, kind: "endpoint" };
+  if (len - s < MIN_WALL_LENGTH) return { point: host.b, kind: "endpoint" };
+  return { point: { x: clean(at.x), y: clean(at.y) }, kind: "wall" };
+}
+
+/** True when `p` is an existing wall endpoint (a joint). */
+export const isJoint = (walls: Wall[], p: Vec2) => walls.some((w) => dist(w.a, p) < JOINT_EPS || dist(w.b, p) < JOINT_EPS);
+
+/** The wall whose MIDDLE `p` lies on (within JOINT_EPS of its centre line, away
+ *  from both ends): a new wall ending there must split it into two pieces. */
+export function hostAt(walls: Wall[], p: Vec2): string | null {
+  for (const w of walls) {
+    if (wallLength(w) < JOINT_EPS || dist(w.a, p) < JOINT_EPS || dist(w.b, p) < JOINT_EPS) continue;
+    if (pointToWallDistance(p, w) < JOINT_EPS) return w.id;
+  }
+  return null;
+}
+
+/** A click that lands on what's already drawn (a joint or a wall's body) ends a
+ *  drawing chain: the new wall has joined the plan. */
+export const landsOnPlan = (walls: Wall[], p: Vec2) => isJoint(walls, p) || hostAt(walls, p) !== null;
+
+export interface WallSplit {
+  /** The host's two pieces: the first keeps its id (a → at), the second is new (at → b). */
+  pieces: [Wall, Wall];
+  /** Openings that move to the second piece, with their new offset from its a end. */
+  moved: Pick<Opening, "id" | "wallId" | "offset">[];
+}
+
+/**
+ * Split `wallId` at `at` (projected onto its centre line) into two collinear
+ * pieces, the CLAUDE.md T-junction convention. Openings past the split move to
+ * the second piece with their offset re-measured from its a end; an opening the
+ * split would cut through, or a piece shorter than MIN_WALL_LENGTH, is refused
+ * with plain words instead.
+ */
+export function splitWallAt(plan: Pick<Plan, "walls" | "openings">, wallId: string, at: Vec2, newId: string): WallSplit | { error: string } {
+  const wall = plan.walls.find((w) => w.id === wallId);
+  if (!wall) return { error: "That wall is no longer in the plan." };
+  const len = wallLength(wall);
+  const u = wallDirection(wall);
+  const t = dotOf(sub(at, wall.a), u); // distance from a along the wall
+  if (t < MIN_WALL_LENGTH - 1e-9 || len - t < MIN_WALL_LENGTH - 1e-9) {
+    return { error: `Too close to the end of a wall: each part must be at least ${MIN_WALL_LENGTH.toFixed(2)} m.` };
+  }
+  const moved: WallSplit["moved"] = [];
+  for (const o of plan.openings) {
+    if (o.wallId !== wallId) continue;
+    const [start, end] = [o.offset - o.width / 2, o.offset + o.width / 2];
+    if (end <= t + JOINT_EPS) continue; // stays on the first piece, offset unchanged
+    if (start >= t - JOINT_EPS) moved.push({ id: o.id, wallId: newId, offset: clean(o.offset - t) });
+    else return { error: `A wall can't join in the middle of a ${o.kind}.` };
+  }
+  const point = { x: clean(wall.a.x + u.x * t), y: clean(wall.a.y + u.y * t) };
+  return {
+    pieces: [
+      { ...wall, a: { ...wall.a }, b: point },
+      { ...wall, id: newId, a: { ...point }, b: { ...wall.b } },
+    ],
+    moved,
+  };
+}
+
+/**
+ * Why a wall from `a` to `b` can't be added to the plan, or null when it can.
+ * Only the rules that keep the wall graph valid: the 0.2 m minimum, a T-junction
+ * landing that splitWallAt accepts, and no crossing or running along an existing
+ * wall — walls meet only at shared joints (CLAUDE.md Conventions), so a crossing
+ * would leave rooms the derivation can't see.
+ */
+export function drawProblem(plan: Pick<Plan, "walls" | "openings">, a: Vec2, b: Vec2): string | null {
+  const len = dist(a, b);
+  if (len < MIN_WALL_LENGTH - 1e-9) return `Walls can't be shorter than ${MIN_WALL_LENGTH.toFixed(2)} m.`; // 1e-9: 1.2 - 1 is 0.1999…
+  for (const p of [a, b]) {
+    const host = hostAt(plan.walls, p);
+    if (!host) continue;
+    const split = splitWallAt(plan, host, p, "probe");
+    if ("error" in split) return split.error;
+  }
+  const d = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+  for (const w of plan.walls) {
+    const wl = wallLength(w);
+    if (wl < JOINT_EPS) continue;
+    const e = wallDirection(w);
+    const c = crossOf(d, e);
+    if (Math.abs(c) < 1e-6) {
+      // Parallel: a problem only on the same line with some shared length.
+      if (Math.abs(crossOf(sub(w.a, a), d)) >= JOINT_EPS) continue;
+      const [s0, s1] = [dotOf(sub(w.a, a), d), dotOf(sub(w.b, a), d)].sort((x, y) => x - y);
+      if (Math.min(len, s1) - Math.max(0, s0) > JOINT_EPS) return "This wall would run along an existing wall.";
+      continue;
+    }
+    // Where the two centre lines cross; fine when it is one of the new wall's ends.
+    const t = crossOf(sub(w.a, a), e) / c;
+    const x = { x: a.x + d.x * t, y: a.y + d.y * t };
+    if (dist(x, a) < JOINT_EPS || dist(x, b) < JOINT_EPS) continue;
+    if (t > 0 && t < len && pointToWallDistance(x, w) < JOINT_EPS) {
+      return "This wall would cross another wall. End it where they meet, then carry on from there.";
+    }
+  }
+  return null;
+}
+
+/** A new wall's thickness and height: DRAW_THICKNESS, and the plan's commonest
+ *  wall height so it stands as tall as its neighbours (2.7 m in an empty plan). */
+export function drawDefaults(walls: Wall[]): Pick<Wall, "thickness" | "height"> {
+  const counts = new Map<number, number>();
+  for (const w of walls) counts.set(roundTo(w.height), (counts.get(roundTo(w.height)) ?? 0) + 1);
+  let height = WALL_HEIGHT;
+  let most = 0;
+  for (const [h, n] of counts) if (n > most) [height, most] = [h, n];
+  return { thickness: DRAW_THICKNESS, height };
+}
+
+/** Where a typed length puts the wall's end: `length` metres from `from` towards
+ *  `toward`, rounded to 1 cm like lengthTarget. Null without a direction. */
+export function typedTarget(from: Vec2, toward: Vec2, length: number): Vec2 | null {
+  const d = dist(from, toward);
+  if (d < JOINT_EPS) return null;
+  return roundPoint({ x: from.x + ((toward.x - from.x) / d) * length, y: from.y + ((toward.y - from.y) / d) * length });
+}

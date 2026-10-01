@@ -3,10 +3,13 @@
 /*
  * src/app/studio/page.tsx — the editor shell. Top bar and tool rail (cyanotype
  * chrome), the canvas area (3D, a 2D placeholder, or both) and the right panel
- * (vellum). No editing tools yet; the plan in usePlanStore is shown as is, in
- * 3D (Scene3D) and 2D (PlanCanvas). Owns the m² / sq ft unit so the panel and
+ * (vellum). The plan in usePlanStore is shown in 3D (Scene3D) and 2D
+ * (PlanCanvas); walls are edited and drawn in 2D. Choosing the Wall tool while
+ * only 3D is showing opens the 2D plan beside it (Split), or instead of it on a
+ * phone, since drawing happens there. Owns the m² / sq ft unit so the panel and
  * the 2D labels agree. Mounts the undo/redo shortcuts from planStore.
- * Connects to src/components/studio/* and src/components/plan2d/*.
+ * Connects to src/components/studio/*, src/components/plan2d/* and
+ * src/store/toolStore.ts.
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { PlanCanvas } from "@/components/plan2d/PlanCanvas";
@@ -16,6 +19,7 @@ import { ToolRail } from "@/components/studio/ToolRail";
 import { TopBar, type View } from "@/components/studio/TopBar";
 import { installPlanShortcuts } from "@/store/planStore";
 import { installSelectionShortcuts } from "@/store/selectionStore";
+import { useToolStore } from "@/store/toolStore";
 
 const SPLIT_QUERY = "(min-width: 640px)"; // Split is offered from here up (see TopBar)
 const watchWide = (cb: () => void) => {
@@ -33,6 +37,19 @@ export default function Studio() {
 
   const wide = useSyncExternalStore(watchWide, () => window.matchMedia(SPLIT_QUERY).matches, () => true);
   const shown = view === "split" && !wide ? "3d" : view; // a phone that was split on a wider window shows 3D
+
+  // Drawing needs the 2D plan: picking Wall from 3D alone brings it up. Done in the
+  // store subscription (an event, not an effect on render state) so it fires once
+  // per pick and the user can still go back to 3D alone afterwards.
+  useEffect(
+    () =>
+      useToolStore.subscribe((s, prev) => {
+        if (s.tool !== "wall" || prev.tool === "wall") return;
+        const isWide = window.matchMedia(SPLIT_QUERY).matches;
+        setView((v) => (v === "2d" || (v === "split" && isWide) ? v : isWide ? "split" : "2d"));
+      }),
+    [],
+  );
 
   return (
     <div className="flex h-svh flex-col overflow-hidden bg-limestone">

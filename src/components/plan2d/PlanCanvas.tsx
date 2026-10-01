@@ -23,6 +23,17 @@
  * src/lib/plan/edit.ts; this file only turns pointers into metres and calls the
  * store. Each drag is one undo step: see planStore.rollback for how.
  *
+ * Wall tool (src/store/toolStore.ts): click to start, click again to add a
+ * wall, and keep clicking to add joined walls; Escape, double-click, Enter or
+ * the Finish button ends the chain, and so does a click that lands on a wall
+ * already in the plan (closing a room). A tap does the same on a phone; a drag
+ * still pans. Each wall is added with planStore.drawWall, one undo step each;
+ * the preview (outline, snap marker, 45°/90° guide, live length) is local state
+ * and never touches the store, so a cancelled wall leaves no history. Points
+ * land through edit.snapDraw; edit.drawProblem says why a wall isn't allowed.
+ * With a wall started, typing a length (3.5, 350 cm, 11' 6") and Enter adds a
+ * wall exactly that long towards the pointer.
+ *
  * Pan/zoom lives here, not in the store. Nothing animates, so
  * prefers-reduced-motion needs no special case.
  * Mounted by src/app/studio/page.tsx (2D view and the 2D half of Split).
@@ -30,11 +41,16 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { formatArea, formatLength, type Unit } from "@/components/studio/PlanPanel";
 import { floorColor } from "@/data/materials";
+import { parseTypedLength } from "@/app/studio/import/importFile";
 import {
+  DRAW_THICKNESS,
   dragEndpoint,
   dragWallBody,
+  drawDefaults,
+  drawProblem,
   HANDLE_TOL_PX,
   HANDLE_TOL_TOUCH_PX,
+  landsOnPlan,
   newProblems,
   normalComponent,
   NUDGE_M,
@@ -45,15 +61,18 @@ import {
   roundPoint,
   roundTo,
   snapDrag,
+  snapDraw,
   snapRadius,
+  typedTarget,
   type Snap,
 } from "@/lib/plan/edit";
-import { wallLength, wallOutline } from "@/lib/plan/geometry";
+import { dist, JOINT_EPS, wallLength, wallOutline } from "@/lib/plan/geometry";
 import { validatePlan } from "@/lib/plan/validate";
 import { doorSwing, openingFrame } from "@/lib/plan2d/openings";
 import { fitView, niceScaleBar, screenToWorld, worldToScreen, zoomAt, type Bounds, type View } from "@/lib/plan2d/view";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { useSelectedRun, useSelectionStore } from "@/store/selectionStore";
+import { useToolStore } from "@/store/toolStore";
 import type { Vec2, Wall } from "@/types/plan";
 
 const NAME_PX = 15; // text-sm
@@ -69,11 +88,22 @@ const CLICK_SLOP_PX = 3; // a press that moves less than this is a click, not a 
 const pts = (ps: Vec2[]) => ps.map((p) => `${p.x},${p.y}`).join(" ");
 const add = (p: Vec2, d: Vec2, k: number): Vec2 => ({ x: p.x + d.x * k, y: p.y + d.y * k });
 
-const SNAP_WORDS: Record<string, string> = { endpoint: "corner", midpoint: "middle", angle: "angle", grid: "grid" };
+const SNAP_WORDS: Record<string, string> = { endpoint: "corner", midpoint: "middle", wall: "on wall", angle: "angle", grid: "grid" };
+const TYPED_KEY = /^[0-9.,'" cmfitn]$/i; // what a typed length can be made of: 3.5, 350 cm, 11' 6", 12 ft
+const GUIDE_PX = 4000; // the 45°/90° guide runs this far each way: off any screen
+
+/** A wall chain being drawn: where the next wall starts, how many walls it has
+ *  added, and the plan's problems before it began (for the warnings at the end). */
+interface Chain {
+  last: Vec2;
+  count: number;
+  baseline: string[];
+}
 
 /** What a pointer is doing: nothing, panning the camera, or editing a wall. */
 type Drag =
-  | { kind: "pan"; from: Vec2; moved: number }
+  /** `multi` once a second finger joined: lifting after a pinch is not a click. */
+  | { kind: "pan"; from: Vec2; moved: number; multi?: boolean }
   /** `joint` and `other` are the dragged end and the far end as they were when the
    *  drag started, and `walls` the plan it started from: snap targets must not
    *  drift under the cursor as the preview moves. */
@@ -109,6 +139,8 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
   const select = useSelectionStore((s) => s.select);
   const hover = useSelectionStore((s) => s.hover);
   const setWarnings = useSelectionStore((s) => s.setWarnings);
+  const tool = useToolStore((s) => s.tool);
+  const setTool = useToolStore((s) => s.setTool);
 
   const [view, setView] = useState<View>({ scale: 1, tx: 0, ty: 0 });
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -120,6 +152,14 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
   const drag = useRef<Drag | null>(null);
   const live = useRef(false); // a preview edit is sitting on top of history, ready to roll back
   const burst = useRef({ at: 0, offset: 0, baseline: [] as string[] }); // arrow-key run
+
+  // ---- Wall tool state: all local, none of it is in the plan or its history
+  const chainRef = useRef<Chain | null>(null); // read by handlers between renders
+  const [chain, setChainState] = useState<Chain | null>(null); // the same, for drawing
+  /** Where the pointer would land, and why a wall to there isn't allowed, if it isn't. */
+  const [ghost, setGhost] = useState<{ snap: Snap; problem: string | null } | null>(null);
+  const [typed, setTyped] = useState(""); // a length being typed
+  const [drawMsg, setDrawMsg] = useState<string | null>(null);
 
   // Bounds are read at fit time from the store, so plan edits never move the camera by themselves.
   const fit = (s: { width: number; height: number }) => fitView(outlinesOf(usePlanStore.getState().plan.walls).bounds, s);
@@ -220,6 +260,92 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
     });
   };
 
+  // ---- drawing walls
+  const putChain = (c: Chain | null) => {
+    chainRef.current = c;
+    setChainState(c);
+  };
+
+  /** End the chain: the walls stay (each is already its own undo step), the
+   *  preview goes, and the panel lists anything the new walls left unjoined. */
+  const finishChain = () => {
+    const c = chainRef.current;
+    if (c && c.count > 0) warnAbout(c.baseline);
+    putChain(null);
+    setGhost(null);
+    setTyped("");
+    setDrawMsg(null);
+  };
+  const finishRef = useRef(finishChain);
+  finishRef.current = finishChain;
+  // Leaving the Wall tool (the rail, or Escape) ends the chain.
+  useEffect(() => useToolStore.subscribe((st, prev) => prev.tool === "wall" && st.tool !== "wall" && finishRef.current()), []);
+
+  /** Where a pointer at canvas pixel `p` lands; angles are measured from the chain's last point. */
+  const landing = (p: Vec2, free: boolean) =>
+    snapDraw(world(p), usePlanStore.getState().plan.walls, { from: chainRef.current?.last, radius: snapRadius(view.scale), free });
+
+  const updateGhost = (p: Vec2, free: boolean) => {
+    const snap = landing(p, free);
+    const c = chainRef.current;
+    const long = c && dist(c.last, snap.point) >= JOINT_EPS;
+    setGhost({ snap, problem: long ? drawProblem(usePlanStore.getState().plan, c.last, snap.point) : null });
+  };
+
+  /** Add the wall chain.last → `to`, or say why not. Landing on the plan ends the chain. */
+  const addSegment = (c: Chain, to: Vec2) => {
+    if (dist(c.last, to) < JOINT_EPS) return; // the second click of a double-click: nothing to add
+    const now = usePlanStore.getState().plan;
+    const problem = drawProblem(now, c.last, to);
+    if (problem) {
+      setDrawMsg(problem);
+      return;
+    }
+    const joins = landsOnPlan(now.walls, to); // read before the wall is added: it ends at `to` itself
+    usePlanStore.getState().drawWall(c.last, to, drawDefaults(now.walls));
+    setDrawMsg(null);
+    setTyped("");
+    const next = { ...c, last: to, count: c.count + 1 };
+    if (joins) {
+      chainRef.current = next;
+      finishChain();
+    } else {
+      putChain(next);
+      setGhost((g) => g && { ...g, problem: null });
+    }
+  };
+
+  /** A click or tap with the Wall tool: start a chain, or add the next wall. */
+  const placePoint = (p: Vec2, free: boolean) => {
+    const snap = landing(p, free);
+    const c = chainRef.current;
+    if (!c) {
+      putChain({ last: snap.point, count: 0, baseline: validatePlan(usePlanStore.getState().plan) });
+      setGhost({ snap, problem: null });
+      setDrawMsg(null);
+      return;
+    }
+    addSegment(c, snap.point);
+  };
+
+  /** Enter after typing a length: a wall that long, towards where the pointer is. */
+  const commitTyped = () => {
+    const c = chainRef.current;
+    if (!c) return;
+    const len = parseTypedLength(typed.replace(",", "."));
+    setTyped("");
+    if (len === null) {
+      setDrawMsg(`"${typed}" isn't a length. Try 3.5, 350 cm or 11' 6".`);
+      return;
+    }
+    const to = ghost ? typedTarget(c.last, ghost.snap.point, len) : null;
+    if (!to) {
+      setDrawMsg("Point to where the wall should go, then type its length.");
+      return;
+    }
+    addSegment(c, to);
+  };
+
   // ---- pointers: a wall under the cursor is edited, otherwise one pans and two pinch-zoom
   const local = (e: ReactPointerEvent): Vec2 => {
     const r = root.current!.getBoundingClientRect();
@@ -235,11 +361,15 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
     if (pointers.current.size >= 1 && drag.current && drag.current.kind !== "pan") cancelDrag();
     e.currentTarget.setPointerCapture(e.pointerId);
     pointers.current.set(e.pointerId, local(e));
-    if (pointers.current.size > 1) return;
+    if (pointers.current.size > 1) {
+      if (drag.current?.kind === "pan") drag.current.multi = true;
+      return;
+    }
 
     root.current!.focus({ preventScroll: true }); // so Escape, Delete and the arrows reach this canvas
     burst.current.at = 0;
-    const hit = pickAt(local(e), e.pointerType === "touch");
+    // The Wall tool never grabs walls: a press is a click (place a point) or a pan.
+    const hit = tool === "select" ? pickAt(local(e), e.pointerType === "touch") : null;
     if (!hit) {
       drag.current = { kind: "pan", from: local(e), moved: 0 };
       return;
@@ -255,7 +385,9 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
   const onPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
     const prev = pointers.current.get(e.pointerId);
     if (!prev) {
-      if (!drag.current) hover(pickAt(local(e), false)?.wallId ?? null); // plain hover, no button down
+      if (drag.current) return;
+      if (tool === "wall") updateGhost(local(e), e.altKey); // the preview follows the mouse
+      else hover(pickAt(local(e), false)?.wallId ?? null); // plain hover, no button down
       return;
     }
     const pos = local(e);
@@ -302,8 +434,10 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
     const d = drag.current;
     if (!d) return;
     if (d.kind === "pan") {
-      if (d.moved <= CLICK_SLOP_PX) select(null); // a click on empty space clears the selection
       drag.current = null;
+      if (d.moved > CLICK_SLOP_PX || d.multi || e.type !== "pointerup") return; // a pan, a pinch or a cancel: not a click
+      if (tool === "wall") placePoint(local(e), e.altKey);
+      else select(null); // a click on empty space clears the selection
       return;
     }
     // Round to 1 cm on release, then say what the edit broke, if anything.
@@ -324,6 +458,34 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.target !== e.currentTarget || e.metaKey || e.ctrlKey) return; // only when the canvas itself has focus
+
+    if (tool === "wall") {
+      if (e.key === "Escape") {
+        e.stopPropagation(); // beat the page-wide Escape in selectionStore
+        if (typed) setTyped(""); // first Escape drops a half-typed length
+        else if (chainRef.current) finishChain();
+        else setTool("select"); // nothing being drawn: back to Select
+        return;
+      }
+      if (chainRef.current && !e.altKey) {
+        if (TYPED_KEY.test(e.key)) {
+          e.preventDefault(); // digits type a length here instead of zooming or fitting
+          setTyped((t) => (t + e.key).slice(0, 16));
+          return;
+        }
+        if (e.key === "Backspace" && typed) {
+          e.preventDefault();
+          setTyped((t) => t.slice(0, -1));
+          return;
+        }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          if (typed) commitTyped();
+          else finishChain();
+          return;
+        }
+      }
+    }
 
     if (e.key === "Escape") {
       e.stopPropagation(); // beat the page-wide Escape in selectionStore
@@ -402,6 +564,46 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
   }, [visible, view, size]);
   const gridOpacity = Math.min(1, (view.scale - GRID_MIN_PX) / GRID_MIN_PX);
 
+  // The wall being drawn, from the chain's last point to where the pointer lands.
+  const ghostWall: Wall | null =
+    tool === "wall" && chain && ghost && dist(chain.last, ghost.snap.point) >= JOINT_EPS
+      ? { id: "draw-ghost", a: chain.last, b: ghost.snap.point, thickness: DRAW_THICKNESS, height: 0 }
+      : null;
+  const ghostOutline = ghostWall ? wallOutline(ghostWall, [...plan.walls, ghostWall]) : [];
+  const drawLength = typed ? `${typed}…` : ghostWall ? formatLength(wallLength(ghostWall), unit) : "";
+  /** The 45°/90° guide: a dashed line through the chain's last point, along the snapped angle. */
+  const guide = (() => {
+    if (!ghostWall || ghost?.snap.kind !== "angle") return null;
+    const [p, q] = [S(ghostWall.a), S(ghostWall.b)];
+    const len = Math.hypot(q.x - p.x, q.y - p.y);
+    if (len < 1) return null;
+    const u = { x: (q.x - p.x) / len, y: (q.y - p.y) / len };
+    return { from: add(p, u, -GUIDE_PX), to: add(p, u, GUIDE_PX) };
+  })();
+  const message = hud?.message ?? drawMsg ?? ghost?.problem ?? undefined;
+
+  /** A snap marker with its word, and a text read-out beside it. */
+  const readout = (at: Vec2, snap: Snap | null, text: string) => {
+    const p = S(at);
+    return (
+      <>
+        {snap && (
+          <g data-testid="snap-marker" data-snap={snap.kind ?? "none"}>
+            <circle cx={p.x} cy={p.y} r={6} className="fill-none stroke-gilt" strokeWidth={2} />
+            <text x={p.x + 10} y={p.y - 10} className="fill-gilt stroke-limestone text-xs" style={{ paintOrder: "stroke", strokeWidth: 3 }}>
+              {SNAP_WORDS[snap.kind ?? ""] ?? ""}
+            </text>
+          </g>
+        )}
+        {text && (
+          <text x={p.x + 10} y={p.y + 18} className="fill-iron stroke-limestone text-sm" style={{ paintOrder: "stroke", strokeWidth: 3 }} data-testid="drag-length">
+            {text}
+          </text>
+        )}
+      </>
+    );
+  };
+
   const barMetres = niceScaleBar(view.scale);
   const barPx = barMetres * view.scale;
 
@@ -410,13 +612,19 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
       ref={root}
       tabIndex={0}
       role="group"
-      aria-label="2D plan. Click a wall to select it, arrow keys nudge the selected wall or pan when none is selected, Delete removes it, Escape clears the selection. Plus and minus zoom, 0 fits the plan."
+      aria-label={
+        tool === "wall"
+          ? "2D plan, drawing walls. Click to start a wall and click again to add it; keep clicking to add joined walls. Type a length and press Enter for an exact one. Escape, Enter or double-click finishes; Escape again goes back to Select."
+          : "2D plan. Click a wall to select it, arrow keys nudge the selected wall or pan when none is selected, Delete removes it, Escape clears the selection. Plus and minus zoom, 0 fits the plan."
+      }
       data-testid="plan-canvas"
       data-scale={view.scale.toFixed(4)}
       data-tx={view.tx.toFixed(2)}
       data-ty={view.ty.toFixed(2)}
       data-selected={selectedId ?? ""}
       data-run={run.join(" ")}
+      data-tool={tool}
+      data-drawing={chain ? "true" : "false"}
       onKeyDown={onKeyDown}
       style={{ outlineOffset: -3 }} // inside the box, so the overflow clip doesn't cut the focus ring
       className="absolute inset-0 touch-none select-none overflow-hidden bg-limestone"
@@ -428,12 +636,13 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
           role="img"
           aria-label={`Floor plan with ${rooms.length} ${rooms.length === 1 ? "room" : "rooms"}`}
           data-testid="plan-svg"
-          className={`block touch-none ${hoveredId ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
+          className={`block touch-none ${tool === "wall" ? "cursor-crosshair" : hoveredId ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerEnd}
           onPointerCancel={onPointerEnd}
           onPointerLeave={() => !drag.current && hover(null)}
+          onDoubleClick={() => tool === "wall" && finishChain()}
         >
           {/* room floors, tinted by the floor material */}
           {rooms.map((r) => (
@@ -492,7 +701,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
           })}
 
           {/* hover: a light gilt wash over the wall under the cursor */}
-          {hoveredId && hoveredId !== selectedId && outlines.get(hoveredId) && (
+          {tool === "select" && hoveredId && hoveredId !== selectedId && outlines.get(hoveredId) && (
             <polygon points={pts(outlines.get(hoveredId)!.map(S))} className="fill-gilt" fillOpacity={0.35} data-testid="plan-hover" />
           )}
 
@@ -546,17 +755,27 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
           {/* live drag read-out: where it snapped, and how long the wall is now */}
           {hud && (
             <g className="font-sans" data-testid="drag-hud">
-              {hud.snap && (
-                <g data-testid="snap-marker" data-snap={hud.snap.kind ?? "none"}>
-                  <circle cx={S(hud.at).x} cy={S(hud.at).y} r={6} className="fill-none stroke-gilt" strokeWidth={2} />
-                  <text x={S(hud.at).x + 10} y={S(hud.at).y - 10} className="fill-gilt stroke-limestone text-xs" style={{ paintOrder: "stroke", strokeWidth: 3 }}>
-                    {SNAP_WORDS[hud.snap.kind ?? ""] ?? ""}
-                  </text>
-                </g>
+              {readout(hud.at, hud.snap, hud.text)}
+            </g>
+          )}
+
+          {/* the wall being drawn: guide, outline (dashed when it isn't allowed), start point, read-out */}
+          {tool === "wall" && ghost && (
+            <g className="font-sans" data-testid="draw-preview">
+              {guide && <line x1={guide.from.x} y1={guide.from.y} x2={guide.to.x} y2={guide.to.y} className="stroke-cyanotype" strokeWidth={1} strokeDasharray="6 4" opacity={0.6} data-testid="snap-guide" />}
+              {ghostOutline.length > 0 && (
+                <polygon
+                  points={pts(ghostOutline.map(S))}
+                  className={ghost.problem ? "fill-none stroke-smoke" : "fill-gilt stroke-gilt"}
+                  fillOpacity={0.4}
+                  strokeWidth={1.5}
+                  strokeDasharray={ghost.problem ? "5 4" : undefined}
+                  data-testid="draw-ghost"
+                  data-valid={ghost.problem ? "false" : "true"}
+                />
               )}
-              <text x={S(hud.at).x + 10} y={S(hud.at).y + 18} className="fill-iron stroke-limestone text-sm" style={{ paintOrder: "stroke", strokeWidth: 3 }} data-testid="drag-length">
-                {hud.text}
-              </text>
+              {chain && <circle cx={S(chain.last).x} cy={S(chain.last).y} r={4} className="fill-gilt stroke-vellum" strokeWidth={1} data-testid="draw-start" />}
+              {readout(ghost.snap.point, ghost.snap, drawLength)}
             </g>
           )}
 
@@ -570,11 +789,25 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
         </svg>
       )}
 
-      {/* why a drag stopped short, in plain words */}
-      {hud?.message && (
-        <p role="status" data-testid="drag-message" className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded border border-stone bg-vellum px-3 py-1.5 text-xs text-iron shadow">
-          {hud.message}
+      {/* why a drag stopped short, or why a wall can't be drawn there, in plain words */}
+      {message && (
+        <p role="status" data-testid="drag-message" className="pointer-events-none absolute bottom-3 left-1/2 w-max max-w-[calc(100%-2rem)] -translate-x-1/2 rounded border border-stone bg-vellum px-3 py-1.5 text-xs text-iron shadow">
+          {message}
         </p>
+      )}
+
+      {/* Wall tool: what to do next, and Finish for touch screens with no Escape key */}
+      {tool === "wall" && (
+        <div data-testid="draw-bar" className="absolute left-2 right-14 top-2 flex flex-wrap items-center gap-2">
+          <p className="rounded border border-stone bg-vellum px-2 py-1 text-xs text-iron shadow">
+            {chain ? (typed ? `Length ${typed}, Enter to add` : "Click to add a wall, or type its length") : "Click where the wall starts"}
+          </p>
+          {chain && (
+            <button type="button" data-testid="draw-finish" onClick={finishChain} className="min-h-9 rounded border border-stone bg-vellum px-3 text-xs text-iron shadow hover:bg-limestone">
+              Finish
+            </button>
+          )}
+        </div>
       )}
 
       {/* Fit, +, − : a column at the top right, outside the plan's fitted area */}
