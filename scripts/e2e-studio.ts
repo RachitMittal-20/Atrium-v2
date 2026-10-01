@@ -84,6 +84,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { chromium, type Page } from "playwright";
+import sharp from "sharp";
 
 const BASE = process.env.E2E_URL ?? "http://localhost:3000";
 const OUT = "/tmp/studio";
@@ -108,7 +109,12 @@ type Opening = { id: string; wallId: string; kind: "door" | "window"; offset: nu
 type Scene3d = { wallIds(): string[]; openings(): { id: string; kind: string; leafTurn: number | null }[] };
 type Measurement = { a: Pt; b: Pt | null } | null;
 type Tools = { getState(): { tool: string; measurement: Measurement } };
-type Win = Window & { __planStore?: Store; __selectionStore?: Selection; __toolStore?: Tools; __scene3d?: Scene3d };
+type Studio3d = {
+  project(p: { x: number; y: number; z: number }): Pt;
+  wallBox(id: string): { minY: number; maxY: number } | null;
+};
+type PushPullDebug = { hoverFace: { wallId: string; role: string } | null; active: boolean };
+type Win = Window & { __planStore?: Store; __selectionStore?: Selection; __toolStore?: Tools; __scene3d?: Scene3d; __studio3d?: Studio3d; __pushPullDebug?: PushPullDebug };
 const plan = (page: Page) => page.evaluate(() => (window as Win).__planStore!.getState().plan);
 const selectedId = (page: Page) => page.evaluate(() => (window as Win).__selectionStore!.getState().selectedId);
 const num = async (page: Page, id: string) => parseFloat((await page.getByTestId(id).innerText()).replace(/[^\d.]/g, ""));
@@ -1487,6 +1493,318 @@ async function checkSwingPersists(width: number, height: number, touch: boolean)
   await browser.close();
 }
 
+// ---- 3D Push/Pull (step 4.7a)
+
+/**
+ * The 3D Push/Pull tool on the wall top, with the mouse at 1440 and real touch at 390.
+ * A fresh browser. The dev-only hooks are used ONLY to find where to point (a world
+ * point's place on the page) and to read what is hovered and the real mesh's height;
+ * every action is a real pointer or touch event: click the rail button, hover, press,
+ * drag, release, click-move-click, type, Alt, Escape, a second finger, Ctrl+Z.
+ * Wall tops are checked on the south wall (w-FG, w-LF, w-EL: one straight wall of three
+ * pieces), pointing at the middle of w-LF. Highlights are checked by looking for
+ * light-blue pixels in a real screenshot.
+ */
+async function checkPushPull(width: number, height: number, touch: boolean) {
+  const tag = `${width} push/pull`;
+  const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
+  const page = await browser.newPage({ viewport: { width, height }, hasTouch: touch });
+  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
+  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  await page.goto(`${BASE}/studio`);
+  await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" }); // the dev badge swallows phone taps
+  await tid(page, "plan-name").waitFor();
+  await page.waitForSelector("canvas");
+  await page.waitForTimeout(1500); // the scene's first frames and the camera fit
+
+  const RUN = ["w-FG", "w-LF", "w-EL"]; // the south wall: three pieces of one straight wall
+  const MID = { x: 5.5, y: 2.7, z: 8 }; // the middle of w-LF's top
+  const proj = (p: { x: number; y: number; z: number }) => page.evaluate((q) => (window as Win).__studio3d!.project(q), p);
+  const heights = async () => {
+    const walls = (await plan(page)).walls;
+    return Object.fromEntries(walls.map((w) => [w.id, w.height])) as Record<string, number>;
+  };
+  const past = () => page.evaluate(() => (window as Win).__planStore!.getState().past.length);
+  const hoverFace = () => page.evaluate(() => (window as Win).__pushPullDebug!.hoverFace);
+  const active = () => page.evaluate(() => (window as Win).__pushPullDebug!.active);
+  const meshTop = async (id: string) => (await page.evaluate((i) => (window as Win).__studio3d!.wallBox(i), id))!.maxY;
+  const readLabel = async () => {
+    const d = (await tid(page, "pushpull-distance").innerText()).trim();
+    const h = (await tid(page, "pushpull-height").innerText()).trim();
+    return { distance: parseFloat(d.replace("+", "")), height: parseFloat(h.replace("Height", "")), scope: (await tid(page, "pushpull-scope").innerText()).trim(), text: await tid(page, "pushpull-label").innerText() };
+  };
+  /** Light-blue pixels (the highlight) in a real screenshot of a small square around `c`. */
+  const bluePixels = async (c: Pt) => {
+    const r = 18;
+    const clip = { x: Math.max(0, c.x - r), y: Math.max(0, c.y - r), width: 2 * r, height: 2 * r };
+    const { data, info } = await sharp(await page.screenshot({ clip })).raw().toBuffer({ resolveWithObject: true });
+    let n = 0;
+    for (let i = 0; i < data.length; i += info.channels) if (data[i + 2] - data[i] > 45 && data[i + 2] > 170) n++;
+    return n;
+  };
+  const tap = async (p: Pt) => {
+    if (touch) await page.touchscreen.tap(p.x, p.y);
+    else await page.mouse.click(p.x, p.y);
+    await page.waitForTimeout(touch ? 300 : 120);
+  };
+  const undo = async () => {
+    if (touch) await tid(page, "undo").tap();
+    else await page.keyboard.press("Control+z");
+    await page.waitForTimeout(100);
+  };
+  const same = (a: Record<string, number>, b: Record<string, number>, msg: string) => assert.deepEqual(a, b, msg);
+  const grow = (h: Record<string, number>, ids: string[], d: number) => ({ ...h, ...Object.fromEntries(ids.map((i) => [i, +(h[i] + d).toFixed(2)])) });
+
+  // ---- choose the tool in the rail
+  assert.equal(await tid(page, "tool-pushpull").getAttribute("aria-disabled"), "false", `${tag}: Push/Pull is enabled in the 3D view`);
+  if (touch) await tid(page, "tool-pushpull").tap();
+  else await tid(page, "tool-pushpull").click();
+  assert.equal(await tid(page, "tool-pushpull").getAttribute("aria-pressed"), "true", `${tag}: the Push/Pull button is pressed`);
+  assert.equal(await tid(page, "tool-select").getAttribute("aria-pressed"), "false", `${tag}: and Select is not`);
+  assert.equal((await tid(page, "pushpull-status").innerText()).trim(), "Click a face to push or pull it. Type a distance and press Enter.", `${tag}: the status line says what to do`);
+  assert.equal(await tid(page, "plan-wall").count(), 0, `${tag}: the 2D pane is not showing`);
+
+  const base = await heights();
+  const top = await proj(MID);
+  assert.ok(top.x > 0 && top.x < width && top.y > 0 && top.y < height, `${tag}: the wall top is on screen at (${top.x.toFixed(0)}, ${top.y.toFixed(0)})`);
+  // a finger is aimed 10 px past the thin strip, on empty floor beyond the wall, to show the 44 px target works; a mouse is exact
+  const aim = touch ? { x: top.x, y: top.y - 10 } : top;
+
+  // ---- hover (mouse): the debug hook says the role, a highlight is painted, the selection store is left alone
+  if (!touch) {
+    const calm = await bluePixels(top);
+    await page.mouse.move(top.x, top.y);
+    await page.waitForTimeout(250);
+    assert.deepEqual(await hoverFace(), { wallId: "w-LF", role: "top" }, `${tag}: hovering the south wall top says role top`);
+    assert.match(await tid(page, "pushpull-label").innerText(), /Wall top/, `${tag}: the label names it`);
+    const lit = await bluePixels(top);
+    assert.ok(lit > calm + 30, `${tag}: a light-blue highlight is painted on the face (${calm} → ${lit} blue pixels)`);
+    assert.equal(await selectedId(page), null, `${tag}: hovering selected nothing`);
+    assert.equal(await page.evaluate(() => (window as Win).__selectionStore!.getState().openingId), null);
+    await page.screenshot({ path: `${OUT}/pushpull-hover-1440.png` });
+
+    // a side face: highlighted, and the label says Not yet
+    const side = await proj({ x: 5.5, y: 1.2, z: 8.1 });
+    await page.mouse.move(side.x, side.y);
+    await page.waitForTimeout(250);
+    const f = await hoverFace();
+    assert.ok(f && /^side/.test(f.role), `${tag}: hovering the wall's side face says ${f?.role}`);
+    assert.match(await tid(page, "pushpull-label").innerText(), /Not yet/, `${tag}: and the label says Not yet`);
+    assert.ok((await bluePixels(side)) > 30, `${tag}: the side face is highlighted too`);
+    await page.mouse.move(top.x, top.y);
+    await page.waitForTimeout(150);
+  }
+
+  // ---- press-drag up: the whole straight wall grows by the label's value, in the store and in the 3D mesh
+  const meshBefore = await meshTop("w-LF");
+  const drag1 = { x: aim.x, y: aim.y - 80 };
+  let mid = { distance: 0, height: 0, scope: "", text: "" };
+  const holdMid = async () => {
+    await page.waitForTimeout(150);
+    mid = await readLabel();
+    assert.equal(await active(), true, `${tag}: a pull is active mid-drag`);
+    await page.screenshot({ path: `${OUT}/pushpull-mid-drag-${width}.png` });
+  };
+  if (touch) await touchDrag(page, aim, drag1, holdMid);
+  else {
+    await page.mouse.move(aim.x, aim.y);
+    await page.mouse.down();
+    await page.mouse.move(aim.x, aim.y - 40, { steps: 5 });
+    await page.mouse.move(drag1.x, drag1.y, { steps: 5 });
+    await holdMid();
+    await page.mouse.up();
+  }
+  await page.waitForTimeout(150);
+  assert.ok(mid.distance > 0.3, `${tag}: pulling up grew the wall (label ${mid.distance} m)`);
+  assert.equal(mid.scope, "Wall of 3 pieces", `${tag}: the label says Wall of 3 pieces`);
+  near(mid.height, base["w-LF"] + mid.distance, 0.006, `${tag}: "Height" is the old height plus the distance`);
+  const after1 = await heights();
+  same(after1, grow(base, RUN, mid.distance), `${tag}: every piece of the straight wall grew by the label's value, nothing else changed`);
+  for (const id of RUN) near(await meshTop(id), after1[id], 0.002, `${tag}: the 3D mesh of ${id} is that tall (world box)`);
+  near(await meshTop("w-LF"), meshBefore + mid.distance, 0.002, `${tag}: and rose by the same amount`);
+  assert.equal(await active(), false, `${tag}: releasing ended the pull`);
+  assert.equal(await past(), 1, `${tag}: the whole drag is one history entry`);
+  assert.equal(await selectedId(page), null, `${tag}: and selected nothing`);
+
+  // ---- one undo restores every piece (Ctrl+Z, or the Undo button on a phone), and redo brings it back
+  await undo();
+  same(await heights(), base, `${tag}: one undo restores every height`);
+  near(await meshTop("w-LF"), meshBefore, 0.002, `${tag}: and the 3D mesh`);
+  assert.equal(await past(), 0);
+  if (touch) await tid(page, "redo").tap();
+  else await page.keyboard.press("Control+Shift+z");
+  same(await heights(), after1, `${tag}: redo brings the pull back`);
+  await undo();
+
+  // ---- Escape (or a second finger) mid-drag cancels, with history unchanged
+  const pastBefore = await past();
+  if (touch) {
+    const cdp = await page.context().newCDPSession(page);
+    const pts = (...ps: Pt[]) => ps.map((p, i) => ({ x: p.x, y: p.y, id: i }));
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: pts(aim) });
+    for (let i = 1; i <= 5; i++) await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: pts({ x: aim.x, y: aim.y - 12 * i }) });
+    assert.equal(await active(), true, `${tag}: a pull is active before the second finger`);
+    assert.notDeepEqual(await heights(), base, `${tag}: and live in the plan`);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: pts({ x: aim.x, y: aim.y - 60 }, { x: aim.x - 90, y: aim.y - 130 }) }); // a second finger, away from the pointer's label and its 123 button
+    await page.waitForTimeout(150);
+    assert.equal(await active(), false, `${tag}: a second finger cancels the pull`);
+    same(await heights(), base, `${tag}: and restores the heights`);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await cdp.detach();
+  } else {
+    await page.mouse.move(aim.x, aim.y);
+    await page.mouse.down();
+    await page.mouse.move(aim.x, aim.y - 60, { steps: 5 });
+    assert.equal(await active(), true, `${tag}: a pull is active before Escape`);
+    assert.notDeepEqual(await heights(), base, `${tag}: and live in the plan`);
+    await page.keyboard.press("Escape");
+    assert.equal(await active(), false, `${tag}: Escape cancels the pull`);
+    same(await heights(), base, `${tag}: and restores the heights`);
+    await page.mouse.up();
+  }
+  assert.equal(await past(), pastBefore, `${tag}: and the history length is unchanged`);
+  same(await heights(), base, `${tag}: still the original heights after the release`);
+  await page.waitForTimeout(200);
+
+  // ---- click-move-click: a click arms the pull, the pointer moves it, the next click commits
+  await tap(aim);
+  assert.equal(await active(), true, `${tag}: a click on the face arms a pull`);
+  same(await heights(), base, `${tag}: with nothing changed yet`);
+  assert.equal(await past(), pastBefore, `${tag}: and no history`);
+  const second = { x: aim.x, y: aim.y - 60 };
+  if (!touch) {
+    await page.mouse.move(aim.x, aim.y - 30, { steps: 4 });
+    await page.mouse.move(second.x, second.y, { steps: 4 });
+    await page.waitForTimeout(100);
+    const live = await readLabel();
+    assert.ok(live.distance > 0.2, `${tag}: moving the pointer pulls (label ${live.distance} m)`);
+    same(await heights(), grow(base, RUN, live.distance), `${tag}: live in the plan`);
+    assert.equal(await past(), pastBefore + 1, `${tag}: as one history entry`);
+    await page.mouse.click(second.x, second.y);
+  } else {
+    await tap(second); // on a phone the second tap is where the pointer is
+  }
+  await page.waitForTimeout(150);
+  assert.equal(await active(), false, `${tag}: the second click ends it`);
+  const afterClicks = await heights();
+  assert.ok(afterClicks["w-LF"] > base["w-LF"] + 0.2, `${tag}: and the wall stays pulled (${afterClicks["w-LF"]})`);
+  for (const id of RUN) assert.equal(afterClicks[id], afterClicks["w-LF"], `${tag}: ${id} is as tall as the rest of its wall`);
+  assert.equal(await past(), pastBefore + 1, `${tag}: click-move-click is one undo step`);
+  await undo();
+  same(await heights(), base, `${tag}: and one undo undoes it`);
+
+  // ---- type a distance: 0.3 then Enter makes it exactly 0.3 m taller. The pointer is ignored while typing.
+  await tap(aim);
+  assert.equal(await active(), true, `${tag}: a click arms the pull again`);
+  if (touch) {
+    await tid(page, "pushpull-123").waitFor();
+    await tid(page, "pushpull-123").tap(); // phones have no keyboard to type into the canvas: the 123 button opens a field
+    await tid(page, "pushpull-input").waitFor();
+    await page.keyboard.type("0.3");
+  } else {
+    await page.keyboard.type("0.3"); // the 3D canvas has focus after the click
+  }
+  assert.match(await tid(page, "pushpull-typed").innerText(), /0\.3/, `${tag}: the typed text shows in the label`);
+  assert.equal((await readLabel()).distance, 0.3, `${tag}: and previews +0.30 m`);
+  await page.screenshot({ path: `${OUT}/pushpull-typed-${width}.png` });
+  if (!touch) {
+    await page.mouse.move(aim.x, aim.y - 100, { steps: 5 }); // the mouse keeps moving…
+    await page.waitForTimeout(100);
+    assert.equal((await readLabel()).distance, 0.3, `${tag}: …and is ignored while a number is typed`);
+  }
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(150);
+  assert.equal(await active(), false, `${tag}: Enter finishes`);
+  same(await heights(), grow(base, RUN, 0.3), `${tag}: every piece is exactly 0.3 m taller (${base["w-LF"]} → ${(base["w-LF"] + 0.3).toFixed(2)})`);
+  assert.equal(await past(), 1, `${tag}: one undo step`);
+  await undo();
+  same(await heights(), base, `${tag}: undone`);
+
+  if (!touch) {
+    // a negative distance, typed
+    await tap(aim);
+    await page.keyboard.type("-0.4");
+    await page.keyboard.press("Enter");
+    same(await heights(), grow(base, RUN, -0.4), `${tag}: typing -0.4 pushes the wall down 0.4 m`);
+    await undo();
+
+    // ---- Alt: only the picked piece
+    await page.keyboard.down("Alt");
+    await page.mouse.move(aim.x, aim.y);
+    await page.mouse.down();
+    await page.mouse.move(aim.x, aim.y - 40, { steps: 4 });
+    await page.mouse.move(aim.x, aim.y - 80, { steps: 4 });
+    await page.waitForTimeout(100);
+    const alt = await readLabel();
+    assert.equal(alt.scope, "This piece only", `${tag}: with Alt held the label says This piece only`);
+    await page.mouse.up();
+    await page.keyboard.up("Alt");
+    const afterAlt = await heights();
+    same(afterAlt, { ...base, "w-LF": +(base["w-LF"] + alt.distance).toFixed(2) }, `${tag}: Alt pulled w-LF alone (${alt.distance} m); its neighbours did not move`);
+    await undo();
+    same(await heights(), base, `${tag}: undone`);
+
+    // pressing a face that is not wired yet does nothing but orbit: no pull, no history (last, because it moves the camera)
+    const side = await proj({ x: 5.5, y: 1.2, z: 8.1 });
+    await page.mouse.move(side.x, side.y);
+    await page.mouse.down();
+    await page.mouse.move(side.x, side.y - 40, { steps: 4 });
+    assert.equal(await active(), false, `${tag}: a press on a face that is not wired starts no pull`);
+    await page.mouse.up();
+    assert.equal(await past(), 0, `${tag}: and records nothing`);
+
+    // ---- an ordinary orbit drag from empty space still orbits, and starts no pull
+    const marker = { x: 0, y: 0, z: 0 }; // a point away from the orbit's pivot (the plan's centre), which would not move
+    const spot = await proj({ x: 6, y: 0, z: -2.5 }); // bare ground north of the house
+    const pane = await box(page, "scene-3d");
+    assert.ok(spot.x > pane.x + 20 && spot.x < pane.x + pane.width - 160 && spot.y > pane.y + 20 && spot.y < pane.y + pane.height - 20, `${tag}: the empty-ground spot (${spot.x.toFixed(0)}, ${spot.y.toFixed(0)}) is inside the 3D pane`);
+    await page.mouse.move(spot.x, spot.y);
+    await page.waitForTimeout(150);
+    assert.equal(await hoverFace(), null, `${tag}: and over no wall`);
+    const before = await proj(marker);
+    await page.mouse.down();
+    await page.mouse.move(spot.x + 120, spot.y - 20, { steps: 8 });
+    assert.equal(await active(), false, `${tag}: a drag from empty space starts no pull`);
+    await page.mouse.up();
+    const moved = await proj(marker);
+    assert.ok(Math.hypot(moved.x - before.x, moved.y - before.y) > 20, `${tag}: it orbited the camera (the floor moved ${Math.hypot(moved.x - before.x, moved.y - before.y).toFixed(0)} px on screen)`);
+    assert.equal(await past(), 0, `${tag}: and recorded nothing`);
+  }
+
+  assert.deepEqual(await page.evaluate(() => (window as Win).__selectionStore!.getState().selectedId), null, `${tag}: nothing was ever selected`);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${tag}: no horizontal scroll`);
+  const railBox = await box(page, "tool-pushpull");
+  assert.ok(railBox.x >= 0 && railBox.x + railBox.width <= width + 1, `${tag}: the Push/Pull button is inside the screen`);
+
+  if (!touch) {
+    // ---- P picks the tool; in the 2D-only view the button is disabled with a tooltip, and the tool steps back to Select
+    await tid(page, "tool-select").click();
+    await page.getByTestId("scene-3d").focus();
+    await page.keyboard.press("p");
+    assert.equal(await tid(page, "tool-pushpull").getAttribute("aria-pressed"), "true", `${tag}: the P key picks Push/Pull`);
+    await tid(page, "view-2d").click();
+    assert.equal(await tid(page, "tool-pushpull").getAttribute("aria-disabled"), "true", `${tag}: in the 2D-only view the button is disabled`);
+    assert.equal(await tid(page, "tool-pushpull").getAttribute("aria-pressed"), "false", `${tag}: and the tool went back to Select`);
+    assert.equal((await page.locator("#tip-pushpull").textContent())?.trim(), "Push/Pull works in the 3D view", `${tag}: with the tooltip that says why`);
+    await page.keyboard.press("p");
+    assert.equal(await tid(page, "tool-pushpull").getAttribute("aria-pressed"), "false", `${tag}: P does nothing in 2D`);
+    await tid(page, "view-split").click();
+    assert.equal(await tid(page, "tool-pushpull").getAttribute("aria-disabled"), "false", `${tag}: Split has a 3D pane: enabled again`);
+    await tid(page, "tool-pushpull").click();
+    assert.equal(await tid(page, "plan-svg").count(), 1, `${tag}: choosing Push/Pull in Split leaves the 2D pane showing`);
+    // while walking the tool is inert
+    await tid(page, "view-3d").click();
+    await tid(page, "camera-walk").click();
+    await page.waitForTimeout(400);
+    assert.equal(await tid(page, "pushpull-overlay").count(), 0, `${tag}: in Walk the Push/Pull overlay is gone`);
+    await page.mouse.move(top.x, top.y);
+    assert.equal(await hoverFace(), null, `${tag}: and nothing is hovered`);
+    await tid(page, "walk-exit").click();
+  }
+  console.log(`${tag}: ok (${touch ? "real touch events, a finger 10 px off the strip, second finger, 123 field" : "mouse, hover highlight by pixels, drag, Escape, click-move-click, typing, Alt, orbit"})`);
+  await browser.close();
+}
+
 async function run(width: number, height: number) {
   const tag = String(width);
   const wide = width >= 768;
@@ -1631,11 +1949,21 @@ async function main() {
     console.log("e2e-studio (swing only): ok");
     return;
   }
+  if (process.env.E2E_ONLY === "pushpull") {
+    // just the 3D Push/Pull checks (fast: handy when working on the tool)
+    await checkPushPull(1440, 900, false);
+    await checkPushPull(390, 844, true);
+    assert.deepEqual(errors, [], `console errors:\n${errors.join("\n")}`);
+    console.log("e2e-studio (push/pull only): ok");
+    return;
+  }
   await run(1440, 900);
   await run(390, 844);
   await checkAutosave();
   await checkSwingPersists(1440, 900, false);
   await checkSwingPersists(390, 844, true);
+  await checkPushPull(1440, 900, false);
+  await checkPushPull(390, 844, true);
   assert.deepEqual(errors, [], `console errors:\n${errors.join("\n")}`);
   console.log("e2e-studio: ok; screenshots in", OUT);
 }

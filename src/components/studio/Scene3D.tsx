@@ -18,11 +18,16 @@ import { Canvas, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { PlanModel } from "@/components/three/PlanModel";
+import { isWired } from "@/lib/plan/pushpull";
+import { PushPullTool } from "@/components/three/PushPullTool";
 import { WalkControls } from "@/components/three/WalkControls";
 import { SCENE_COLORS } from "@/data/materials";
 import { usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
+import { usePushPullStore } from "@/store/pushPullStore";
+import { useToolStore } from "@/store/toolStore";
 import { useViewStore } from "@/store/viewStore";
+import { PushPullOverlay } from "./PushPullOverlay";
 import { WalkOverlay } from "./WalkOverlay";
 
 /** The walls' bounding box in world space: x/z on the ground, `height` up. */
@@ -116,6 +121,9 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
   }, [cx, cz]);
   const host = useRef<HTMLDivElement>(null);
   const walking = useViewStore((s) => s.mode === "walk");
+  // Push/Pull's cursor says what a press would do: a wired face pulls, any other face does nothing yet
+  const cursor = usePushPullStore((s) => (s.pull ? "ns-resize" : s.hover ? (isWired(s.hover.role) ? "ns-resize" : "not-allowed") : undefined));
+  const pushPull = useToolStore((s) => s.tool === "pushpull") && !walking;
 
   return (
     <>
@@ -123,10 +131,10 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
         ref={host}
         tabIndex={0}
         role="group"
-        aria-label="3D view. Drag to orbit. In Walk: W A S D move, arrows turn, drag to look, Shift runs, Escape exits."
+        aria-label="3D view. Drag to orbit. With the Push/Pull tool, drag a wall top to change its height, or type a distance and press Enter. In Walk: W A S D move, arrows turn, drag to look, Shift runs, Escape exits."
         data-testid="scene-3d"
         className="absolute inset-0 focus-visible:outline-offset-[-3px]"
-        style={{ touchAction: walking ? "none" : undefined }} // a walking drag looks; it never scrolls the page
+        style={{ touchAction: walking ? "none" : undefined, cursor: pushPull ? cursor : undefined }} // a walking drag looks; it never scrolls the page
       >
         <Canvas
           shadows
@@ -168,9 +176,11 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
           <PlanModel showCeiling={showCeiling} />
           <OrbitControls makeDefault enabled={!walking} target={[cx, 0, cz]} maxPolarAngle={Math.PI / 2 - 0.02} />
           <WalkControls host={host} />
+          <PushPullTool host={host} />
         </Canvas>
       </div>
       <WalkOverlay host={host} />
+      <PushPullOverlay />
     </>
   );
 }

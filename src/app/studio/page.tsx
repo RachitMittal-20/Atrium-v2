@@ -22,6 +22,7 @@ import { PlanPanel, type Unit } from "@/components/studio/PlanPanel";
 import { Scene3D } from "@/components/studio/Scene3D";
 import { ToolRail } from "@/components/studio/ToolRail";
 import { TopBar, type View } from "@/components/studio/TopBar";
+import { isTypingTarget } from "@/lib/keyboard";
 import { installPlanShortcuts } from "@/store/planStore";
 import { usePersistenceReady } from "@/store/persistence";
 import { installSelectionShortcuts } from "@/store/selectionStore";
@@ -53,7 +54,7 @@ export default function Studio() {
   useEffect(
     () =>
       useToolStore.subscribe((s, prev) => {
-        if (s.tool === "select" || s.tool === prev.tool) return;
+        if (s.tool === "select" || s.tool === "pushpull" || s.tool === prev.tool) return; // Push/Pull is a 3D tool: it never opens the 2D plan
         const isWide = window.matchMedia(SPLIT_QUERY).matches;
         setView((v) => (v === "2d" || (v === "split" && isWide) ? v : isWide ? "split" : "2d"));
       }),
@@ -78,6 +79,18 @@ export default function Studio() {
   // The walk camera lives in the 3D pane: hiding the pane ends the walk.
   useEffect(() => {
     if (shown === "2d") useViewStore.getState().exitWalk();
+    if (shown === "2d" && useToolStore.getState().tool === "pushpull") useToolStore.getState().setTool("select"); // no 3D pane, no Push/Pull
+  }, [shown]);
+  // P picks Push/Pull, when the 3D pane is showing and nothing is being typed into a field
+  useEffect(() => {
+    if (shown === "2d") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== "p" || e.metaKey || e.ctrlKey || e.altKey || e.repeat || isTypingTarget(e.target)) return;
+      if (useViewStore.getState().mode === "walk") return;
+      useToolStore.getState().setTool("pushpull");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, [shown]);
 
   if (!ready) return <div className="h-svh bg-limestone" aria-busy="true" />; // after every hook
@@ -86,7 +99,7 @@ export default function Studio() {
     <div className="flex h-svh flex-col overflow-hidden bg-limestone">
       <TopBar view={shown} setView={setView} showCeiling={ceiling} setShowCeiling={setCeiling} />
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <ToolRail />
+        <ToolRail view3d={shown !== "2d"} />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
           {shown !== "2d" && (
             <div className="relative min-h-0 min-w-0 flex-1" data-testid="pane-3d">

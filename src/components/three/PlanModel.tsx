@@ -11,7 +11,10 @@
  * to (its run, which a 2D body drag moves as one) lighter still.
  * Walls are NOT draggable in 3D; editing happens in the 2D plan.
  * While walking (viewStore.mode === "walk") nothing is picked, hovered or
- * tinted: a drag looks around, it does not select.
+ * tinted: a drag looks around, it does not select. The same while the Push/Pull
+ * tool is active: its clicks and hovers belong to PushPullTool, which finds
+ * what was hit from the face roles each wall mesh carries in userData.faces
+ * (see src/lib/plan/meshBuilders.ts).
  * Doors and windows are built from the same Opening data as the 2D plan: a
  * door's leaf stands slightly open towards its stored swing side (the hinge at
  * the jamb nearer the wall's a end), so Flip turns it to the other side. The
@@ -36,6 +39,7 @@ import { wallDirection } from "@/lib/plan/geometry";
 import { buildFloorGeometry, buildWallGeometry, wallSignature } from "@/lib/plan/meshBuilders";
 import type { DerivedRoom } from "@/lib/plan/rooms";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
+import { useToolStore } from "@/store/toolStore";
 import { useSelectedRun, useSelectionStore } from "@/store/selectionStore";
 import { useViewStore } from "@/store/viewStore";
 import type { Opening, Plan, Wall } from "@/types/plan";
@@ -151,6 +155,7 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
   const run = useSelectedRun();
   const inRun = useMemo(() => new Set(run), [run]);
   const walking = useViewStore((s) => s.mode === "walk");
+  const pushPull = useToolStore((s) => s.tool === "pushpull"); // a tool, not selection: clicks and hovers belong to PushPullTool
   const select = useSelectionStore((s) => s.select);
   const hover = useSelectionStore((s) => s.hover);
   /** The wall id a raycast hit, read back out of the mesh's userData. */
@@ -181,20 +186,20 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
         <mesh
           key={wall.id}
           geometry={wallGeometries.get(wall.id)!.geo}
-          userData={{ wallId: wall.id }}
+          userData={{ wallId: wall.id, faces: wallGeometries.get(wall.id)!.geo.userData.faces }}
           castShadow
           receiveShadow
           onClick={(e) => {
-            if (walking) return;
+            if (walking || pushPull) return;
             e.stopPropagation(); // only the nearest wall is selected, not everything behind it
             select(idOf(e.object));
           }}
           onPointerOver={(e) => {
-            if (walking) return;
+            if (walking || pushPull) return;
             e.stopPropagation();
             hover(idOf(e.object));
           }}
-          onPointerOut={() => !walking && hover(null)}
+          onPointerOut={() => !walking && !pushPull && hover(null)}
         >
           <meshStandardMaterial
             color={

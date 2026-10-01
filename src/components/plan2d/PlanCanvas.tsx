@@ -535,7 +535,8 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
         const pl = placementAt(local(e));
         setPlace(pl);
         if (!pl) setDrawMsg(null); // off every wall: nothing to explain
-      } else {
+      } else if (tool === "select") {
+        // Select only: Measure and Push/Pull never hover a wall (and so never tint it in 3D either)
         const t = targetAt(local(e), false); // plain hover, no button down: the same rule as a click
         setHoverOp(t?.kind === "opening" ? t.id : null);
         hover(t && t.kind !== "opening" ? t.wallId : null);
@@ -872,7 +873,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
           role="img"
           aria-label={`Floor plan with ${rooms.length} ${rooms.length === 1 ? "room" : "rooms"}`}
           data-testid="plan-svg"
-          className={`block touch-none ${tool !== "select" ? "cursor-crosshair" : hoveredId || hoverOp ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
+          className={`block touch-none ${tool !== "select" && tool !== "pushpull" ? "cursor-crosshair" : hoveredId || hoverOp ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerEnd}

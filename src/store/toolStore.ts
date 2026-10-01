@@ -1,7 +1,8 @@
 /**
  * toolStore.ts — which editor tool is active: Select (pick and edit walls,
  * doors and windows), Wall (draw new walls), Door or Window (place one on a
- * wall), or Measure (a temporary two-point dimension). Editor state, not plan
+ * wall), Measure (a temporary two-point dimension) or Push/Pull (move a face of
+ * the 3D model; its state is in src/store/pushPullStore.ts). Editor state, not plan
  * state, so switching tools or measuring is never an undo step and never saved.
  * Choosing any tool but Select clears the wall selection: the right panel then
  * shows the Summary, whose counts and room areas follow every edit. Leaving
@@ -16,9 +17,10 @@ import { create } from "zustand";
 import { isTypingTarget } from "@/lib/keyboard";
 import { moveMeasurePoint, placeMeasurePoint, type Measurement } from "@/lib/plan2d/measure";
 import type { Vec2 } from "@/types/plan";
+import { usePushPullStore } from "./pushPullStore";
 import { useSelectionStore } from "./selectionStore";
 
-export type Tool = "select" | "wall" | "door" | "window" | "measure";
+export type Tool = "select" | "wall" | "door" | "window" | "measure" | "pushpull";
 
 interface ToolState {
   tool: Tool;
@@ -37,6 +39,10 @@ export const useToolStore = create<ToolState>((set, get) => ({
   setTool: (tool) => {
     if (tool !== "select") useSelectionStore.getState().select(null);
     if (tool === get().tool) return;
+    if (get().tool === "pushpull") {
+      usePushPullStore.getState().cancel(); // leaving the tool mid-pull takes the preview back
+      usePushPullStore.getState().setHover(null);
+    }
     set({ tool, measurement: null }); // any tool change drops the temporary measurement
   },
   placeMeasurePoint: (p) => set((s) => (s.tool === "measure" ? { measurement: placeMeasurePoint(s.measurement, p) } : s)),
