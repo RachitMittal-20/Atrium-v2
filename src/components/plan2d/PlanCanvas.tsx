@@ -15,8 +15,10 @@
  * Select tool (src/store/selectionStore.ts holds the selection, which is not
  * undoable): click a wall to select it, click empty space or press Escape to
  * clear, Delete removes it. Drag an end handle to move that joint and every wall
- * joined there; drag the body to slide the wall sideways (it keeps its
- * direction). With a wall selected the arrows nudge it instead of panning, and
+ * joined there; drag the body to slide the whole straight wall sideways, every
+ * piece it was split into at its T-junctions keeping its direction (the run is
+ * outlined in a lighter gilt so you can see what will move). With a wall
+ * selected the arrows nudge it instead of panning, and
  * presses within 400 ms fold into one undo step. The maths is pure, in
  * src/lib/plan/edit.ts; this file only turns pointers into metres and calls the
  * store. Each drag is one undo step: see planStore.rollback for how.
@@ -51,7 +53,7 @@ import { validatePlan } from "@/lib/plan/validate";
 import { doorSwing, openingFrame } from "@/lib/plan2d/openings";
 import { fitView, niceScaleBar, screenToWorld, worldToScreen, zoomAt, type Bounds, type View } from "@/lib/plan2d/view";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
-import { useSelectionStore } from "@/store/selectionStore";
+import { useSelectedRun, useSelectionStore } from "@/store/selectionStore";
 import type { Vec2, Wall } from "@/types/plan";
 
 const NAME_PX = 15; // text-sm
@@ -102,6 +104,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
   const { outlines } = useMemo(() => outlinesOf(plan.walls), [plan.walls]);
 
   const selectedId = useSelectionStore((s) => s.selectedId);
+  const run = useSelectedRun(); // every piece a body drag will move
   const hoveredId = useSelectionStore((s) => s.hoveredId);
   const select = useSelectionStore((s) => s.select);
   const hover = useSelectionStore((s) => s.hover);
@@ -198,13 +201,16 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
     setHud({ at: out.point, snap, text: formatLength(wallLength(wall), unit), message: out.limited });
   };
 
-  /** Slide a wall sideways by `offset` metres along its normal. */
+  /** Slide a wall — and the rest of its straight run — sideways by `offset` metres
+   *  along its normal. Every joint of the run moves, so the store gets one call per
+   *  joint, not just the dragged piece's two ends. */
   const applyBody = (d: Extract<Drag, { kind: "body" }>, offset: number, snap: Snap | null) => {
     const out = dragWallBody(restart(), d.wallId, offset);
     commit(() => {
       const { moveWallEndpoint } = usePlanStore.getState();
-      moveWallEndpoint(d.wallId, "a", out.a);
-      moveWallEndpoint(d.wallId, "b", out.b);
+      // ponytail: one store call per joint. Run joints are at least MIN_WALL_LENGTH
+      // apart, so no earlier move can land on a joint this loop has yet to read.
+      for (const m of out.moves) moveWallEndpoint(m.wallId, m.end, m.to);
     });
     setHud({
       at: { x: (out.a.x + out.b.x) / 2, y: (out.a.y + out.b.y) / 2 },
@@ -410,6 +416,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
       data-tx={view.tx.toFixed(2)}
       data-ty={view.ty.toFixed(2)}
       data-selected={selectedId ?? ""}
+      data-run={run.join(" ")}
       onKeyDown={onKeyDown}
       style={{ outlineOffset: -3 }} // inside the box, so the overflow clip doesn't cut the focus ring
       className="absolute inset-0 touch-none select-none overflow-hidden bg-limestone"
@@ -487,6 +494,19 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
           {/* hover: a light gilt wash over the wall under the cursor */}
           {hoveredId && hoveredId !== selectedId && outlines.get(hoveredId) && (
             <polygon points={pts(outlines.get(hoveredId)!.map(S))} className="fill-gilt" fillOpacity={0.35} data-testid="plan-hover" />
+          )}
+
+          {/* the rest of the straight wall the selection belongs to: a lighter gilt
+              wash, because dragging the selected piece's body moves all of it */}
+          {run.length > 1 && (
+            <g data-testid="plan-run">
+              {run
+                .filter((id) => id !== selectedId)
+                .map((id) => {
+                  const o = outlines.get(id);
+                  return o && <polygon key={id} points={pts(o.map(S))} className="fill-gilt stroke-gilt" fillOpacity={0.15} strokeOpacity={0.6} strokeWidth={2} data-wall={id} />;
+                })}
+            </g>
           )}
 
           {/* selection: a gilt outline and a filled handle at each end */}

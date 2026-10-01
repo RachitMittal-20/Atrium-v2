@@ -14,6 +14,11 @@
  * and compare it with the same drag; cancel a drag with Escape; delete a wall
  * and undo; select a wall by clicking it in the 3D scene. The 390 run does the
  * same with real touch events (Chromium's own touch input, through CDP).
+ * Then checkRuns: the two facade cases from the wall-run step — the left half of
+ * the north wall dragged 1 m north, and the lower piece of the east wall dragged
+ * 0.8 m east. Each one selects the piece, checks the WHOLE straight wall is
+ * highlighted in 2D, drags the body, checks every piece of it is still straight
+ * in the store, and puts it back with one Ctrl+Z. Mid-drag screenshots too.
  * Then rename a room and check the store; Undo button brings the old
  * name back, Redo button reapplies, Ctrl+Z / Ctrl+Shift+Z do the same from the
  * keyboard; rename the plan; toggle units and check the total area changes by
@@ -387,6 +392,90 @@ async function checkSelect(page: Page, tag: string, wide: boolean, touch: boolea
   console.log(`${tag}: select and edit ok (${touch ? "real touch events" : "mouse"}; 3D pick hit ${hit})`);
 }
 
+/**
+ * The two facade cases of the wall-run step: dragging one piece of a wall that
+ * detection split at a T-junction must move the whole straight wall, not tilt its
+ * neighbour. Leaves the plan as it found it. `touch` sends real touch events.
+ */
+async function checkRuns(page: Page, tag: string, wide: boolean, touch: boolean) {
+  if (wide) {
+    await tid(page, "view-split").click();
+  } else {
+    await tid(page, "view-2d").click();
+    await page.getByRole("button", { name: /Plan details/ }).click(); // the phone sheet holds the panel
+  }
+  await tid(page, "plan-svg").waitFor();
+  await page.waitForTimeout(500); // opening the sheet shrinks the canvas, which refits the plan
+  const tap = async (p: Pt) => (touch ? page.touchscreen.tap(p.x, p.y) : page.mouse.click(p.x, p.y));
+  /** A piece's a→b heading in degrees, from the store, and the turn between two. */
+  const heading = (w: Wall) => (Math.atan2(w.b.y - w.a.y, w.b.x - w.a.x) * 180) / Math.PI;
+  const turn = (a: number, b: number) => {
+    const d = Math.abs(a - b) % 360;
+    return d > 180 ? 360 - d : d;
+  };
+  const DIR_EPS_DEG = 0.01; // every piece of the run must stay this straight
+
+  const cases = [
+    // [name, the piece to grab, its run, the metres to drag it, the degrees every piece must keep]
+    ["north wall, left half 1 m north", "w-AB", ["w-AB", "w-BC"], { x: 0, y: -1 }, 0],
+    ["east wall, lower piece 0.8 m east", "w-ME", ["w-CM", "w-ME"], { x: 0.8, y: 0 }, 90],
+  ] as const;
+
+  for (const [name, id, expected, delta, deg] of cases) {
+    const before = await plan(page);
+    const piece = await wallOf(page, id);
+    await tap(await toScreen(page, mid(piece)));
+    assert.equal(await selectedId(page), id, `${tag}: clicking ${id} selects that piece`);
+
+    // the whole straight wall is highlighted: the canvas names the run, and the
+    // lighter outline is drawn for every piece except the selected one
+    const run = (await tid(page, "plan-canvas").getAttribute("data-run"))!.split(" ");
+    assert.deepEqual(run, [...expected], `${tag}: the 2D plan highlights the whole wall (${name})`);
+    const outlined = await page.evaluate(() => [...document.querySelectorAll('[data-testid="plan-run"] polygon')].map((e) => e.getAttribute("data-wall")));
+    assert.deepEqual(outlined, expected.filter((w) => w !== id), `${tag}: the other pieces are outlined (${name})`);
+    assert.match(await tid(page, "wall-run").innerText(), /^Part of a straight wall of 2 pieces, /, `${tag}: and the panel says so (${name})`);
+
+    // drag the body by `delta` metres
+    const from = await toScreen(page, mid(piece));
+    const to = await toScreen(page, { x: mid(piece).x + delta.x, y: mid(piece).y + delta.y });
+    const held = async () => {
+      await tid(page, "drag-length").waitFor();
+      await page.screenshot({ path: `${OUT}/studio-${tag}-run-${id}-middrag.png` });
+    };
+    if (touch) await touchDrag(page, from, to, held);
+    else {
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      await page.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 4 });
+      await page.mouse.move(to.x, to.y, { steps: 4 });
+      await held();
+      await page.mouse.up();
+    }
+
+    // every piece of the run slid together and none of them tilted
+    const after = await plan(page);
+    const moved = Math.abs(delta.x) + Math.abs(delta.y);
+    for (const wid of expected) {
+      const w = after.walls.find((x) => x.id === wid)!;
+      // A heading and its opposite are the same line, so measure the turn to both.
+      const off = Math.min(turn(heading(w), deg), turn(heading(w), deg + 180));
+      assert.ok(off <= DIR_EPS_DEG, `${tag}: ${wid} stayed straight at ${deg}° (${heading(w).toFixed(4)}°) after ${name}`);
+      const was = before.walls.find((x) => x.id === wid)!;
+      for (const end of ["a", "b"] as const) {
+        near(Math.hypot(w[end].x - was[end].x, w[end].y - was[end].y), moved, 0.12, `${tag}: ${wid}.${end} slid about ${moved} m (${name})`);
+      }
+    }
+    assert.equal(after.walls.length, before.walls.length, `${tag}: no wall was added or lost (${name})`);
+
+    // one Ctrl+Z puts the whole run drag back
+    await page.keyboard.press("Control+z");
+    assert.deepEqual((await plan(page)).walls, before.walls, `${tag}: one Ctrl+Z restores the run drag (${name})`);
+    await page.evaluate(() => (window as Win).__selectionStore!.getState().select(null));
+  }
+  if (!wide) await page.getByRole("button", { name: /Plan details/ }).click(); // close the sheet again
+  console.log(`${tag}: wall runs ok (both facade cases, ${touch ? "real touch events" : "mouse"})`);
+}
+
 async function run(width: number, height: number) {
   const tag = String(width);
   const wide = width >= 768;
@@ -406,6 +495,7 @@ async function run(width: number, height: number) {
   // ---- views
   await check2d(page, tag, wide, `${OUT}/studio-${tag}-2d.png`);
   await checkSelect(page, tag, wide, !wide);
+  await checkRuns(page, tag, wide, !wide);
   if (wide) {
     await tid(page, "view-split").click();
     await page.waitForSelector("canvas");

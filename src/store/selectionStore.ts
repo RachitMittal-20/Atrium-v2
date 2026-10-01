@@ -1,6 +1,6 @@
 /**
- * selectionStore.ts — which wall is selected and which is hovered, plus the
- * warnings the last edit raised. Deliberately NOT part of the plan store:
+ * selectionStore.ts — which wall is selected and which is hovered, the run of
+ * pieces the selected wall belongs to, plus the warnings the last edit raised. Deliberately NOT part of the plan store:
  * selecting is not an edit, so it never lands in undo history, and both the 2D
  * plan and the 3D scene read the same selection so they highlight together.
  *
@@ -11,8 +11,10 @@
  * src/components/plan2d/PlanCanvas.tsx, src/components/three/PlanModel.tsx and
  * src/components/studio/{PlanPanel,WallPanel}.tsx.
  */
+import { useMemo } from "react";
 import { create } from "zustand";
 import { isTypingTarget } from "@/lib/keyboard";
+import { wallRun } from "@/lib/plan/edit";
 import { usePlanStore } from "./planStore";
 
 interface SelectionState {
@@ -34,6 +36,18 @@ export const useSelectionStore = create<SelectionState>((set) => ({
   hover: (hoveredId) => set({ hoveredId }),
   setWarnings: (warnings) => set({ warnings }),
 }));
+
+/**
+ * The straight wall the selection is part of: the ids of every piece it was split
+ * into at its T-junctions, in order, or [] with nothing selected. A body drag
+ * moves all of them, so the 2D plan and the 3D scene both highlight the run and
+ * the panel can say how big it is. Derived, never stored: the plan changes under it.
+ */
+export function useSelectedRun(): string[] {
+  const walls = usePlanStore((s) => s.plan.walls);
+  const selectedId = useSelectionStore((s) => s.selectedId);
+  return useMemo(() => (selectedId ? wallRun({ walls }, selectedId) : []), [walls, selectedId]);
+}
 
 /** Forget a wall that is no longer in the plan (deleted, or undone away). */
 usePlanStore.subscribe((state) => {

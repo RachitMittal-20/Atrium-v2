@@ -7,7 +7,9 @@
  * Selecting: each wall mesh carries its wall id in userData, so the raycast hit
  * R3F hands to onClick maps straight back to a wall and into selectionStore —
  * the same selection the 2D plan shows. Selected walls are tinted gilt, hovered
- * ones lighter. Walls are NOT draggable in 3D; editing happens in the 2D plan.
+ * ones lighter, and the other pieces of the straight wall the selection belongs
+ * to (its run, which a 2D body drag moves as one) lighter still.
+ * Walls are NOT draggable in 3D; editing happens in the 2D plan.
  *
  * Coordinates: plan (x, y) → world (x, 0, y); plan units are metres; world up
  * is +Y. Seen from above (+Y looking down) with -Z at screen-top, the model
@@ -23,7 +25,7 @@ import { wallDirection } from "@/lib/plan/geometry";
 import { buildFloorGeometry, buildWallGeometry, wallSignature } from "@/lib/plan/meshBuilders";
 import type { DerivedRoom } from "@/lib/plan/rooms";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
-import { useSelectionStore } from "@/store/selectionStore";
+import { useSelectedRun, useSelectionStore } from "@/store/selectionStore";
 import type { Opening, Plan, Wall } from "@/types/plan";
 
 const FLOOR_Y = 0.01; // just above y = 0 so floors never z-fight the wall bottoms
@@ -125,6 +127,8 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
   const wallById = useMemo(() => new Map(plan.walls.map((w) => [w.id, w])), [plan.walls]);
   const selectedId = useSelectionStore((s) => s.selectedId);
   const hoveredId = useSelectionStore((s) => s.hoveredId);
+  const run = useSelectedRun();
+  const inRun = useMemo(() => new Set(run), [run]);
   const select = useSelectionStore((s) => s.select);
   const hover = useSelectionStore((s) => s.hover);
   /** The wall id a raycast hit, read back out of the mesh's userData. */
@@ -150,7 +154,15 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
           onPointerOut={() => hover(null)}
         >
           <meshStandardMaterial
-            color={wall.id === selectedId ? SCENE_COLORS.wallSelected : wall.id === hoveredId ? SCENE_COLORS.wallHovered : SCENE_COLORS.wall}
+            color={
+              wall.id === selectedId
+                ? SCENE_COLORS.wallSelected
+                : wall.id === hoveredId
+                  ? SCENE_COLORS.wallHovered
+                  : inRun.has(wall.id)
+                    ? SCENE_COLORS.wallRun
+                    : SCENE_COLORS.wall
+            }
             roughness={0.9}
           />
         </mesh>

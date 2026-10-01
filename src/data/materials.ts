@@ -21,6 +21,7 @@ export const SCENE_COLORS = {
   wall: "#f4efe5", // = vellum
   wallSelected: "#c9a05a", // vellum pulled towards gilt, to match the 2D selection
   wallHovered: "#e4d3b0", // the same tint, lighter
+  wallRun: "#eee3c9", // lighter still: the rest of the straight wall the selection belongs to
   ceiling: "#f7f3ea",
   frame: "#5b4a37",
   door: "#7d6446",

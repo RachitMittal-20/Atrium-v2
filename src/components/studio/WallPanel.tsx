@@ -3,7 +3,9 @@
 /*
  * src/components/studio/WallPanel.tsx — the right panel while a wall is
  * selected: its length, thickness and height as exact numbers, which rooms it
- * bounds, how many doors and windows sit on it, and Delete. It replaces the
+ * bounds, how many doors and windows sit on it, the straight wall it is a piece
+ * of when detection split one at a T-junction, and Delete (which takes this
+ * piece only, never the rest of the run). It replaces the
  * Summary section in PlanPanel.tsx and offers a way back to it.
  *
  * A typed length moves the wall's b end along its own direction, exactly like
@@ -20,7 +22,7 @@ import { clampField, dragEndpoint, HEIGHT_RANGE, lengthTarget, MIN_WALL_LENGTH, 
 import { wallLength } from "@/lib/plan/geometry";
 import { validatePlan } from "@/lib/plan/validate";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
-import { useSelectionStore } from "@/store/selectionStore";
+import { useSelectedRun, useSelectionStore } from "@/store/selectionStore";
 import { formatLength, type Unit } from "./PlanPanel";
 
 /** A text field holding one number. The field always goes back to the stored
@@ -63,6 +65,7 @@ export function WallPanel({ unit }: { unit: Unit }) {
   const plan = usePlanStore((s) => s.plan);
   const rooms = useDerivedRooms();
   const selectedId = useSelectionStore((s) => s.selectedId);
+  const run = useSelectedRun();
   const select = useSelectionStore((s) => s.select);
   const setWarnings = useSelectionStore((s) => s.setWarnings);
   const [note, setNote] = useState<string | null>(null);
@@ -71,6 +74,8 @@ export function WallPanel({ unit }: { unit: Unit }) {
   if (!wall) return null;
 
   const bounds = rooms.filter((r) => r.wallIds.includes(wall.id)).map((r) => r.name);
+  // The run's pieces are collinear and end to end, so their lengths add up to the whole wall.
+  const runLength = plan.walls.filter((w) => run.includes(w.id)).reduce((sum, w) => sum + wallLength(w), 0);
   const on = plan.openings.filter((o) => o.wallId === wall.id);
   const doors = on.filter((o) => o.kind === "door").length;
   const windows = on.length - doors;
@@ -123,6 +128,12 @@ export function WallPanel({ unit }: { unit: Unit }) {
         </p>
       )}
 
+      {run.length > 1 && (
+        <p data-testid="wall-run" className="mt-2 text-xs text-smoke">
+          Part of a straight wall of {run.length} pieces, {formatLength(runLength, unit)}.
+        </p>
+      )}
+
       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
         <dt className="text-smoke">Bounds</dt>
         <dd className="text-right" data-testid="wall-rooms">
@@ -144,7 +155,9 @@ export function WallPanel({ unit }: { unit: Unit }) {
         onClick={() => usePlanStore.getState().deleteWall(wall.id)} // selectionStore clears the selection when the wall goes
         className="mt-3 min-h-10 w-full rounded border border-stone bg-vellum px-3 text-sm text-iron hover:bg-limestone"
       >
-        Delete wall{on.length > 0 ? ` and its ${on.length} ${on.length === 1 ? "opening" : "openings"}` : ""}
+        {/* Only ever this piece: the rest of the run stays. */}
+        Delete {run.length > 1 ? "this piece" : "wall"}
+        {on.length > 0 ? ` and its ${on.length} ${on.length === 1 ? "opening" : "openings"}` : ""}
       </button>
     </section>
   );

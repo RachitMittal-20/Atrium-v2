@@ -1,9 +1,10 @@
 /**
  * test-edit.ts — asserts for src/lib/plan/edit.ts (the pure wall-editing maths)
  * and for the store path the editor components take when they apply it: picking,
- * snapping, dragging a joint, sliding a wall sideways, the 0.2 m minimum, how
- * rooms and their names survive an edit, one-drag-one-undo, Escape-cancel and
- * delete. Pure Node, no browser. Each block prints what it covers.
+ * snapping, dragging a joint, sliding a wall sideways, wall runs (the pieces one
+ * straight wall was split into at its T-junctions), the 0.2 m minimum, how rooms
+ * and their names survive an edit, one-drag-one-undo, Escape-cancel and delete.
+ * Pure Node, no browser. Each block prints what it covers.
  * Run: npx tsx scripts/test-edit.ts (throws on the first failure).
  */
 import assert from "node:assert/strict";
@@ -20,16 +21,19 @@ import {
   NUDGE_M,
   NUDGE_MERGE_MS,
   NUDGE_SHIFT_M,
+  newProblems,
   normalComponent,
   PICK_TOL_PX,
   pickWall,
   ROUND_STEP,
+  RUN_ANGLE_DEG,
   SNAP_TOL_PX,
   snapDrag,
   snapRadius,
   THICKNESS_RANGE,
+  wallRun,
 } from "../src/lib/plan/edit";
-import { wallLength } from "../src/lib/plan/geometry";
+import { JOINT_EPS, wallLength } from "../src/lib/plan/geometry";
 import { deriveRooms } from "../src/lib/plan/rooms";
 import { validatePlan } from "../src/lib/plan/validate";
 import { usePlanStore } from "../src/store/planStore";
@@ -41,17 +45,35 @@ const wallIn = (plan: Plan, id: string) => plan.walls.find((w) => w.id === id)!;
 const close = (a: number, b: number, eps: number, msg: string) => assert.ok(Math.abs(a - b) <= eps, `${msg}: ${a} vs ${b}`);
 const names = (plan: Plan) => plan.rooms.map((r) => r.name).sort();
 
+/** How far a wall's a→b heading differs from `deg`, in degrees (0–180). */
+const headingDeg = (w: Wall) => (Math.atan2(w.b.y - w.a.y, w.b.x - w.a.x) * 180) / Math.PI;
+const turn = (a: number, b: number) => {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+};
+/** A direction assert: every piece of a run must stay this straight (degrees). */
+const DIR_EPS_DEG = 0.01;
+const straight = (plan: Plan, ids: string[], deg: number, msg: string) => {
+  for (const id of ids) {
+    const h = headingDeg(wallIn(plan, id));
+    assert.ok(
+      Math.min(turn(h, deg), turn(h, deg + 180)) <= DIR_EPS_DEG,
+      `${msg}: ${id} is at ${h.toFixed(4)}°, not within ${DIR_EPS_DEG}° of ${deg}°`,
+    );
+  }
+};
+
 /** The 2D canvas's drag, applied through the store: one transaction, one undo step. */
 const applyEndpoint = (wallId: string, end: "a" | "b", to: Vec2) => {
   const out = dragEndpoint(s().plan.walls, wallId, end, to);
   s().transaction(() => s().moveWallEndpoint(wallId, end, out.point));
   return out;
 };
+/** A body drag through the store: every joint of the dragged wall's run moves. */
 const applyBody = (wallId: string, offset: number) => {
   const out = dragWallBody(s().plan.walls, wallId, offset);
   s().transaction(() => {
-    s().moveWallEndpoint(wallId, "a", out.a);
-    s().moveWallEndpoint(wallId, "b", out.b);
+    for (const m of out.moves) s().moveWallEndpoint(m.wallId, m.end, m.to);
   });
   return out;
 };
@@ -65,6 +87,8 @@ console.log(
     `  minimum wall length ${MIN_WALL_LENGTH} m; coordinates round to ${ROUND_STEP} m on release`,
     `  arrow nudge ${NUDGE_M} m, ${NUDGE_SHIFT_M} m with Shift, presses within ${NUDGE_MERGE_MS} ms share one undo step`,
     `  thickness ${THICKNESS_RANGE[0]}–${THICKNESS_RANGE[1]} m, height ${HEIGHT_RANGE[0]}–${HEIGHT_RANGE[1]} m`,
+    `  wall run: pieces count as one straight wall within ${RUN_ANGLE_DEG.toFixed(2)}° of each other, sharing a joint within ${(JOINT_EPS * 100).toFixed(0)} cm`,
+    `  this file asserts a run's pieces keep their direction within ${DIR_EPS_DEG}°, and lengths to 1e-9 m unless it says otherwise`,
   ].join("\n"),
 );
 
@@ -168,7 +192,7 @@ console.log(
   console.log("(4) dragWallBody moves both joints, joining walls keep direction and stretch, openings stay inside, the 0.2 m limit stops it with a reason");
 }
 
-// --- (5) a T-junction: the joint slides along the crossing wall
+// --- (5) a T-junction: the stem drag is exact, and dragging one half moves the whole run
 {
   // G(0,8)–H(0,4)–A(0,0) is one straight run split at H, with w-HI stemming off it.
   // Dragging the STEM slides the T joint along the run and keeps both halves straight.
@@ -178,15 +202,128 @@ console.log(
   for (const id of ["w-GH", "w-HA"]) assert.equal(wallIn(sp, id).a.x, wallIn(sp, id).b.x, `${id} is still straight`);
   close(wallLength(wallIn(sp, "w-GH")) + wallLength(wallIn(sp, "w-HA")), 8, 1e-9, "the run is still 8 m end to end");
 
-  // Dragging ONE HALF of the split run is the case we can't satisfy: the half
-  // being dragged and the stem both keep their directions, so the other half
-  // has to tilt. Asserted as it really behaves, and listed in CLAUDE.md.
-  const half = dragWallBody(samplePlan.walls, "w-GH", 0.5);
+  // Dragging ONE HALF of the split run now moves the WHOLE run: both halves slide
+  // together and stay straight, and the stem stretches to meet the new line.
+  const half = dragWallBody(samplePlan.walls, "w-GH", 0.5); // G→H runs north, so its normal points east
   const hp = { ...samplePlan, walls: half.walls };
-  assert.equal(wallIn(hp, "w-HI").a.y, wallIn(hp, "w-HI").b.y, "the stem w-HI kept its direction");
-  assert.deepEqual(wallIn(hp, "w-HI").a, { x: 0.5, y: 4 }, "the joint slid along the stem");
-  assert.notEqual(wallIn(hp, "w-HA").a.x, wallIn(hp, "w-HA").b.x, "the other half w-HA tilts: the known limitation");
-  console.log("(5) dragging the stem keeps the T joint on the crossing wall; dragging one half of a split wall tilts the other half (known limitation)");
+  assert.deepEqual(half.run, ["w-GH", "w-HA"], "w-GH's run is both halves of the west wall");
+  straight(hp, ["w-GH", "w-HA"], 90, "the whole west wall stayed vertical"); // G→H and H→A both head north: -90°
+  for (const id of ["w-GH", "w-HA"]) assert.equal(wallIn(hp, id).a.x, 0.5, `${id} slid the full 0.5 m`);
+  assert.deepEqual(wallIn(hp, "w-HI").a, { x: 0.5, y: 4 }, "the stem w-HI stretched to the run's new line");
+  close(wallLength(wallIn(hp, "w-HI")), 3.5, 1e-9, "which made it 0.5 m shorter");
+  console.log("(5) dragging the stem keeps the T joint on the crossing wall; dragging one half of a split wall now slides the whole run and keeps every piece straight");
+}
+
+// --- (5a) wallRun: the pieces of each outer wall in order, and a run of one for a lone partition
+{
+  // Every outer wall of the sample plan is drawn as several pieces, split at its T-junctions.
+  const runs: [string, string[]][] = [
+    ["w-AB", ["w-AB", "w-BC"]], // north: A(0,0)–B(4,0)–C(10,0)
+    ["w-CM", ["w-CM", "w-ME"]], // east: C(10,0)–M(10,5)–E(10,8)
+    ["w-LF", ["w-EL", "w-LF", "w-FG"]], // south: E(10,8)–L(7,8)–F(4,8)–G(0,8)
+    ["w-HA", ["w-GH", "w-HA"]], // west: G(0,8)–H(0,4)–A(0,0)
+    ["w-IF", ["w-BI", "w-IF"]], // the interior spine B(4,0)–I(4,4)–F(4,8) is a run too
+  ];
+  for (const [id, expected] of runs) {
+    assert.deepEqual(wallRun(samplePlan, id), expected, `wallRun(${id}) is the whole straight wall, in order`);
+    // Starting from any piece gives the same chain in the same order.
+    for (const member of expected) assert.deepEqual(wallRun(samplePlan, member), expected, `wallRun(${member}) agrees`);
+  }
+  // A partition whose every neighbour crosses it is a run of one.
+  for (const id of ["w-HI", "w-KL", "w-KM"]) assert.deepEqual(wallRun(samplePlan, id), [id], `${id} has no collinear neighbour: a run of one`);
+  assert.deepEqual(wallRun(samplePlan, "no-such-wall"), [], "an unknown id has no run");
+  console.log("(5a) wallRun returns each outer wall's pieces in order from either end, and a run of one for a partition with no collinear neighbour");
+}
+
+// --- (5b) case (a): dragging the left half of the north wall up 1 m keeps the whole facade straight
+{
+  reset();
+  const north = wallRun(s().plan, "w-AB");
+  assert.deepEqual(north, ["w-AB", "w-BC"], "the north wall is two pieces");
+  // "Up" is -y; w-AB heads east, so its normal points south: the offset is negative.
+  const out = applyBody("w-AB", normalComponent(wallIn(s().plan, "w-AB"), { x: 0, y: -1 }));
+  assert.equal(out.limited, undefined, "1 m north is within reach");
+  const p = s().plan;
+  straight(p, north, 0, "every piece of the north wall kept its direction");
+  for (const [id, end, at] of [
+    ["w-AB", "a", { x: 0, y: -1 }], // A
+    ["w-AB", "b", { x: 4, y: -1 }], // B, the T joint
+    ["w-BC", "b", { x: 10, y: -1 }], // C
+  ] as const) {
+    assert.deepEqual(wallIn(p, id)[end], at, `${id}.${end} moved the full 1 m north`);
+  }
+  // The three walls hanging off the facade stretched; none of them tilted.
+  for (const [id, len] of [["w-HA", 5], ["w-BI", 5], ["w-CM", 6]] as const) {
+    close(wallLength(wallIn(p, id)), len, 1e-9, `${id} stretched by 1 m`);
+    assert.equal(wallIn(p, id).a.x, wallIn(p, id).b.x, `${id} stayed vertical`);
+  }
+  assert.deepEqual(newProblems(validatePlan(samplePlan), validatePlan(p)), [], "no new problems");
+
+  // Rooms are re-derived and keep their names; one undo puts everything back.
+  assert.deepEqual(names(p), names(samplePlan), "every room kept its name");
+  assert.equal(p.rooms.length, 4, "still four rooms");
+  assert.notDeepEqual(deriveRooms(p).map((r) => r.area), deriveRooms(samplePlan).map((r) => r.area), "but the areas grew");
+  s().undo();
+  assert.deepEqual(s().plan.walls, samplePlan.walls, "one undo restores every wall");
+  console.log("(5b) case (a): the left half of the north wall dragged 1 m north carries the right half with it; both stay straight and the three walls below stretch");
+}
+
+// --- (5c) case (b): dragging the lower piece of the east wall right 0.8 m, and the bathroom stem
+{
+  reset();
+  const east = wallRun(s().plan, "w-ME");
+  assert.deepEqual(east, ["w-CM", "w-ME"], "the east wall is two pieces, split at M where the bathroom's top wall lands");
+  const stemWas = wallLength(wallIn(s().plan, "w-KM")); // K(7,5)–M(10,5), the stem at the T
+  const out = applyBody("w-ME", normalComponent(wallIn(s().plan, "w-ME"), { x: 0.8, y: 0 }));
+  assert.equal(out.limited, undefined, "0.8 m east is within reach");
+  const p = s().plan;
+  straight(p, east, 90, "every piece of the east wall stayed vertical");
+  for (const [id, end] of [["w-CM", "a"], ["w-CM", "b"], ["w-ME", "a"], ["w-ME", "b"]] as const) {
+    close(wallIn(p, id)[end].x, 10.8, 1e-9, `${id}.${end} slid the full 0.8 m east`);
+  }
+  // The stem at the T stretched and still ends exactly on the run's new line.
+  const stem = wallIn(p, "w-KM");
+  close(wallLength(stem), stemWas + 0.8, 1e-9, "the bathroom's top wall stretched by 0.8 m");
+  assert.deepEqual(stem.b, { x: 10.8, y: 5 }, "and still ends on the run");
+  assert.deepEqual(stem.a, { x: 7, y: 5 }, "its far end stayed put");
+  // The walls at the run's two corners stretched too.
+  for (const [id, len] of [["w-BC", 6.8], ["w-EL", 3.8]] as const) close(wallLength(wallIn(p, id)), len, 1e-9, `${id} stretched to the new corner`);
+  assert.deepEqual(names(p), names(samplePlan), "every room kept its name");
+  s().undo();
+  assert.deepEqual(s().plan.walls, samplePlan.walls, "one undo restores every wall");
+  assert.deepEqual(names(s().plan), names(samplePlan), "and the room names");
+  console.log("(5c) case (b): the lower piece of the east wall dragged 0.8 m east carries the upper piece; both stay vertical, the bathroom's top wall stretches and still ends on the run");
+}
+
+// --- (5d) a run drag stops when a stem would go under the minimum, and says so
+{
+  reset();
+  // Pushing the north wall south squeezes w-BI (B(4,0)–I(4,4)) and w-HA (4 m each).
+  const far = applyBody("w-AB", normalComponent(wallIn(s().plan, "w-AB"), { x: 0, y: 4 }));
+  close(far.offset, 3.8, 0.01, "stopped where the shortest stem reaches 0.2 m");
+  assert.match(far.limited ?? "", /shorter than 0\.20 m/, "and says why");
+  const p = s().plan;
+  close(Math.min(wallLength(wallIn(p, "w-BI")), wallLength(wallIn(p, "w-HA"))), MIN_WALL_LENGTH, 0.01, "the tightest stem sits exactly at the minimum");
+  straight(p, ["w-AB", "w-BC"], 0, "and the run is still straight at the limit");
+  s().undo();
+  assert.deepEqual(s().plan.walls, samplePlan.walls, "one undo restores everything");
+  console.log("(5d) a run drag stops at the 0.2 m minimum with a reason, leaves the run straight, and undoes in one step");
+}
+
+// --- (5e) endpoint drags are unchanged by runs: a joint handle still moves only the walls at it
+{
+  // Joint H is the T between the west wall's two halves and the stem w-HI. Dragging
+  // the HANDLE moves the vertex itself, so w-HA tilts — exactly as before this step.
+  const r = dragEndpoint(samplePlan.walls, "w-GH", "b", { x: 0.5, y: 4 });
+  const p = { ...samplePlan, walls: r.walls };
+  assert.deepEqual(wallIn(p, "w-GH").b, { x: 0.5, y: 4 }, "the dragged joint moved");
+  assert.deepEqual(wallIn(p, "w-GH").a, { x: 0, y: 8 }, "its far end stayed put");
+  assert.deepEqual(wallIn(p, "w-HA").a, { x: 0.5, y: 4 }, "w-HA followed the joint");
+  assert.deepEqual(wallIn(p, "w-HA").b, { x: 0, y: 0 }, "and its far end stayed put, so it tilts");
+  assert.deepEqual(wallIn(p, "w-HI").a, { x: 0.5, y: 4 }, "the stem followed the joint too");
+  assert.deepEqual(wallIn(p, "w-BC"), wallIn(samplePlan, "w-BC"), "a wall away from the joint is untouched");
+  assert.equal(r.limited, undefined, "a roomy move isn't limited");
+  console.log("(5e) an endpoint handle drag still moves only the walls joined at that joint, so a collinear neighbour tilts: moving a vertex, not a wall");
 }
 
 // --- (6) rooms are re-derived; names survive a drag that keeps the topology
