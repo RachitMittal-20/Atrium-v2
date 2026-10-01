@@ -10,6 +10,8 @@
  * ones lighter, and the other pieces of the straight wall the selection belongs
  * to (its run, which a 2D body drag moves as one) lighter still.
  * Walls are NOT draggable in 3D; editing happens in the 2D plan.
+ * While walking (viewStore.mode === "walk") nothing is picked, hovered or
+ * tinted: a drag looks around, it does not select.
  * Doors and windows are built from the same Opening data as the 2D plan: a
  * door's leaf stands slightly open towards its stored swing side (the hinge at
  * the jamb nearer the wall's a end), so Flip turns it to the other side. The
@@ -35,6 +37,7 @@ import { buildFloorGeometry, buildWallGeometry, wallSignature } from "@/lib/plan
 import type { DerivedRoom } from "@/lib/plan/rooms";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { useSelectedRun, useSelectionStore } from "@/store/selectionStore";
+import { useViewStore } from "@/store/viewStore";
 import type { Opening, Plan, Wall } from "@/types/plan";
 
 const FLOOR_Y = 0.01; // just above y = 0 so floors never z-fight the wall bottoms
@@ -147,6 +150,7 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
   const hoveredId = useSelectionStore((s) => s.hoveredId);
   const run = useSelectedRun();
   const inRun = useMemo(() => new Set(run), [run]);
+  const walking = useViewStore((s) => s.mode === "walk");
   const select = useSelectionStore((s) => s.select);
   const hover = useSelectionStore((s) => s.hover);
   /** The wall id a raycast hit, read back out of the mesh's userData. */
@@ -181,18 +185,22 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
           castShadow
           receiveShadow
           onClick={(e) => {
+            if (walking) return;
             e.stopPropagation(); // only the nearest wall is selected, not everything behind it
             select(idOf(e.object));
           }}
           onPointerOver={(e) => {
+            if (walking) return;
             e.stopPropagation();
             hover(idOf(e.object));
           }}
-          onPointerOut={() => hover(null)}
+          onPointerOut={() => !walking && hover(null)}
         >
           <meshStandardMaterial
             color={
-              wall.id === selectedId
+              walking
+                ? SCENE_COLORS.wall
+                : wall.id === selectedId
                 ? SCENE_COLORS.wallSelected
                 : wall.id === hoveredId
                   ? SCENE_COLORS.wallHovered
@@ -206,7 +214,7 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
       ))}
       {plan.openings.map((o) => {
         const wall = wallById.get(o.wallId);
-        return wall ? <OpeningMesh key={o.id} opening={o} wall={wall} selected={o.id === openingId} /> : null;
+        return wall ? <OpeningMesh key={o.id} opening={o} wall={wall} selected={!walking && o.id === openingId} /> : null;
       })}
       {rooms.map((room) => (
         <RoomSurface key={room.id} room={room} y={FLOOR_Y} color={floorColor(room.floorMaterial)} />

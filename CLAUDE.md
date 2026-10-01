@@ -87,6 +87,19 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - `clearance` is the true Euclidean distance to the nearest solid (negative inside). `freePointNear` (within 2 m, else null) is what to call when an edit drops a wall on the camera. `startPose` picks the largest room by net area. It starts at the room's labelPoint if that is clear, else at the clearest 0.1 m grid point, and faces the longest clear run of 16 headings. `eyeHeight` = min(1.6, 0.9 × the lowest wall within 3 m).
 - Tested by `scripts/test-walk.ts`, which also proves a naive mover (no substeps, summed pushes) fails the slide, split-wall and tunnelling cases.
 
+## Walkthrough controls (step 5.1)
+- Camera mode lives in `src/store/viewStore.ts` (`orbit` | `walk`, pose, saved orbit camera, eye height, notice). It is view state: never undoable and **never persisted**. Autosave subscribes to planStore only, so the payload stays `{ schema, savedAt, plan }` (checked in `scripts/test-walk-input.ts`).
+- `enterWalk` starts at `startPose` (the largest room). With no closed room it refuses and shows "Walk needs at least one closed room." `WalkControls` (`src/components/three/WalkControls.tsx`) saves the orbit camera (position, rotation, target, fov, near) in a store subscription the moment the mode flips, and puts it back **exactly** on exit. Walking uses fov 70 and near 0.05.
+- Movement maths is pure in `src/lib/walk/input.ts` (`walkStep`): 1.4 m/s, 2.8 m/s with Shift, 1.8 rad/s key turn, 0.0025 rad/px look, pitch ±80°, heading in (-π, π], dt capped at 0.05 s, diagonals not faster, a 10% joystick dead zone, and velocity smoothing τ = 0.08 s (none under reduced motion) with a snap to rest below 0.02 m/s. Forward is (cos h, sin h). Strafe right is (−sin h, cos h): plan y points down the screen, so right is clockwise.
+- **Collision from the live plan every frame:** each frame reads `usePlanStore.getState().plan` and calls `getCollision` (memoised). When that returns a new build (a wall or opening edit, or an undo of one), the eye height is recomputed. If the camera is now within radius − 1 mm of a solid, it moves to `freePointNear(…, 2)`, else to the start pose, with the notice "A wall moved onto you, so we moved you." (cleared after 4 s).
+- **Fixed eye height:** `eyeHeight` at entry, recomputed only when the collision rebuilds, so walking past a low wall never bobs the view.
+- **Keys only with canvas focus:** W A S D, left/right arrows, Shift and Escape are read on the focusable host `<div>` Scene3D wraps around the canvas (`data-testid="scene-3d"`, tabIndex 0, focused on click and on entering walk). They are ignored in form fields and with Ctrl/Cmd/Alt held, and released on blur and when the tab is hidden. The 2D canvas keeps its own arrow keys.
+- **No pointer lock:** looking is a drag on the canvas with pointer capture, so it works in Split. On touch, a joystick bottom-left (96 px base, writes `walkJoystick`) moves and strafes while a second finger drags anywhere else to look. `touch-action: none` on the canvas while walking.
+- **Picking disabled while walking:** no wall or opening is picked, hovered or tinted, and a pointer miss does not clear the selection. OrbitControls is off and FitCamera never refits.
+- The Orbit | Walk toggle, hint line, notice and Exit button are in `src/components/studio/WalkOverlay.tsx`, top-left of the 3D pane, beside the canvas host and not inside it. They are hidden with the pane in the 2D-only view, and switching to 2D-only ends the walk.
+- Entering walk turns ceilings on and restores the previous setting on exit (`src/app/studio/page.tsx`); the View popover can still toggle them. Ceilings cast no shadows. A neutral ambient fill (0.6) is added only while walking, because a downward-facing ceiling got only the hemisphere's beige ground colour and read as dark brown.
+- Dev only: `window.__walkDebug` (mode, pose, camera position / forward / right, clearance at the camera, and `teleport(x, y, heading)` for TEST SETUP). A production build contains no `__walkDebug`.
+
 ## Known limitations
 - The hollow fill cannot tell a wall whose gap is outside the accepted range from furniture drawn as long parallel lines. Both are just two long lines with white between them.
 - Walls whose gap is more than 3x the commonest gap are missed. On a plan with lots of narrow line pairs (window lines, shelving), the commonest gap can be narrower than the real walls, and then real walls are skipped.
@@ -115,6 +128,8 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - Walkthrough: furniture (`plan.items`) is not collision yet.
 - Walkthrough: doors narrower than 0.5 m are solid (listed in `narrowDoors`).
 - Walkthrough: a body that reaches a door jamb's end within one substep (≤ 0.1 m) is nudged sideways into the doorway rather than stopped, because the jamb's end is its shortest exit. It never stands in the doorway further off centre than the clear half-width (`width / 2 − radius`), but at that offset it can still get through after the nudge (the sample's front door does).
+- Walkthrough: doors do not open or close. The leaf is drawn standing a little open and is never collision, so you walk through it.
+- Walkthrough: under about 20 fps every frame is capped at 0.05 s, so walking runs slower than 1.4 m/s in real time rather than jumping.
 - Walkthrough: a wall end is extended by half its thickness even where a collinear neighbour has a door flush at that joint, which narrows that door by the same amount.
 
 <!-- BEGIN:nextjs-agent-rules -->

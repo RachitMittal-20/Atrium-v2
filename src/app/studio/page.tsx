@@ -9,11 +9,14 @@
  * plan beside it (Split), or instead of it on a phone, since they work there.
  * Owns the m² / sq ft unit so the panel and the 2D labels agree. Mounts the undo/redo and Escape shortcuts. Starts
  * autosave and restores the last saved plan before the views mount
- * (src/store/persistence.ts), so both cameras fit the restored plan.
+ * (src/store/persistence.ts), so both cameras fit the restored plan. Walking
+ * (src/store/viewStore.ts) turns ceilings on and puts the previous setting back
+ * on exit; the View popover can still toggle them meanwhile. Leaving the 3D
+ * pane (2D only) ends the walk.
  * Connects to src/components/studio/*, src/components/plan2d/* and
  * src/store/toolStore.ts.
  */
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { PlanCanvas } from "@/components/plan2d/PlanCanvas";
 import { PlanPanel, type Unit } from "@/components/studio/PlanPanel";
 import { Scene3D } from "@/components/studio/Scene3D";
@@ -23,6 +26,7 @@ import { installPlanShortcuts } from "@/store/planStore";
 import { usePersistenceReady } from "@/store/persistence";
 import { installSelectionShortcuts } from "@/store/selectionStore";
 import { installToolShortcuts, useToolStore } from "@/store/toolStore";
+import { useViewStore } from "@/store/viewStore";
 
 const SPLIT_QUERY = "(min-width: 640px)"; // Split is offered from here up (see TopBar)
 const watchWide = (cb: () => void) => {
@@ -55,6 +59,26 @@ export default function Studio() {
       }),
     [],
   );
+
+  // Ceilings on while walking (you are indoors); the setting from before comes back on exit.
+  const ceilingBefore = useRef(false);
+  useEffect(
+    () =>
+      useViewStore.subscribe((s, prev) => {
+        if (s.mode === prev.mode) return;
+        if (s.mode === "walk")
+          setCeiling((c) => {
+            ceilingBefore.current = c; // the updater may run twice in dev; it stores the same value both times
+            return true;
+          });
+        else setCeiling(ceilingBefore.current);
+      }),
+    [],
+  );
+  // The walk camera lives in the 3D pane: hiding the pane ends the walk.
+  useEffect(() => {
+    if (shown === "2d") useViewStore.getState().exitWalk();
+  }, [shown]);
 
   if (!ready) return <div className="h-svh bg-limestone" aria-busy="true" />; // after every hook
 
