@@ -5,7 +5,8 @@
  * "nothing selected" state: counts, total net floor area, an m² / sq ft toggle
  * (display only; the plan stays in metres) and the Rooms list, where each name
  * is editable in place through planStore.renameRoom. A right column at 768 px
- * and wider; below that a collapsible sheet under the canvas.
+ * and wider; below that a collapsible sheet under the canvas. The unit lives in
+ * the studio page, so the 2D plan's area labels follow the same toggle.
  * Mounted by src/app/studio/page.tsx.
  */
 import { useState } from "react";
@@ -13,16 +14,18 @@ import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { EditableText } from "./EditableText";
 
 const SQFT_PER_M2 = 10.7639;
-type Unit = "m2" | "sqft";
+export type Unit = "m2" | "sqft";
 
-export function PlanPanel() {
+/** An area in m² as text in the chosen unit; shared with the 2D plan's labels. */
+export const formatArea = (m2: number, unit: Unit) => (unit === "m2" ? `${m2.toFixed(1)} m²` : `${(m2 * SQFT_PER_M2).toFixed(1)} sq ft`);
+
+export function PlanPanel({ unit, setUnit }: { unit: Unit; setUnit: (u: Unit) => void }) {
   const plan = usePlanStore((s) => s.plan);
   const renameRoom = usePlanStore((s) => s.renameRoom);
   const rooms = useDerivedRooms();
-  const [unit, setUnit] = useState<Unit>("m2");
   const [open, setOpen] = useState(false); // the phone sheet; ignored at md and wider
 
-  const area = (m2: number) => (unit === "m2" ? `${m2.toFixed(1)} m²` : `${(m2 * SQFT_PER_M2).toFixed(1)} sq ft`);
+  const area = (m2: number) => formatArea(m2, unit);
   const total = rooms.reduce((sum, r) => sum + r.area, 0);
   const doors = plan.openings.filter((o) => o.kind === "door").length;
   const windows = plan.openings.filter((o) => o.kind === "window").length;

@@ -3,12 +3,14 @@
 /*
  * src/app/studio/page.tsx — the editor shell. Top bar and tool rail (cyanotype
  * chrome), the canvas area (3D, a 2D placeholder, or both) and the right panel
- * (vellum). No editing tools yet; the plan in usePlanStore is shown as is.
- * Mounts the undo/redo shortcuts from planStore. Connects to
- * src/components/studio/*; the 2D plan view arrives in the next step.
+ * (vellum). No editing tools yet; the plan in usePlanStore is shown as is, in
+ * 3D (Scene3D) and 2D (PlanCanvas). Owns the m² / sq ft unit so the panel and
+ * the 2D labels agree. Mounts the undo/redo shortcuts from planStore.
+ * Connects to src/components/studio/* and src/components/plan2d/*.
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { PlanPanel } from "@/components/studio/PlanPanel";
+import { PlanCanvas } from "@/components/plan2d/PlanCanvas";
+import { PlanPanel, type Unit } from "@/components/studio/PlanPanel";
 import { Scene3D } from "@/components/studio/Scene3D";
 import { ToolRail } from "@/components/studio/ToolRail";
 import { TopBar, type View } from "@/components/studio/TopBar";
@@ -24,6 +26,7 @@ const watchWide = (cb: () => void) => {
 export default function Studio() {
   const [view, setView] = useState<View>("3d");
   const [ceiling, setCeiling] = useState(false);
+  const [unit, setUnit] = useState<Unit>("m2");
   useEffect(() => installPlanShortcuts(), []);
 
   const wide = useSyncExternalStore(watchWide, () => window.matchMedia(SPLIT_QUERY).matches, () => true);
@@ -41,12 +44,12 @@ export default function Studio() {
             </div>
           )}
           {shown !== "3d" && (
-            <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center p-4 md:border-l md:border-stone max-md:border-t max-md:border-stone" data-testid="pane-2d">
-              <p className="rounded border border-stone bg-vellum px-5 py-4 text-center text-sm text-smoke">The 2D plan arrives in the next step</p>
+            <div className="relative min-h-0 min-w-0 flex-1 md:border-l md:border-stone max-md:border-t max-md:border-stone" data-testid="pane-2d">
+              <PlanCanvas unit={unit} />
             </div>
           )}
         </main>
-        <PlanPanel />
+        <PlanPanel unit={unit} setUnit={setUnit} />
       </div>
     </div>
   );
