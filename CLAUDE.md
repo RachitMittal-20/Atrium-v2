@@ -2,6 +2,8 @@
 
 Read this file before every task. It is the shared context for all prompts in `docs/PROMPTS.md`.
 
+Read docs/HANDOFF.md for project state.
+
 ## What this app is
 Atrium v2 turns a floor-plan image into an **editable** 3D model that people can walk through, furnish, and export as 3D and 2D files. It is a zero-cost demo: one Next.js app deployed on Vercel's free tier, with no separate backend. OCR runs in the browser (tesseract.js).
 
@@ -77,6 +79,14 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - The temporary Measure overlay lives in `src/store/toolStore.ts` beside the active tool (`select` | `wall` | `door` | `window` | `measure`), never in the plan, so they are not undoable and not saved. A measurement is two points in plan metres, so the 2D camera draws it correctly at any zoom. Pure maths: `src/lib/plan2d/measure.ts`. In Measure mode walls are not picked, hovered or dragged, dragging empty space still pans, and Escape (or the Clear button, for touch) cancels. Entering or leaving the tool clears it; choosing Measure from 3D opens the 2D plan like the other tools. In Measure mode the press is handled before `pickTarget`, so no wall or opening is picked, hovered or dragged. Measure points snap to wall ends and midpoints only, never to a grid, so the value is the real distance.
 - Autosave stores ONLY the `Plan`, as `{ schema, savedAt, plan }` under one localStorage key (`src/lib/persist/planStorage.ts`). `src/store/persistence.ts` restores it once per page load, before the editor mounts, and writes after an 800 ms quiet time (at most 5 s apart). Anything corrupt, from another schema or the wrong shape is ignored and the sample plan stays. To change the stored shape, bump `SCHEMA_VERSION` and add a case to `migrate`. Restoring goes through `loadPlan`, which keeps stored room names by matching loops and label points; undo history is never saved or restored.
 
+## Walkthrough collision (step 5.1)
+- `src/lib/walk/collision.ts` is pure and in plan metres. Like every other view it is derived from `Plan`. `getCollision(plan)` rebuilds only when `plan.walls` or `plan.openings` is a different array (Immer shares unchanged ones). Item edits and renames reuse the last build; any wall or opening edit, or an undo of one, rebuilds it. `collisionStats.builds` counts rebuilds for tests.
+- Solids: each wall's centre line `[0, length]` minus every passable **door** span (`offset ± width/2`), as boxes of the wall's thickness. An interval end that is a wall end (not a door cut) extends by half the thickness, so L-corners, T-stems and free ends close with no notch. Window spans stay solid. A door's leaf is never collision.
+- `CAMERA_RADIUS = 0.2 m`. That keeps the near plane out of walls and still leaves 0.4–0.5 m of play in a 0.8–0.9 m door. A door passes only if it is at least `2 × radius + 0.1 = 0.5 m` wide (`MIN_DOOR_WIDTH`). Narrower doors stay solid and are listed in `narrowDoors`.
+- `moveWithCollision` treats each solid as a rectangle grown by the radius, with **square** corners. It splits the move into substeps of at most `radius / 2`, so it never tunnels. Each substep moves, then pushes out along the shortest exit normal of every grown rectangle it is in, for up to 4 passes. A substep still overlapping by more than 0.1 mm is undone and the move stops, so a free start never ends inside a solid. The camera's centre is also kept inside the **fence**: the solids' bounding box grown by 1 m, so you can step out of a front door but not wander off.
+- `clearance` is the true Euclidean distance to the nearest solid (negative inside). `freePointNear` (within 2 m, else null) is what to call when an edit drops a wall on the camera. `startPose` picks the largest room by net area. It starts at the room's labelPoint if that is clear, else at the clearest 0.1 m grid point, and faces the longest clear run of 16 headings. `eyeHeight` = min(1.6, 0.9 × the lowest wall within 3 m).
+- Tested by `scripts/test-walk.ts`, which also proves a naive mover (no substeps, summed pushes) fails the slide, split-wall and tunnelling cases.
+
 ## Known limitations
 - The hollow fill cannot tell a wall whose gap is outside the accepted range from furniture drawn as long parallel lines. Both are just two long lines with white between them.
 - Walls whose gap is more than 3x the commonest gap are missed. On a plan with lots of narrow line pairs (window lines, shelving), the commonest gap can be narrower than the real walls, and then real walls are skipped.
@@ -100,6 +110,12 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - The swing of a door near a corner can reach over the joining wall. A press physically on that wall still picks the wall; a press just beside it, inside the swing, picks the door.
 - The arrow keys nudge a selected wall but not a selected opening; drag it or type its position.
 - Door versus window is a guess from the pixels: a double door drawn in thin lines can read as a window, and grey outlines on wall faces can read as doors. The review screen lets the user change the kind.
+- Walkthrough: windows are solid at every height; a sill-0 window you could step through in reality still blocks.
+- Walkthrough: no stairs or levels; the plan is one floor and the camera stays on it.
+- Walkthrough: furniture (`plan.items`) is not collision yet.
+- Walkthrough: doors narrower than 0.5 m are solid (listed in `narrowDoors`).
+- Walkthrough: a body that reaches a door jamb's end within one substep (≤ 0.1 m) is nudged sideways into the doorway rather than stopped, because the jamb's end is its shortest exit. It never stands in the doorway further off centre than the clear half-width (`width / 2 − radius`), but at that offset it can still get through after the nudge (the sample's front door does).
+- Walkthrough: a wall end is extended by half its thickness even where a collinear neighbour has a door flush at that joint, which narrows that door by the same amount.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

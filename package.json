@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx scripts/validate-sample.ts && tsx scripts/test-store.ts && tsx scripts/test-edit.ts && tsx scripts/test-opening-edit.ts && tsx scripts/test-planname.ts && tsx scripts/test-geometry.ts && tsx scripts/test-rooms.ts && tsx scripts/test-vectorize.ts && tsx scripts/test-deskew.ts && tsx scripts/test-hollow.ts && tsx scripts/test-scale.ts && tsx scripts/test-openings.ts && tsx scripts/test-toplan.ts && tsx scripts/test-plan2d.ts && tsx scripts/test-measure.ts && tsx scripts/test-persist.ts && tsx scripts/test-analyse.ts && tsx scripts/test-browser-safe.ts"
+    "test": "tsx scripts/validate-sample.ts && tsx scripts/test-store.ts && tsx scripts/test-edit.ts && tsx scripts/test-opening-edit.ts && tsx scripts/test-planname.ts && tsx scripts/test-geometry.ts && tsx scripts/test-rooms.ts && tsx scripts/test-vectorize.ts && tsx scripts/test-deskew.ts && tsx scripts/test-hollow.ts && tsx scripts/test-scale.ts && tsx scripts/test-openings.ts && tsx scripts/test-toplan.ts && tsx scripts/test-plan2d.ts && tsx scripts/test-measure.ts && tsx scripts/test-walk.ts && tsx scripts/test-persist.ts && tsx scripts/test-analyse.ts && tsx scripts/test-browser-safe.ts"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",
