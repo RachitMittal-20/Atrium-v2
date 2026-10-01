@@ -297,8 +297,9 @@ function Summary({ built, onOpen }: { built: Built; onOpen: () => void }) {
         Your model
       </h2>
       <p data-testid="summary-counts">
-        {n(plan.walls.length, "wall", "walls")}, {n(count("door"), "door", "doors")}, {n(count("window"), "window", "windows")}, {n(plan.rooms.length, "room", "rooms")}.
+        <span title="Wall pieces are merged across doors and windows.">{n(plan.walls.length, "wall", "walls")} after joining</span>, {n(count("door"), "door", "doors")}, {n(count("window"), "window", "windows")}, {n(plan.rooms.length, "room", "rooms")}.
       </p>
+      <p className="-mt-2 text-xs text-smoke">Wall pieces are merged across doors and windows, so this is fewer than the pieces found.</p>
       {plan.rooms.length > 0 ? (
         <ul className="list-disc pl-5 text-sm" data-testid="summary-rooms">
           {plan.rooms.map((r) => (

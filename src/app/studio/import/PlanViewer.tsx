@@ -138,8 +138,8 @@ export function PlanViewer({ analysis, picking, points, onPick }: { analysis: An
   const windows = useMemo(() => analysis.openings.filter((o) => o.kind === "window"), [analysis]);
   const px = 1 / view.k; // one screen pixel, in image pixels: keeps dots and the measure line a fixed size on screen
 
-  const layers: { id: Layer; label: string; count: number; swatch: string }[] = [
-    { id: "walls", label: "Walls", count: analysis.walls.length, swatch: "bg-cyanotype" },
+  const layers: { id: Layer; label: string; count: number; swatch: string; hint?: string }[] = [
+    { id: "walls", label: "wall pieces found", hint: "Raw pieces, split at every door and window. They are joined into fewer walls when the model is built.", count: analysis.walls.length, swatch: "bg-cyanotype" },
     { id: "doors", label: "Doors", count: doors.length, swatch: "bg-overlay-door" },
     { id: "windows", label: "Windows", count: windows.length, swatch: "bg-overlay-window" },
     { id: "ends", label: "Free ends", count: analysis.unpaired.length, swatch: "bg-overlay-end" },
@@ -224,11 +224,14 @@ export function PlanViewer({ analysis, picking, points, onPick }: { analysis: An
           <label key={l.id} className="flex min-h-11 items-center gap-2">
             <input type="checkbox" checked={show[l.id]} onChange={(e) => setShow((s) => ({ ...s, [l.id]: e.target.checked }))} className="h-4 w-4 accent-cyanotype" />
             <span aria-hidden className={`inline-block h-2.5 w-2.5 rounded-full ${l.swatch}`} />
-            <span className="text-iron">{l.label}</span>
-            <span data-testid={`count-${l.id}`}>{l.count}</span>
+            <span className="text-iron" title={l.hint}>
+              {l.id === "walls" ? <><span data-testid="count-walls">{l.count}</span> {l.label}</> : l.label}
+            </span>
+            {l.id !== "walls" && <span data-testid={`count-${l.id}`}>{l.count}</span>}
           </label>
         ))}
       </fieldset>
+      <p className="text-xs text-smoke">Wall pieces are merged across doors and windows when the model is built, so the final wall count is lower.</p>
     </div>
   );
 }

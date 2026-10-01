@@ -20,6 +20,7 @@ import type { Item, Opening, Plan, Vec2, Wall } from "@/types/plan";
 enablePatches();
 
 const HISTORY_LIMIT = 100;
+export const PLAN_NAME_MAX = 80;
 
 /** One undo step: `patches` redo it, `inverse` undoes it. */
 interface HistoryEntry {
@@ -44,6 +45,8 @@ interface PlanState {
   updateItem: (id: string, changes: Partial<Omit<Item, "id">>) => void;
   deleteItem: (id: string) => void;
   renameRoom: (id: string, name: string) => void;
+  /** Trims, caps at PLAN_NAME_MAX; an empty name is ignored. Undoable. */
+  renamePlan: (name: string) => void;
   setRoomMaterial: (id: string, floorMaterial: string) => void;
 
   /** Run `fn`; every edit inside becomes a single undo step. Synchronous only. */
@@ -177,6 +180,10 @@ export const usePlanStore = create<PlanState>((set, get) => {
         const room = d.rooms.find((r) => r.id === id);
         if (room) room.name = name;
       }),
+    renamePlan: (name) => {
+      const clean = name.trim().slice(0, PLAN_NAME_MAX).trim();
+      if (clean) edit((d) => void (d.name = clean)); // edit() adds no history when the name is unchanged
+    },
     setRoomMaterial: (id, floorMaterial) =>
       edit((d) => {
         const room = d.rooms.find((r) => r.id === id);
@@ -233,6 +240,10 @@ function syncRooms(d: Draft<Plan>, previous: Plan) {
   const rooms = deriveRooms(d as Plan, previous).map(toStoredRoom);
   if (JSON.stringify(rooms) !== JSON.stringify(d.rooms)) d.rooms = rooms;
 }
+
+/** For enabling the Undo and Redo buttons. */
+export const useCanUndo = () => usePlanStore((s) => s.past.length > 0);
+export const useCanRedo = () => usePlanStore((s) => s.future.length > 0);
 
 /** Rooms with polygon, area, perimeter and centroid for components; recomputed only when the plan changes. */
 export function useDerivedRooms(): DerivedRoom[] {
