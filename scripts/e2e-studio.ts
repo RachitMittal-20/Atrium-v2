@@ -68,7 +68,10 @@
  * a room name and a wall through the real UI, wait for the save status to say
  * saved (localStorage is only READ, never written, by this test), reload, and check the
  * three edits are back while the selection, the Measure tool and the 2D zoom are not.
- * Screenshots go to /tmp/studio/.
+ * Last, checkSwingPersists (regression, fresh browser each at 1440 and 390): Flip the
+ * Bedroom 1 door in the panel, let the real autosave run, reload, select the door again
+ * and check its swing side is the flipped one and nothing else about it changed.
+ * E2E_ONLY=swing runs just that. Screenshots go to /tmp/studio/.
  *
  * NOT covered: pinch zoom; whether the gilt tint is really painted on the 3D
  * walls (the test reads the selection the 3D material is derived from, and
@@ -1380,6 +1383,110 @@ async function checkAutosave() {
   await browser.close();
 }
 
+// ---- a flipped door keeps its swing side through the real autosave and reload (regression)
+
+/**
+ * Opening.swing (step 4.5) is user data that the autosave reader (step 4.6) had
+ * to learn to keep: before that fix a flipped door came back "left" after every
+ * reload. Fresh browser; at 1440 in Split, selecting the door in the RIGHT 2D pane
+ * (a phone has no Split, so at 390 it is the 2D view and real touch taps). Select the
+ * Bedroom 1 door, press Flip in the panel, wait out the real 800 ms autosave, RELOAD, select the
+ * same door again and check the panel and the plan carry the flipped side and nothing else
+ * about the door changed. Nothing is written to storage or flipped through a store
+ * call by this test: localStorage and the store are only READ.
+ */
+async function checkSwingPersists(width: number, height: number, touch: boolean) {
+  const tag = `${width} swing`;
+  const doorId = "d-bed1";
+  const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
+  const page = await browser.newPage({ viewport: { width, height }, hasTouch: touch });
+  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
+  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  const press = async (q: Pt) => {
+    if (touch) await page.touchscreen.tap(q.x, q.y);
+    else await page.mouse.click(q.x, q.y);
+    await page.waitForTimeout(touch ? 350 : 50);
+  };
+  const doorOf = async () => (await plan(page)).openings.find((o) => o.id === doorId)!;
+  const stored = () => page.evaluate(() => localStorage.getItem("atrium-v2:plan")); // read only
+  /** Load /studio and bring up the 2D plan: Split (door picked in its right pane) on a wide screen, the 2D view on a phone. */
+  const openPlan = async () => {
+    await page.goto(`${BASE}/studio`);
+    await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" }); // the dev badge swallows phone taps
+    await tid(page, "plan-name").waitFor();
+    await page.waitForSelector("canvas");
+    if (touch) {
+      await tid(page, "view-2d").click();
+      await tid(page, "plan-svg").waitFor();
+      await page.getByRole("button", { name: /Plan details/ }).click(); // the phone sheet holds the inspector
+    } else {
+      await tid(page, "view-split").click();
+      await tid(page, "plan-svg").waitFor();
+    }
+    await page.waitForTimeout(700); // the canvas refits after the view switch
+  };
+  /** Click the door's opening in the 2D plan, and say which pane it was in. */
+  const selectDoor = async () => {
+    const c = await page.evaluate((id) => {
+      const r = document.querySelector(`[data-testid="plan-gap"][data-opening="${id}"]`)!.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }, doorId);
+    if (!touch) {
+      const [p2d, p3d] = [await box(page, "pane-2d"), await box(page, "pane-3d")];
+      assert.ok(c.x >= p2d.x && c.x <= p2d.x + p2d.width && c.x > p3d.x + p3d.width - 1, `${tag}: the door is picked in the right-hand 2D pane`);
+    }
+    await press(c);
+    await tid(page, "opening-panel").waitFor({ state: "visible" });
+    assert.equal(await tid(page, "opening-type").innerText(), "Door", `${tag}: the panel is the door's`);
+    assert.equal(await page.evaluate(() => (window as Win).__selectionStore!.getState().openingId), doorId, `${tag}: and it is ${doorId}`);
+  };
+
+  await openPlan();
+  assert.equal(await stored(), null, `${tag}: nothing is saved yet in this fresh browser`);
+  const original = await doorOf();
+  assert.ok(original.swing === "left" || original.swing === "right", `${tag}: the sample door has a swing side`);
+  const flippedSide = original.swing === "left" ? "right" : "left";
+
+  // ---- select the door and flip it through the panel
+  await selectDoor();
+  assert.equal(await tid(page, "opening-swing").getAttribute("data-swing"), original.swing, `${tag}: the panel shows the initial swing (${original.swing})`);
+  if (touch) {
+    await tid(page, "opening-flip").scrollIntoViewIfNeeded();
+    await tid(page, "opening-flip").tap();
+  } else await tid(page, "opening-flip").click();
+  assert.equal(await tid(page, "opening-swing").getAttribute("data-swing"), flippedSide, `${tag}: Flip changed the swing in the panel`);
+  const flipped = await doorOf();
+  assert.equal(flipped.swing, flippedSide, `${tag}: and in the plan`);
+  assert.equal(await stored(), null, `${tag}: nothing is written inline: the save waits out its delay`);
+  assert.equal(await tid(page, "save-status").getAttribute("data-state"), "pending", `${tag}: the save is pending`);
+
+  // ---- the real autosave: wait for it, then read what it stored
+  await page.waitForSelector('[data-testid="save-status"][data-state="saved"]', { timeout: 6000 });
+  const inStorage = JSON.parse((await stored())!).plan.openings.find((o: Opening) => o.id === doorId);
+  assert.equal(inStorage.swing, flippedSide, `${tag}: the autosaved plan in the browser's storage holds the flipped swing`);
+
+  // ---- reload; the marker proves this is a new page, not the same JS context
+  await page.evaluate(() => ((window as unknown as { __beforeReload?: number }).__beforeReload = 1));
+  await openPlan(); // goto the same URL again: a full reload, then Split / 2D / the sheet
+  assert.equal(await page.evaluate(() => (window as unknown as { __beforeReload?: number }).__beforeReload), undefined, `${tag}: the page really reloaded`);
+  assert.equal(await tid(page, "undo").isDisabled(), true, `${tag}: with no undo history to supply the swing: it can only come from storage`);
+  assert.equal(await page.evaluate(() => (window as Win).__selectionStore!.getState().openingId), null, `${tag}: and the door is not selected after the reload`);
+
+  // ---- select the same door again, through the UI
+  await selectDoor();
+  assert.equal(await tid(page, "opening-panel").isVisible(), true, `${tag}: OpeningPanel is visible`);
+  const after = await doorOf();
+  assert.equal(after.swing, flippedSide, `${tag}: the reloaded door has the flipped swing (${flippedSide})`);
+  assert.notEqual(after.swing, original.swing, `${tag}: not the original (${original.swing})`);
+  assert.equal(await tid(page, "opening-swing").getAttribute("data-swing"), flippedSide, `${tag}: and the panel says so`);
+  assert.deepEqual({ ...after, swing: original.swing }, original, `${tag}: wall (${original.wallId}), width, position and size are unchanged`);
+  assert.equal(after.wallId, original.wallId);
+  assert.equal(after.width, original.width);
+  assert.equal(after.offset, original.offset);
+  console.log(`${tag}: flipped door keeps its swing through autosave and reload (${original.swing} → ${flippedSide}; ${touch ? "real touch taps, 2D view" : "mouse, Split view, right pane"})`);
+  await browser.close();
+}
+
 async function run(width: number, height: number) {
   const tag = String(width);
   const wide = width >= 768;
@@ -1516,9 +1623,19 @@ async function run(width: number, height: number) {
 
 async function main() {
   mkdirSync(OUT, { recursive: true });
+  if (process.env.E2E_ONLY === "swing") {
+    // just the flipped-door persistence regression (fast: handy when working on the autosave reader)
+    await checkSwingPersists(1440, 900, false);
+    await checkSwingPersists(390, 844, true);
+    assert.deepEqual(errors, [], `console errors:\n${errors.join("\n")}`);
+    console.log("e2e-studio (swing only): ok");
+    return;
+  }
   await run(1440, 900);
   await run(390, 844);
   await checkAutosave();
+  await checkSwingPersists(1440, 900, false);
+  await checkSwingPersists(390, 844, true);
   assert.deepEqual(errors, [], `console errors:\n${errors.join("\n")}`);
   console.log("e2e-studio: ok; screenshots in", OUT);
 }
