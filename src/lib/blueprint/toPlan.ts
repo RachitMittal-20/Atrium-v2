@@ -36,7 +36,7 @@
  *      report.removedWalls; a gap that sat in it goes to report.unbridged.
  *   e. Openings: offset = distance from the merged wall's `a` to the gap's
  *      centre, width = the clear gap, both in metres; heights and sills from
- *      samplePlan's DOOR_SIZE and WINDOW_SIZE.
+ *      samplePlan's DOOR_SIZE and WINDOW_SIZE; doors swing LEGACY_SWING.
  *   f. Split at T-junctions again (CLAUDE.md Conventions): a wall end lying on
  *      another wall's middle (within half that wall's thickness) is moved onto
  *      its centre line and the wall is split there. Each opening goes to the
@@ -55,7 +55,7 @@
  * data/samplePlan.ts (default heights), openings.ts (isH); exercised by
  * scripts/test-toplan.ts and drawn by scripts/plan-overlay.ts.
  */
-import { DOOR_SIZE, WALL_HEIGHT, WINDOW_SIZE } from "@/data/samplePlan";
+import { DOOR_SIZE, LEGACY_SWING, WALL_HEIGHT, WINDOW_SIZE } from "@/data/samplePlan";
 import { clampOpening, dist, JOINT_EPS, wallDirection, wallLength } from "@/lib/plan/geometry";
 import { validatePlan } from "@/lib/plan/validate";
 import { BlueprintError, type BuildInput, type BuildReport, type OpeningCandidate, type PlanScale } from "@/types/blueprint";
@@ -216,7 +216,7 @@ export function buildPlan(
       kind: o.kind,
       offset: cm(dot(sub(toM(o.centre), w.a), wallDirection(w))),
       width: cm(widthM),
-      ...(o.kind === "door" ? DOOR_SIZE : WINDOW_SIZE),
+      ...(o.kind === "door" ? { ...DOOR_SIZE, swing: LEGACY_SWING } : WINDOW_SIZE), // doors open to the left of a→b, as 2D always drew them
     };
   });
   for (const { id, o, widthM } of placed)

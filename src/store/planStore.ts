@@ -3,8 +3,13 @@
  * through `edit()`, which uses Immer patches so history stores small diffs, not
  * whole plans. `transaction()` folds many edits (e.g. a drag) into one undo
  * step. Every wall edit re-derives `plan.rooms` in the same recipe, so undo
- * restores room names and loops together with the walls. Connects to:
- * src/types/plan.ts, src/lib/plan/{validate,geometry,rooms}.ts,
+ * restores room names and loops together with the walls. `drawWall` adds a
+ * drawn wall in one step, splitting any wall it joins in the middle (the
+ * T-junction convention) inside the same transaction. `placeOpening` and
+ * `flipDoor` add a door or window and flip a door's swing side, one undo step
+ * each; plans made before swing sides were stored are migrated on load
+ * (edit.withSwingSides). Connects to:
+ * src/types/plan.ts, src/lib/plan/{validate,geometry,rooms,edit}.ts,
  * src/lib/keyboard.ts; the 3D scene, 2D plan and exports read `plan` from here.
  */
 import { applyPatches, enablePatches, produceWithPatches, type Draft, type Patch } from "immer";
@@ -12,10 +17,11 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import { samplePlan } from "@/data/samplePlan";
 import { isTypingTarget } from "@/lib/keyboard";
+import { drawProblem, flipSide, hostAt, placeOpening as planOpening, splitWallAt, withSwingSides } from "@/lib/plan/edit";
 import { clampOpening, JOINT_EPS, wallLength } from "@/lib/plan/geometry";
 import { deriveRooms, toStoredRoom, type DerivedRoom } from "@/lib/plan/rooms";
 import { validatePlan } from "@/lib/plan/validate";
-import type { Item, Opening, Plan, Vec2, Wall } from "@/types/plan";
+import type { Item, Opening, OpeningKind, Plan, Vec2, Wall } from "@/types/plan";
 
 enablePatches();
 
@@ -38,7 +44,23 @@ interface PlanState {
   updateWall: (id: string, changes: Partial<Omit<Wall, "id">>) => void;
   deleteWall: (id: string) => void;
   moveWallEndpoint: (wallId: string, end: "a" | "b", to: Vec2) => void;
+  /** Split a wall in two at `at` (see edit.splitWallAt); returns the second piece's id, or null when refused. */
+  splitWall: (wallId: string, at: Vec2) => string | null;
+  /**
+   * Add a drawn wall from `a` to `b` as ONE undo step: an end landing in the
+   * middle of a wall splits that wall there first, so the new wall meets it in a
+   * T-junction. Refused (null, nothing recorded) when edit.drawProblem objects.
+   */
+  drawWall: (a: Vec2, b: Vec2, size: Pick<Wall, "thickness" | "height">) => string | null;
   addOpening: (opening: Omit<Opening, "id">) => string;
+  /**
+   * A default-size door or window centred `centre` m along `wallId`, checked by
+   * edit.placeOpening (inside the wall's usable span, no overlap). One undo step;
+   * null, with nothing recorded, when it is refused.
+   */
+  placeOpening: (kind: OpeningKind, wallId: string, centre: number) => string | null;
+  /** Reverse a door's swing side and nothing else. One undo step; a window is left alone. */
+  flipDoor: (id: string) => void;
   updateOpening: (id: string, changes: Partial<Omit<Opening, "id">>) => void;
   deleteOpening: (id: string) => void;
   addItem: (item: Omit<Item, "id">) => string;
@@ -118,11 +140,12 @@ export const usePlanStore = create<PlanState>((set, get) => {
   }
 
   return {
-    plan: { ...samplePlan, rooms: deriveRooms(samplePlan).map(toStoredRoom) },
+    plan: { ...samplePlan, openings: withSwingSides(samplePlan.openings), rooms: deriveRooms(samplePlan).map(toStoredRoom) },
     past: [],
     future: [],
 
-    loadPlan: (plan) => {
+    loadPlan: (loaded) => {
+      const plan = { ...loaded, openings: withSwingSides(loaded.openings) }; // doors from before 4.5 get the old side
       if (process.env.NODE_ENV === "development") {
         const problems = validatePlan(plan);
         if (problems.length > 0) console.warn(`Plan "${plan.name}" has problems:\n- ${problems.join("\n- ")}`);
@@ -163,11 +186,48 @@ export const usePlanStore = create<PlanState>((set, get) => {
       );
     },
 
+    splitWall: (wallId, at) => {
+      const id = newId("w");
+      const split = splitWallAt(get().plan, wallId, at, id);
+      if ("error" in split) return null;
+      editWalls((d) => {
+        const i = d.walls.findIndex((w) => w.id === wallId);
+        d.walls.splice(i, 1, ...split.pieces); // the second piece sits right after the first
+        for (const m of split.moved) {
+          const o = d.openings.find((x) => x.id === m.id);
+          if (o) Object.assign(o, m);
+        }
+      });
+      return id;
+    },
+    drawWall: (a, b, size) => {
+      if (drawProblem(get().plan, a, b)) return null;
+      let id: string | null = null;
+      get().transaction(() => {
+        // Re-read the plan per end: splitting at a can create the wall b lands on.
+        for (const p of [a, b]) {
+          const host = hostAt(get().plan.walls, p);
+          if (host) get().splitWall(host, p);
+        }
+        id = get().addWall({ a: { ...a }, b: { ...b }, ...size });
+      });
+      return id;
+    },
+
     addOpening: (opening) => {
       const id = newId("o");
       edit((d) => void d.openings.push({ ...opening, id }));
       return id;
     },
+    placeOpening: (kind, wallId, centre) => {
+      const out = planOpening(get().plan, kind, wallId, centre);
+      return "error" in out ? null : get().addOpening(out.opening);
+    },
+    flipDoor: (id) =>
+      edit((d) => {
+        const o = d.openings.find((x) => x.id === id);
+        if (o?.kind === "door") o.swing = flipSide(o.swing);
+      }),
     updateOpening: (id, changes) => patchById("openings", id, changes),
     deleteOpening: (id) =>
       edit((d) => {

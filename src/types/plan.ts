@@ -32,6 +32,10 @@ export interface Wall {
 
 export type OpeningKind = "door" | "window";
 
+/** Which side of its wall a door's leaf opens to, looking from the wall's a end
+ *  to its b end. The hinge is always the gap end nearer a. */
+export type SwingSide = "left" | "right";
+
 /** A hole cut in a wall. Position is stored relative to the wall, so moving or
  *  resizing the wall carries its openings along. */
 export interface Opening {
@@ -44,6 +48,10 @@ export interface Opening {
   height: number;
   /** Floor to the bottom of the opening; 0 for doors. */
   sillHeight: number;
+  /** Doors only, and required for them (validatePlan says so): the side the leaf
+   *  opens to. Plans from before step 4.5 get "left" on load (edit.withSwingSides),
+   *  which is what the 2D plan always drew. Windows have none. */
+  swing?: SwingSide;
 }
 
 /** Rooms are derived from the wall graph; only the user-authored bits are

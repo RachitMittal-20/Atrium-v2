@@ -28,7 +28,7 @@ import { formatLength, type Unit } from "./PlanPanel";
 /** A text field holding one number. The field always goes back to the stored
  *  value after a commit, so an invalid entry simply reappears as it was and the
  *  caller shows the reason. */
-function NumberField({ label, value, testId, onCommit }: { label: string; value: string; testId: string; onCommit: (raw: string) => void }) {
+export function NumberField({ label, value, testId, onCommit }: { label: string; value: string; testId: string; onCommit: (raw: string) => void }) {
   const [draft, setDraft] = useState<string | null>(null);
   return (
     <label className="flex min-h-10 items-center justify-between gap-2 text-sm">

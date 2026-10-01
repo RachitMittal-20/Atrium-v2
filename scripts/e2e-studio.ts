@@ -19,6 +19,39 @@
  * 0.8 m east. Each one selects the piece, checks the WHOLE straight wall is
  * highlighted in 2D, drags the body, checks every piece of it is still straight
  * in the store, and puts it back with one Ctrl+Z. Mid-drag screenshots too.
+ * Then checkDraw (step 4.4): pick the Wall tool from 3D alone and check the 2D
+ * plan comes up; draw a wall across the living room from w-BI to w-CM, which
+ * ends the chain by itself, and check both walls it meets were split, the room
+ * count went 4 → 5, the 2D plan has a shape per wall, and the new wall's mesh is
+ * in the live 3D scene (window.__scene3d); undo and redo it; draw a two-wall
+ * chain from the midpoint of w-AB that closes a cupboard (a fifth room); select
+ * the drawn wall with the Select tool, read its length in the panel, delete it
+ * and undo; a wall under 0.2 m is refused with a message and Finish ends the
+ * chain with no history. Wide only (keyboard): a typed length, double-click to
+ * finish, and Escape mid-wall leaving history alone. Phones tap with real touch
+ * events and use the Undo and Redo buttons.
+ * Then checkOpeningSelect (the 4.5 manual failure): in 2D, click the Bedroom 1
+ * door where it is DRAWN — 3 px off its visible leaf, read from the SVG — and
+ * check the door (not the wall) is selected, OpeningPanel replaces Summary, the
+ * door gets the cyanotype treatment, and nothing went into history; click
+ * w-BI away from the door and check the wall is selected and the door is not;
+ * click the door's opening again; the same for the living room's north window; Escape and
+ * a click on empty floor clear everything. No store calls: real clicks, and
+ * real touch taps at 390.
+ * Then checkOpenings (step 4.5): (A) the Door tool previews and places a door 2.8 m
+ * along the horizontal wall w-AB — in the store, drawn in 2D, and a door mesh in the
+ * live 3D scene; (B) the Window tool places a window on the vertical wall w-ME,
+ * in 2D and 3D; (C) the Select tool picks the door, not the wall behind it (and
+ * the wall beside it still picks the wall), the panel shows Door and its swing
+ * side, Flip reverses the side in the store, the 2D leaf and the 3D leaf, and
+ * one undo brings the original side back; (D) a door at a wall's end is refused
+ * with a reason and leaves nothing behind, and a window typed 9 m wide is
+ * clamped to the room it has; (E) a 4.4 wall drawn from w-BC to w-KM splits
+ * w-BC between its door and window, and each stays on the right piece in the
+ * same place; (F) deleting the flipped door leaves its wall, and one undo brings
+ * it back, swing side included. At 390 all of it runs with real touch events
+ * and the Undo button, and the inspector's Flip and Delete are checked to be on
+ * screen and not covered.
  * Then rename a room and check the store; Undo button brings the old
  * name back, Redo button reapplies, Ctrl+Z / Ctrl+Shift+Z do the same from the
  * keyboard; rename the plan; toggle units and check the total area changes by
@@ -59,7 +92,7 @@ type Pt = { x: number; y: number };
 type Wall = { id: string; a: Pt; b: Pt; thickness: number; height: number };
 type Store = {
   getState(): {
-    plan: { name: string; rooms: { id: string; name: string; wallIds: string[]; floorMaterial: string }[]; walls: Wall[]; openings: { id: string; wallId: string }[] };
+    plan: { name: string; rooms: { id: string; name: string; wallIds: string[]; floorMaterial: string }[]; walls: Wall[]; openings: Opening[] };
     past: unknown[];
     future: unknown[];
     renameRoom(id: string, name: string): void;
@@ -67,10 +100,12 @@ type Store = {
     undo(): void;
   };
 };
-type Selection = { getState(): { selectedId: string | null; select(id: string | null): void } };
+type Selection = { getState(): { selectedId: string | null; openingId: string | null; select(id: string | null): void } };
+type Opening = { id: string; wallId: string; kind: "door" | "window"; offset: number; width: number; height: number; sillHeight: number; swing?: "left" | "right" };
+type Scene3d = { wallIds(): string[]; openings(): { id: string; kind: string; leafTurn: number | null }[] };
 type Measurement = { a: Pt; b: Pt | null } | null;
 type Tools = { getState(): { tool: string; measurement: Measurement } };
-type Win = Window & { __planStore?: Store; __selectionStore?: Selection; __toolStore?: Tools };
+type Win = Window & { __planStore?: Store; __selectionStore?: Selection; __toolStore?: Tools; __scene3d?: Scene3d };
 const plan = (page: Page) => page.evaluate(() => (window as Win).__planStore!.getState().plan);
 const selectedId = (page: Page) => page.evaluate(() => (window as Win).__selectionStore!.getState().selectedId);
 const num = async (page: Page, id: string) => parseFloat((await page.getByTestId(id).innerText()).replace(/[^\d.]/g, ""));
@@ -492,6 +527,521 @@ async function checkRuns(page: Page, tag: string, wide: boolean, touch: boolean)
   console.log(`${tag}: wall runs ok (both facade cases, ${touch ? "real touch events" : "mouse"})`);
 }
 
+/** Pick a tool in the rail. The Next.js dev badge (dev server only) sits over the
+ *  middle of the first button in the phone's bottom bar, so phones tap a tool at
+ *  its right end. */
+async function chooseTool(page: Page, id: string, touch: boolean) {
+  const t = tid(page, `tool-${id}`);
+  if (!touch) return t.click();
+  const b = (await t.boundingBox())!;
+  await t.tap({ position: { x: b.width - 10, y: b.height / 2 } });
+}
+
+/**
+ * The Wall tool (step 4.4). Leaves the plan, history length aside, as it found
+ * it, with the Select tool active. `touch` sends real touch events.
+ */
+async function checkDraw(page: Page, tag: string, wide: boolean, touch: boolean) {
+  const pickTool = (id: string) => chooseTool(page, id, touch);
+
+  // Picking Wall while only 3D shows brings the 2D plan up: Split, or 2D on a phone.
+  await tid(page, "view-3d").click();
+  await page.waitForSelector("canvas");
+  await pickTool("wall");
+  await tid(page, "plan-svg").waitFor();
+  assert.equal(await tid(page, "tool-wall").getAttribute("aria-pressed"), "true", `${tag}: Wall is the active tool`);
+  assert.equal(await tid(page, "tool-select").getAttribute("aria-pressed"), "false", `${tag}: and Select is not`);
+  assert.equal(await tid(page, "pane-3d").count(), wide ? 1 : 0, `${tag}: ${wide ? "Split keeps the 3D beside the plan" : "a phone shows the 2D plan alone"}`);
+  await tid(page, "draw-bar").waitFor();
+  await page.waitForTimeout(600); // the canvas has just been sized and fitted
+
+  const canvas = tid(page, "plan-canvas");
+  const drawing = async () => (await canvas.getAttribute("data-drawing")) === "true";
+  const past = () => page.evaluate(() => (window as Win).__planStore!.getState().past.length);
+  const scene = () => page.evaluate(() => (window as Win).__scene3d?.wallIds() ?? null);
+  // Taps a beat apart, so two taps near each other never read as a double-tap.
+  const at = async (p: Pt) => {
+    const q = await toScreen(page, p);
+    if (touch) {
+      await page.touchscreen.tap(q.x, q.y);
+      await page.waitForTimeout(450);
+    } else await page.mouse.click(q.x, q.y);
+  };
+  const undo = async () => (wide ? page.keyboard.press("Control+z") : tid(page, "undo").click());
+  const redo = async () => (wide ? page.keyboard.press("Control+Shift+z") : tid(page, "redo").click());
+  /** On a phone the 3D model only shows in the 3D view: switch there to read its meshes, then back. */
+  const meshes = async () => {
+    if (wide) return scene();
+    await tid(page, "view-3d").click();
+    await page.waitForSelector("canvas");
+    await page.waitForTimeout(500);
+    const ids = await scene();
+    await tid(page, "view-2d").click();
+    await tid(page, "plan-svg").waitFor();
+    await page.waitForTimeout(400);
+    return ids;
+  };
+
+  const original = await plan(page);
+  const past0 = await past();
+  assert.equal(original.rooms.length, 4, `${tag}: four rooms to start with`);
+
+  // ---- one wall across the living room, T-junction to T-junction
+  await at({ x: 4, y: 1.5 }); // on w-BI's body
+  assert.equal(await drawing(), true, `${tag}: the first click starts a wall`);
+  if (!touch) {
+    const half = await toScreen(page, { x: 7, y: 1.5 });
+    await page.mouse.move(half.x, half.y, { steps: 3 });
+    await tid(page, "draw-ghost").waitFor();
+    assert.equal(await tid(page, "draw-ghost").getAttribute("data-valid"), "true", `${tag}: the preview is a valid wall`);
+    assert.match(await tid(page, "drag-length").textContent() ?? "", /^3\.00 m$/, `${tag}: with a live length`);
+    assert.equal(await past(), past0, `${tag}: the preview is not in the plan's history`);
+    await page.screenshot({ path: `${OUT}/studio-${tag}-draw-preview.png` });
+  }
+  const pic0 = wide ? (await tid(page, "pane-3d").screenshot()).toString("base64") : "";
+  await at({ x: 10, y: 1.5 }); // on w-CM's body: the wall joins the plan, so the chain ends
+  assert.equal(await drawing(), false, `${tag}: landing on a wall ended the chain`);
+  const drawn = await plan(page);
+  const added = drawn.walls.filter((w) => !original.walls.some((o) => o.id === w.id));
+  assert.equal(added.length, 3, `${tag}: the new wall and one extra piece each of w-BI and w-CM`);
+  const across = added.find((w) => w.a.y === 1.5 && w.b.y === 1.5)!;
+  assert.deepEqual([across.a, across.b], [{ x: 4, y: 1.5 }, { x: 10, y: 1.5 }], `${tag}: the wall runs exactly between the two T-junctions`);
+  assert.deepEqual(drawn.walls.find((w) => w.id === "w-BI")!.b, { x: 4, y: 1.5 }, `${tag}: w-BI was split at the T`);
+  assert.equal(drawn.rooms.length, 5, `${tag}: the living room is now two rooms`);
+  assert.equal(await past(), past0 + 1, `${tag}: one undo step`);
+  assert.equal(await tid(page, "plan-wall").count(), drawn.walls.length, `${tag}: the 2D plan draws every wall`);
+  assert.equal(await tid(page, "plan-warnings").count(), 0, `${tag}: nothing left unjoined`);
+  assert.ok((await meshes())?.includes(across.id), `${tag}: the 3D scene has a mesh for the new wall`);
+  if (wide) {
+    await page.waitForTimeout(300);
+    assert.notEqual((await tid(page, "pane-3d").screenshot()).toString("base64"), pic0, `${tag}: and the 3D picture changed`);
+  }
+  await page.screenshot({ path: `${OUT}/studio-${tag}-drawn.png` });
+
+  await undo();
+  assert.deepEqual((await plan(page)).walls, original.walls, `${tag}: undo takes the wall and both splits away`);
+  assert.equal((await plan(page)).rooms.length, 4, `${tag}: and the fifth room`);
+  assert.equal((await meshes())?.includes(across.id), false, `${tag}: and its 3D mesh`);
+  await redo();
+  assert.deepEqual((await plan(page)).walls, drawn.walls, `${tag}: redo puts it back`);
+  await undo();
+
+  // ---- a two-wall chain that closes a cupboard in Bedroom 1
+  await at({ x: 2, y: 0 }); // the midpoint of w-AB
+  await at({ x: 2, y: 1.5 });
+  assert.equal(await drawing(), true, `${tag}: open floor keeps the chain going`);
+  assert.equal(await past(), past0 + 1, `${tag}: the first wall is its own undo step`);
+  await at({ x: 4, y: 1.5 }); // on w-BI: closes the loop
+  assert.equal(await drawing(), false, `${tag}: closing the loop ended the chain`);
+  const cupboard = await plan(page);
+  assert.equal(cupboard.rooms.length, 5, `${tag}: a fifth room`);
+  assert.equal(await page.locator('[data-testid^="room-area-"]').count(), 5, `${tag}: listed with its area in the panel`);
+  assert.equal(await past(), past0 + 2, `${tag}: two walls, two undo steps`);
+  await page.screenshot({ path: `${OUT}/studio-${tag}-cupboard.png` });
+
+  // ---- the drawn wall is an ordinary wall: Select it, read its length, delete and undo
+  const front = cupboard.walls.find((w) => w.a.y === 1.5 && w.b.y === 1.5 && w.a.x === 2)!;
+  await pickTool("select");
+  if (!wide) {
+    await page.getByRole("button", { name: /Plan details/ }).click(); // the phone sheet holds the panel
+    await page.waitForTimeout(400);
+  }
+  const pick = await toScreen(page, mid(front));
+  if (touch) await page.touchscreen.tap(pick.x, pick.y);
+  else await page.mouse.click(pick.x, pick.y);
+  assert.equal(await selectedId(page), front.id, `${tag}: the Select tool picks the drawn wall`);
+  assert.match(await tid(page, "wall-length").inputValue(), /^2\.00 m$/, `${tag}: the panel shows its length`);
+  await tid(page, "wall-delete").click();
+  assert.equal((await plan(page)).rooms.length, 4, `${tag}: deleting it opens the cupboard up again`);
+  await undo();
+  assert.deepEqual((await plan(page)).walls, cupboard.walls, `${tag}: undo restores it`);
+  await page.evaluate(() => (window as Win).__selectionStore!.getState().select(null));
+  if (!wide) await page.getByRole("button", { name: /Plan details/ }).click(); // close the sheet
+  await undo();
+  await undo();
+  assert.deepEqual((await plan(page)).walls, original.walls, `${tag}: two undos and the cupboard is gone`);
+
+  // ---- too short: refused with a reason; Finish ends the chain without history
+  await pickTool("wall");
+  await page.waitForTimeout(400);
+  const history = await past();
+  await at({ x: 6, y: 3 });
+  await at({ x: 6, y: 3.1 });
+  assert.match(await tid(page, "drag-message").innerText(), /shorter than 0\.20 m/, `${tag}: a 0.1 m wall is refused, with the reason`);
+  assert.equal(await past(), history, `${tag}: and nothing was recorded`);
+  await tid(page, "draw-finish").click();
+  assert.equal(await drawing(), false, `${tag}: Finish ends the chain`);
+  assert.equal(await past(), history, `${tag}: still with no history`);
+
+  if (wide) {
+    // ---- a typed length, towards the pointer; double-click finishes
+    await at({ x: 6, y: 3 });
+    const toward = await toScreen(page, { x: 6, y: 4.2 });
+    await page.mouse.move(toward.x, toward.y, { steps: 3 });
+    await page.keyboard.type("1.5");
+    assert.match(await tid(page, "drag-length").textContent() ?? "", /^1\.5…$/, `${tag}: the typed length shows as it is typed`);
+    await page.keyboard.press("Enter");
+    const typed = (await plan(page)).walls.find((w) => !original.walls.some((o) => o.id === w.id))!;
+    assert.deepEqual([typed.a, typed.b], [{ x: 6, y: 3 }, { x: 6, y: 4.5 }], `${tag}: Enter adds a wall exactly 1.5 m long`);
+    assert.equal(await drawing(), true, `${tag}: a free end keeps the chain going`);
+    const end = await toScreen(page, typed.b);
+    await page.mouse.dblclick(end.x, end.y);
+    assert.equal(await drawing(), false, `${tag}: double-click finishes`);
+    assert.equal(await tid(page, "plan-warnings").count(), 1, `${tag}: and the panel lists the free-standing wall's open ends`);
+    await page.keyboard.press("Control+z");
+    assert.deepEqual((await plan(page)).walls, original.walls, `${tag}: one Ctrl+Z removes it`);
+
+    // ---- Escape mid-wall: the preview goes, history stays; Escape again is Select
+    const h = await past();
+    await at({ x: 6, y: 3 });
+    const away = await toScreen(page, { x: 8, y: 3 });
+    await page.mouse.move(away.x, away.y, { steps: 3 });
+    await page.keyboard.press("Escape");
+    assert.equal(await drawing(), false, `${tag}: Escape cancels the wall being drawn`);
+    assert.equal(await tid(page, "draw-ghost").count(), 0, `${tag}: and its preview`);
+    assert.equal(await past(), h, `${tag}: without touching history`);
+    await page.keyboard.press("Escape");
+    assert.equal(await tid(page, "tool-select").getAttribute("aria-pressed"), "true", `${tag}: a second Escape goes back to Select`);
+  } else {
+    await pickTool("select");
+  }
+  assert.deepEqual((await plan(page)).walls, original.walls, `${tag}: the plan is as it was`);
+  console.log(`${tag}: draw walls ok (${touch ? "real touch events" : "mouse and keyboard"}; T-junction wall, cupboard chain, 3D meshes, undo/redo)`);
+}
+
+/**
+ * Doors and windows (step 4.5). Leaves walls and openings as it found them, with
+ * the Select tool active. `touch` sends real touch events.
+ */
+async function checkOpenings(page: Page, tag: string, wide: boolean, touch: boolean) {
+  const past = () => page.evaluate(() => (window as Win).__planStore!.getState().past.length);
+  const openingSel = () => page.evaluate(() => (window as Win).__selectionStore!.getState().openingId);
+  const scene = () => page.evaluate(() => (window as Win).__scene3d?.openings() ?? null);
+  const at = async (p: Pt) => {
+    const q = await toScreen(page, p);
+    if (touch) {
+      await page.touchscreen.tap(q.x, q.y);
+      await page.waitForTimeout(450); // a beat apart: never a double-tap
+    } else await page.mouse.click(q.x, q.y);
+  };
+  const undo = async () => (wide ? page.keyboard.press("Control+z") : tid(page, "undo").click());
+  const sheet = async () => {
+    if (wide) return;
+    await page.getByRole("button", { name: /Plan details/ }).click(); // the phone sheet holds the panel
+    await page.waitForTimeout(450); // opening or closing it resizes the canvas, which refits the plan
+  };
+  /** The 3D openings, read from the live scene; a phone shows 3D only in the 3D view. */
+  const openings3d = async () => {
+    if (wide) return scene();
+    await tid(page, "view-3d").click();
+    await page.waitForSelector("canvas");
+    await page.waitForTimeout(500);
+    const out = await scene();
+    await tid(page, "view-2d").click();
+    await tid(page, "plan-svg").waitFor();
+    await page.waitForTimeout(450);
+    return out;
+  };
+  const leaf = (id: string) =>
+    page.evaluate((id) => {
+      const l = document.querySelector(`[data-testid="plan-door"][data-opening="${id}"] [data-testid="door-leaf"]`)!;
+      return { y1: +l.getAttribute("y1")!, y2: +l.getAttribute("y2")! };
+    }, id);
+
+  const original = await plan(page);
+  const past0 = await past();
+
+  // ---- (A) a door on the horizontal wall w-AB A(0,0)–B(4,0)
+  await tid(page, "view-3d").click();
+  await page.waitForSelector("canvas");
+  await chooseTool(page, "door", touch);
+  await tid(page, "plan-svg").waitFor();
+  await tid(page, "place-bar").waitFor();
+  assert.equal(await tid(page, "tool-door").getAttribute("aria-pressed"), "true", `${tag}: Door is the active tool`);
+  await page.waitForTimeout(600);
+  if (!touch) {
+    const hoverAt = await toScreen(page, { x: 2.8, y: 0.03 });
+    await page.mouse.move(hoverAt.x, hoverAt.y, { steps: 3 });
+    await tid(page, "place-preview").waitFor();
+    assert.equal(await tid(page, "place-preview").getAttribute("data-valid"), "true", `${tag}: a valid door preview`);
+    assert.equal(await tid(page, "place-preview").getAttribute("data-wall"), "w-AB", `${tag}: on the wall under the pointer`);
+    assert.match((await tid(page, "drag-length").textContent()) ?? "", /^Door 0\.90 m$/, `${tag}: with its width`);
+    assert.equal(await past(), past0, `${tag}: a preview is not an edit`);
+    await page.screenshot({ path: `${OUT}/studio-${tag}-door-preview.png` });
+  }
+  await at({ x: 2.8, y: 0 });
+  const withDoor = await plan(page);
+  const door = withDoor.openings.find((o) => !original.openings.some((x) => x.id === o.id))!;
+  assert.ok(door, `${tag}: a door was added`);
+  assert.deepEqual({ ...door, id: "" }, { id: "", wallId: "w-AB", kind: "door", offset: 2.8, width: 0.9, height: 2.1, sillHeight: 0, swing: "left" }, `${tag}: centred 2.8 m along w-AB (outside the midpoint snap at both zooms), default size, explicit swing`);
+  assert.equal(await past(), past0 + 1, `${tag}: one undo step`);
+  assert.equal(await page.locator(`[data-testid="plan-door"][data-opening="${door.id}"]`).count(), 1, `${tag}: drawn in 2D`);
+  assert.ok((await openings3d())?.some((o) => o.id === door.id && o.kind === "door"), `${tag}: and built in 3D`);
+
+  // ---- (B) a window on the vertical wall w-ME M(10,5)–E(10,8)
+  await chooseTool(page, "window", touch);
+  await page.waitForTimeout(300);
+  await at({ x: 10, y: 6.5 });
+  const withWindow = await plan(page);
+  const win = withWindow.openings.find((o) => !withDoor.openings.some((x) => x.id === o.id))!;
+  assert.ok(win, `${tag}: a window was added`);
+  assert.deepEqual([win.wallId, win.kind, win.offset, win.width, win.sillHeight, win.swing], ["w-ME", "window", 1.5, 1.2, 0.9, undefined], `${tag}: on w-ME, 1.5 m from M, no swing`);
+  assert.equal(await page.locator(`[data-testid="plan-window"][data-opening="${win.id}"]`).count(), 1, `${tag}: drawn in 2D`);
+  assert.ok((await openings3d())?.some((o) => o.id === win.id && o.kind === "window"), `${tag}: and built in 3D`);
+  await page.screenshot({ path: `${OUT}/studio-${tag}-placed.png` });
+
+  // ---- (D, first half) a door at a wall's end is refused, with the reason, and leaves nothing
+  await chooseTool(page, "door", touch);
+  await page.waitForTimeout(300);
+  await at({ x: 0.05, y: 0 }); // on w-AB, at its corner with w-HA
+  assert.match(await tid(page, "drag-message").innerText(), /end of the wall/, `${tag}: refused at the wall's end, in plain words`);
+  assert.deepEqual((await plan(page)).openings, withWindow.openings, `${tag}: no opening was left behind`);
+  assert.equal(await past(), past0 + 2, `${tag}: and nothing recorded`);
+
+  // ---- (C) select the door, not the wall; the wall beside it is still the wall's
+  await chooseTool(page, "select", touch);
+  await sheet();
+  await at({ x: 1, y: 0 }); // w-AB, well clear of the door (2.35–3.25) and its swing
+  assert.equal(await selectedId(page), "w-AB", `${tag}: the wall beside the door selects the wall`);
+  await at({ x: 2.8, y: 0 });
+  assert.equal(await openingSel(), door.id, `${tag}: a click on the door selects the door`);
+  assert.equal(await selectedId(page), null, `${tag}: not the wall behind it`);
+  assert.equal(await tid(page, "plan-opening-selection").count(), 1, `${tag}: outlined as an opening`);
+  assert.equal(await tid(page, "plan-selection").count(), 0, `${tag}: with no wall outline`);
+  await tid(page, "opening-panel").waitFor();
+  assert.equal(await tid(page, "opening-type").innerText(), "Door", `${tag}: the panel says Door`);
+  assert.equal(await tid(page, "opening-swing").getAttribute("data-swing"), "left", `${tag}: and shows the swing side`);
+  assert.match(await tid(page, "opening-width").inputValue(), /^0\.90 m$/, `${tag}: and the width`);
+  assert.match(await tid(page, "opening-offset").inputValue(), /^2\.80 m$/, `${tag}: and the position`);
+  if (!wide) {
+    // The inspector's buttons are on screen and nothing sits on top of them.
+    for (const id of ["opening-flip", "opening-delete"]) {
+      await tid(page, id).scrollIntoViewIfNeeded();
+      const b = (await tid(page, id).boundingBox())!;
+      assert.ok(b.y >= 0 && b.y + b.height <= 844 && b.x >= 0 && b.x + b.width <= 390, `${tag}: ${id} is on screen`);
+      const top = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest("[data-testid]")?.getAttribute("data-testid"), [b.x + b.width / 2, b.y + b.height / 2]);
+      assert.equal(top, id, `${tag}: and not covered (${top})`);
+    }
+  }
+  await page.screenshot({ path: `${OUT}/studio-${tag}-door-selected.png` });
+  const leafBefore = await leaf(door.id);
+  assert.ok(leafBefore.y2 > leafBefore.y1, `${tag}: a left swing on w-AB (a→b east) opens south, down the screen`);
+  const turnBefore = (await openings3d())!.find((o) => o.id === door.id)!.leafTurn!;
+  const beforeFlip = await plan(page);
+  await tid(page, "opening-flip").click();
+  const flipped = (await plan(page)).openings.find((o) => o.id === door.id)!;
+  assert.equal(flipped.swing, "right", `${tag}: Flip reversed the swing side`);
+  assert.deepEqual({ ...flipped, swing: "left" }, door, `${tag}: and changed nothing else`);
+  assert.equal(await tid(page, "opening-swing").getAttribute("data-swing"), "right", `${tag}: the panel follows`);
+  const leafAfter = await leaf(door.id);
+  assert.ok(leafAfter.y2 < leafAfter.y1, `${tag}: the 2D leaf now opens north`);
+  const turnAfter = (await openings3d())!.find((o) => o.id === door.id)!.leafTurn!;
+  assert.ok(Math.sign(turnAfter) === -Math.sign(turnBefore) && turnAfter !== 0, `${tag}: the 3D leaf turned the other way (${turnBefore} → ${turnAfter})`);
+  await page.screenshot({ path: `${OUT}/studio-${tag}-door-flipped.png` });
+  await undo();
+  assert.deepEqual((await plan(page)).openings, beforeFlip.openings, `${tag}: one undo puts the original swing back`);
+  assert.ok((await leaf(door.id)).y2 > (await leaf(door.id)).y1, `${tag}: in 2D too`);
+
+  // Drag the door along w-AB: it slides, stops at the usable end (3.95 − 0.45 = 3.5 m), and is one undo step.
+  const pastDrag = await past();
+  const grab = await toScreen(page, { x: 2.8, y: 0 });
+  const drop = await toScreen(page, { x: 3.9, y: 0.05 });
+  if (touch) await touchDrag(page, grab, drop);
+  else {
+    await page.mouse.move(grab.x, grab.y);
+    await page.mouse.down();
+    await page.mouse.move(drop.x, drop.y, { steps: 6 });
+    await page.mouse.up();
+  }
+  const dragged = (await plan(page)).openings.find((o) => o.id === door.id)!;
+  assert.ok(Math.abs(dragged.offset - 3.5) < 1e-9, `${tag}: dragging the door slid it to the end of its usable span (${dragged.offset})`);
+  assert.deepEqual({ ...dragged, offset: 2.8 }, door, `${tag}: on the same wall, nothing else changed`);
+  assert.equal(await past(), pastDrag + 1, `${tag}: one undo step for the drag`);
+  assert.equal(await openingSel(), door.id, `${tag}: still selected`);
+  await undo();
+  assert.equal((await plan(page)).openings.find((o) => o.id === door.id)!.offset, 2.8, `${tag}: one undo puts it back`);
+  if (wide) {
+    await tid(page, "plan-canvas").press("Delete");
+    assert.equal((await plan(page)).openings.some((o) => o.id === door.id), false, `${tag}: the Delete key removes the selected door`);
+    assert.ok((await plan(page)).walls.some((w) => w.id === "w-AB"), `${tag}: and not its wall`);
+    await undo();
+    assert.deepEqual((await plan(page)).openings, beforeFlip.openings, `${tag}: undo restores it`);
+  }
+
+  // ---- (D, second half) a window typed 9 m wide is clamped to the room it has
+  await page.evaluate(() => (window as Win).__selectionStore!.getState().select(null));
+  await at({ x: 10, y: 6.5 });
+  assert.equal(await openingSel(), win.id, `${tag}: the window selected`);
+  assert.equal(await tid(page, "opening-sill").count(), 1, `${tag}: a window shows its sill`);
+  assert.equal(await tid(page, "opening-flip").count(), 0, `${tag}: and no Flip`);
+  await tid(page, "opening-width").fill("9 m");
+  await tid(page, "opening-width").press("Enter");
+  const wide9 = (await plan(page)).openings.find((o) => o.id === win.id)!;
+  assert.ok(Math.abs(wide9.width - 2.85) < 1e-9, `${tag}: clamped to the 2.85 m w-ME has clear (${wide9.width})`);
+  assert.ok(wide9.offset - wide9.width / 2 >= 0 && wide9.offset + wide9.width / 2 <= 3, `${tag}: still inside its 3 m wall`);
+  assert.match(await tid(page, "opening-note").innerText(), /fits/, `${tag}: with the reason`);
+  await undo();
+  assert.equal((await plan(page)).openings.find((o) => o.id === win.id)!.width, 1.2, `${tag}: one undo restores the width`);
+  await page.evaluate(() => (window as Win).__selectionStore!.getState().select(null));
+  await sheet(); // close it again
+
+  // ---- (E) a 4.4 wall from w-BC to w-KM splits w-BC between its door and its window
+  const beforeSplit = await plan(page);
+  const centre = (p: Awaited<ReturnType<typeof plan>>, id: string) => {
+    const o = p.openings.find((x) => x.id === id)!;
+    const w = p.walls.find((x) => x.id === o.wallId)!;
+    const len = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+    return { x: w.a.x + ((w.b.x - w.a.x) / len) * o.offset, y: w.a.y + ((w.b.y - w.a.y) / len) * o.offset };
+  };
+  await chooseTool(page, "wall", touch);
+  await page.waitForTimeout(400);
+  await at({ x: 8, y: 0 });
+  await at({ x: 8, y: 5 });
+  const split = await plan(page);
+  assert.equal(split.walls.length, beforeSplit.walls.length + 3, `${tag}: the wall went in and split w-BC and w-KM`);
+  assert.equal(split.openings.length, beforeSplit.openings.length, `${tag}: no opening lost or duplicated`);
+  assert.equal(split.openings.find((o) => o.id === "d-front")!.wallId, "w-BC", `${tag}: the front door stays on w-BC's first piece`);
+  const winPiece = split.openings.find((o) => o.id === "win-living-n")!.wallId;
+  assert.ok(winPiece !== "w-BC" && split.walls.some((w) => w.id === winPiece), `${tag}: the window moved to the new piece (${winPiece})`);
+  for (const id of ["d-front", "win-living-n"]) {
+    const [p, q] = [centre(beforeSplit, id), centre(split, id)];
+    assert.ok(Math.hypot(p.x - q.x, p.y - q.y) < 1e-6, `${tag}: ${id} did not move`);
+  }
+  await undo();
+  assert.deepEqual((await plan(page)).walls, beforeSplit.walls, `${tag}: one undo takes the wall and both splits away`);
+  assert.deepEqual((await plan(page)).openings, beforeSplit.openings, `${tag}: and every opening is where it was`);
+  await chooseTool(page, "select", touch);
+
+  // ---- (F) flip the door, delete it: the wall stays; one undo brings it back, swing included
+  await sheet();
+  await at({ x: 2.8, y: 0 });
+  assert.equal(await openingSel(), door.id, `${tag}: the door selected again`);
+  await tid(page, "swing-right").click(); // the Left/Right control flips too
+  const kept = await plan(page);
+  assert.equal(kept.openings.find((o) => o.id === door.id)!.swing, "right", `${tag}: Right picked`);
+  await tid(page, "opening-delete").click();
+  const gone = await plan(page);
+  assert.equal(gone.openings.some((o) => o.id === door.id), false, `${tag}: the door is gone`);
+  assert.deepEqual(gone.walls, kept.walls, `${tag}: and its wall stays`);
+  assert.deepEqual(gone.openings, kept.openings.filter((o) => o.id !== door.id), `${tag}: no other opening changed`);
+  await tid(page, "summary").waitFor();
+  await undo();
+  assert.deepEqual((await plan(page)).openings, kept.openings, `${tag}: one undo restores it, swing side and all`);
+  await sheet(); // close
+
+  // ---- clean up: take back the swing pick, the window and the door
+  for (let i = 0; i < 3; i++) await undo();
+  assert.deepEqual((await plan(page)).openings, original.openings, `${tag}: openings back as they were`);
+  assert.deepEqual((await plan(page)).walls, original.walls, `${tag}: walls too`);
+  console.log(`${tag}: doors and windows ok (${touch ? "real touch events" : "mouse and keyboard"}; place, 3D, select, Flip, limits, split, delete/undo)`);
+}
+
+/**
+ * Selecting existing doors and windows by clicking what is drawn (regression for
+ * the 4.5 manual failure). Every click is at screen coordinates read from the
+ * visible SVG symbols or through the canvas camera — never a selection-store
+ * call. Leaves nothing selected and the plan untouched.
+ */
+async function checkOpeningSelect(page: Page, tag: string, wide: boolean, touch: boolean) {
+  await tid(page, "view-2d").click();
+  await tid(page, "plan-svg").waitFor();
+  if (!wide) await page.getByRole("button", { name: /Plan details/ }).click(); // the phone sheet holds the inspector
+  await page.waitForTimeout(500); // the canvas refits after the view switch and the sheet
+
+  const sel = () => page.evaluate(() => {
+    const s = (window as Win).__selectionStore!.getState();
+    return { wall: s.selectedId, opening: s.openingId };
+  });
+  const past = () => page.evaluate(() => (window as Win).__planStore!.getState().past.length);
+  const press = async (q: Pt) => {
+    if (touch) await page.touchscreen.tap(q.x, q.y);
+    else await page.mouse.click(q.x, q.y);
+    await page.waitForTimeout(touch ? 350 : 50);
+  };
+  const svg = await box(page, "plan-svg");
+  /** The visible door leaf's midpoint, nudged 3 px off the line on the side AWAY from the swing:
+   *  the exact spot the old hit test missed. */
+  const offLeaf = (id: string) =>
+    page.evaluate(([id, sx, sy]) => {
+      const l = document.querySelector(`[data-testid="plan-door"][data-opening="${id}"] [data-testid="door-leaf"]`)!;
+      const [x1, y1, x2, y2] = ["x1", "y1", "x2", "y2"].map((k) => +l.getAttribute(k)!);
+      const gap = document.querySelector(`[data-testid="plan-gap"][data-opening="${id}"]`)!.getBoundingClientRect();
+      const [mx, my] = [(x1 + x2) / 2 + sx, (y1 + y2) / 2 + sy];
+      const len = Math.hypot(x2 - x1, y2 - y1);
+      let [nx, ny] = [-(y2 - y1) / len, (x2 - x1) / len];
+      const [gx, gy] = [gap.left + gap.width / 2 - mx, gap.top + gap.height / 2 - my];
+      if (nx * gx + ny * gy > 0) [nx, ny] = [-nx, -ny]; // point away from the swing, which the gap centre is inside of
+      return { x: mx + nx * 3, y: my + ny * 3 };
+    }, [id, svg.x, svg.y] as const);
+  /** The centre of a drawn element's box on screen. */
+  const centreOf = (selector: string) =>
+    page.evaluate((selector) => {
+      const r = document.querySelector(selector)!.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }, selector);
+  const panel = async () => ((await tid(page, "opening-panel").count()) ? "opening" : (await tid(page, "wall-panel").count()) ? "wall" : (await tid(page, "summary").count()) ? "summary" : "none");
+
+  const history = await past();
+  const plan0 = await plan(page);
+
+  // ---- the Bedroom 1 door, d-bed1, clicked just off its drawn leaf
+  await press(await offLeaf("d-bed1"));
+  assert.deepEqual(await sel(), { wall: null, opening: "d-bed1" }, `${tag}: clicking the drawn Bedroom 1 door selects the door, not a wall`);
+  assert.equal(await panel(), "opening", `${tag}: OpeningPanel replaced the Summary`);
+  await tid(page, "opening-panel").waitFor({ state: "visible" });
+  assert.equal(await tid(page, "opening-type").innerText(), "Door", `${tag}: it says Door`);
+  for (const id of ["opening-width", "opening-offset", "opening-height", "opening-swing", "opening-flip"]) assert.equal(await tid(page, id).count(), 1, `${tag}: and shows ${id}`);
+  assert.equal(await tid(page, "opening-sill").count(), 0, `${tag}: a door has no sill field`);
+  assert.equal(await tid(page, "plan-opening-selection").getAttribute("data-opening"), "d-bed1", `${tag}: the door is outlined`);
+  assert.equal(await tid(page, "selected-door-symbol").count(), 1, `${tag}: its leaf and arc are redrawn selected`);
+  assert.equal(await tid(page, "plan-selection").count(), 0, `${tag}: and no wall is outlined`);
+  assert.equal(await past(), history, `${tag}: selecting is not an edit: nothing in history`);
+  if (wide) await page.screenshot({ path: `${OUT}/studio-${tag}-select-door.png` });
+  else {
+    await tid(page, "opening-panel").scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${OUT}/studio-${tag}-select-door.png` });
+  }
+
+  // ---- w-BI away from the door: the wall, and the door is let go
+  await press(await toScreen(page, { x: 4, y: 1 }));
+  assert.deepEqual(await sel(), { wall: "w-BI", opening: null }, `${tag}: the wall away from the door selects the wall`);
+  assert.equal(await panel(), "wall", `${tag}: the wall panel shows`);
+  assert.equal(await tid(page, "plan-opening-selection").count(), 0, `${tag}: and the door outline is gone`);
+
+  // ---- the door again, this time on its opening
+  await press(await centreOf('[data-testid="plan-gap"][data-opening="d-bed1"]'));
+  assert.deepEqual(await sel(), { wall: null, opening: "d-bed1" }, `${tag}: clicking the door's opening selects it again`);
+  assert.equal(await panel(), "opening", `${tag}: and its panel`);
+
+  // ---- the living room's north window, win-living-n on w-BC (x 8.4–9.6). Not a
+  // window near a corner: at phone zoom a touch end handle reaches about 1.3 m,
+  // so the wall beside it must be further than that from every joint.
+  await press(await centreOf('[data-testid="plan-window"][data-opening="win-living-n"]'));
+  assert.deepEqual(await sel(), { wall: null, opening: "win-living-n" }, `${tag}: clicking the drawn window selects the window`);
+  assert.equal(await tid(page, "opening-type").innerText(), "Window", `${tag}: it says Window`);
+  assert.equal(await tid(page, "opening-sill").count(), 1, `${tag}: with a sill`);
+  assert.equal(await tid(page, "opening-flip").count(), 0, `${tag}: and no Flip`);
+  assert.equal(await tid(page, "selected-window-symbol").count(), 1, `${tag}: its symbol is redrawn selected`);
+  if (wide) await page.screenshot({ path: `${OUT}/studio-${tag}-select-window.png` });
+  await press(await toScreen(page, { x: 8, y: 0 })); // w-BC, 0.4 m west of the window, 2 m from corner C
+  assert.deepEqual(await sel(), { wall: "w-BC", opening: null }, `${tag}: the wall beside the window selects the wall`);
+  await press(await centreOf('[data-testid="plan-window"][data-opening="win-living-n"]'));
+  assert.deepEqual(await sel(), { wall: null, opening: "win-living-n" }, `${tag}: and the window again`);
+
+  // ---- clearing: empty floor, then Escape
+  await press(await toScreen(page, { x: 2, y: 2 })); // the middle of Bedroom 1
+  assert.deepEqual(await sel(), { wall: null, opening: null }, `${tag}: a click on empty floor clears both`);
+  assert.equal(await panel(), "summary", `${tag}: and the Summary is back`);
+  await press(await offLeaf("d-bed1"));
+  assert.equal((await sel()).opening, "d-bed1", `${tag}: selected once more`);
+  await page.keyboard.press("Escape");
+  assert.deepEqual(await sel(), { wall: null, opening: null }, `${tag}: Escape clears it`);
+
+  assert.equal(await past(), history, `${tag}: no selection made a history entry`);
+  assert.deepEqual(await plan(page), plan0, `${tag}: and the plan is untouched`);
+  if (!wide) await page.getByRole("button", { name: /Plan details/ }).click(); // close the sheet
+  console.log(`${tag}: opening selection ok (${touch ? "real touch taps" : "mouse clicks"} on the drawn door and window)`);
+}
 
 // ---- the Measure tool and the one-key-to-cancel overlay (step 4.6)
 
@@ -664,7 +1214,12 @@ async function checkMeasure(page: Page, tag: string, wide: boolean, touch: boole
     await tid(page, "tool-measure").focus();
     await page.keyboard.press("Escape");
     assert.equal(await tid(page, "measure-overlay").count(), 0, `${tag}: Escape works from the tool rail too`);
+    // Nothing left to cancel: a second Escape goes back to Select, like the Wall, Door and Window tools.
+    await tid(page, "plan-canvas").focus();
     await page.keyboard.press("Escape");
+    assert.equal(await tid(page, "tool-select").getAttribute("aria-pressed"), "true", `${tag}: a second Escape goes back to Select`);
+    await tid(page, "tool-measure").click();
+    assert.equal(await tid(page, "tool-measure").getAttribute("aria-pressed"), "true", `${tag}: and Measure can be picked again`);
   }
 
   // ---- measuring edits nothing: not by dragging over a wall, not by tapping a door
@@ -848,6 +1403,9 @@ async function run(width: number, height: number) {
   await check2d(page, tag, wide, `${OUT}/studio-${tag}-2d.png`);
   await checkSelect(page, tag, wide, !wide);
   await checkRuns(page, tag, wide, !wide);
+  await checkDraw(page, tag, wide, !wide);
+  await checkOpeningSelect(page, tag, wide, !wide);
+  await checkOpenings(page, tag, wide, !wide);
   await checkMeasure(page, tag, wide, !wide);
   if (wide) {
     await tid(page, "view-split").click();

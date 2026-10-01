@@ -1,0 +1,12 @@
+<!--
+  src/app/icon.svg — the site icon: a floor-plan mark, a limestone room outline
+  with a short partition wall, on a cyanotype square. Next.js picks it up by file convention
+  (app/icon.svg) and adds the <link rel="icon"> tag to every page's <head>, which
+  also stops browsers asking for /favicon.ico. A static file can't read the CSS
+  tokens, so the two colours are copied from src/app/globals.css:
+  --color-cyanotype #1f3a5c and --color-limestone #e9e2d4.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="6" fill="#1f3a5c"/>
+  <path d="M9 23V9h14v14H9z M9 17h6" fill="none" stroke="#e9e2d4" stroke-width="2.4" stroke-linejoin="miter"/>
+</svg>

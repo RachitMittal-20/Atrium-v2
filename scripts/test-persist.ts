@@ -146,6 +146,7 @@ fresh();
     ["wall coordinate as text", bad((e) => (e.plan.walls[0].a.x = "0"))],
     ["wall coordinate null (NaN saved by JSON)", bad((e) => (e.plan.walls[0].a.x = null))],
     ["zero thickness", bad((e) => (e.plan.walls[0].thickness = 0))],
+    ["door swing side unknown", bad((e) => (e.plan.openings.find((o: { kind: string }) => o.kind === "door").swing = "up"))],
     ["opening kind unknown", bad((e) => (e.plan.openings[0].kind = "gate"))],
     ["opening on a missing wall", bad((e) => (e.plan.openings[0].wallId = "w-nope"))],
     ["room on a missing wall", bad((e) => (e.plan.rooms[0].wallIds[0] = "w-nope"))],
@@ -259,7 +260,10 @@ fresh();
   s().moveWallEndpoint("w-KM", "a", { x: 7, y: 4.5 });
   s().updateWall("w-AB", { thickness: 0.25 });
   s().updateOpening("d-bath", { width: 0.85 });
+  const swingBefore = s().plan.openings.find((o) => o.id === "d-bed1")!.swing;
+  s().flipDoor("d-bed1"); // step 4.5: the swing side is stored data and must survive a reload
   const live = s().plan;
+  assert.notEqual(live.openings.find((o) => o.id === "d-bed1")!.swing, swingBefore, "the door really flipped");
   assert.equal(roomName(live, "r-living"), "Great room");
   assert.equal(roomName(live, "r-bed1"), "Study");
 
@@ -290,6 +294,7 @@ fresh();
   assert.equal(back.walls.length, sampleWallCount);
   assert.deepEqual(back.openings, live.openings, "openings are preserved");
   assert.equal(back.openings.find((o) => o.id === "d-bath")!.width, 0.85);
+  assert.equal(back.openings.find((o) => o.id === "d-bed1")!.swing, live.openings.find((o) => o.id === "d-bed1")!.swing, "a flipped door keeps its swing side");
   assert.deepEqual(back, live, "the whole Plan is equivalent");
   assertLoopsValid(back, "after reload");
   assert.deepEqual(validatePlan(back), validatePlan(live), "same validation result as before the save");

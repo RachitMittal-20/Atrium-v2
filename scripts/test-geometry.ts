@@ -102,7 +102,7 @@ const V = (x: number, y: number): Vec2 => ({ x, y });
 {
   const plan = (walls: Wall[], openings: Opening[] = []): Plan => ({ ...samplePlan, walls, openings, rooms: [], items: [] });
   const door = (id: string, wallId: string, offset: number): Opening => ({
-    id, wallId, kind: "door", offset, width: 1, height: 2.1, sillHeight: 0,
+    id, wallId, kind: "door", offset, width: 1, height: 2.1, sillHeight: 0, swing: "left",
   });
   const has = (p: Plan, text: string) => {
     const problems = validatePlan(p);

@@ -4,11 +4,14 @@
  * src/app/studio/page.tsx — the editor shell. Top bar and tool rail (cyanotype
  * chrome), the canvas area (3D, a 2D placeholder, or both) and the right panel
  * (vellum). The plan in usePlanStore is shown in 3D (Scene3D) and 2D
- * (PlanCanvas). Owns the m² / sq ft unit so the panel and the 2D labels agree.
- * Mounts the undo/redo and Escape shortcuts. Starts autosave and restores the
- * last saved plan before the views mount (src/store/persistence.ts), so both
- * cameras fit the restored plan. Shows a hint when Measure is picked in 3D.
- * Connects to src/components/studio/* and src/components/plan2d/*.
+ * (PlanCanvas); walls, doors and windows are edited and placed in 2D. Choosing
+ * the Wall, Door, Window or Measure tool while only 3D is showing opens the 2D
+ * plan beside it (Split), or instead of it on a phone, since they work there.
+ * Owns the m² / sq ft unit so the panel and the 2D labels agree. Mounts the undo/redo and Escape shortcuts. Starts
+ * autosave and restores the last saved plan before the views mount
+ * (src/store/persistence.ts), so both cameras fit the restored plan.
+ * Connects to src/components/studio/*, src/components/plan2d/* and
+ * src/store/toolStore.ts.
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { PlanCanvas } from "@/components/plan2d/PlanCanvas";
@@ -36,12 +39,24 @@ export default function Studio() {
   useEffect(() => installSelectionShortcuts(), []); // Escape clears the selection from anywhere
   useEffect(() => installToolShortcuts(), []); // Escape cancels a measurement first
   const ready = usePersistenceReady(); // the saved plan is in the store once this is true
-  const measuring = useToolStore((s) => s.tool === "measure");
 
   const wide = useSyncExternalStore(watchWide, () => window.matchMedia(SPLIT_QUERY).matches, () => true);
   const shown = view === "split" && !wide ? "3d" : view; // a phone that was split on a wider window shows 3D
 
-  if (!ready) return <div className="h-svh bg-limestone" aria-busy="true" />;
+  // Drawing and placing need the 2D plan: picking a tool from 3D alone brings it up. Done in the
+  // store subscription (an event, not an effect on render state) so it fires once
+  // per pick and the user can still go back to 3D alone afterwards.
+  useEffect(
+    () =>
+      useToolStore.subscribe((s, prev) => {
+        if (s.tool === "select" || s.tool === prev.tool) return;
+        const isWide = window.matchMedia(SPLIT_QUERY).matches;
+        setView((v) => (v === "2d" || (v === "split" && isWide) ? v : isWide ? "split" : "2d"));
+      }),
+    [],
+  );
+
+  if (!ready) return <div className="h-svh bg-limestone" aria-busy="true" />; // after every hook
 
   return (
     <div className="flex h-svh flex-col overflow-hidden bg-limestone">
@@ -52,11 +67,6 @@ export default function Studio() {
           {shown !== "2d" && (
             <div className="relative min-h-0 min-w-0 flex-1" data-testid="pane-3d">
               <Scene3D showCeiling={ceiling} />
-              {measuring && shown === "3d" && (
-                <p role="status" data-testid="measure-3d-hint" className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded border border-stone bg-vellum px-3 py-1.5 text-xs text-iron shadow">
-                  Measure works in the 2D plan. Switch to 2D to measure.
-                </p>
-              )}
             </div>
           )}
           {shown !== "3d" && (

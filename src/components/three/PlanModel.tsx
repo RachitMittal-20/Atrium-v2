@@ -10,6 +10,15 @@
  * ones lighter, and the other pieces of the straight wall the selection belongs
  * to (its run, which a 2D body drag moves as one) lighter still.
  * Walls are NOT draggable in 3D; editing happens in the 2D plan.
+ * Doors and windows are built from the same Opening data as the 2D plan: a
+ * door's leaf stands slightly open towards its stored swing side (the hinge at
+ * the jamb nearer the wall's a end), so Flip turns it to the other side. The
+ * selected opening's frame is tinted gilt.
+ * In development the wall ids of the meshes actually in the scene are exposed
+ * as window.__scene3d.wallIds(), and the openings as __scene3d.openings() (id,
+ * kind, and which way the door leaf actually turned), so
+ * scripts/e2e-studio.ts can check an edit really reached the 3D model, not just
+ * the store.
  *
  * Coordinates: plan (x, y) → world (x, 0, y); plan units are metres; world up
  * is +Y. Seen from above (+Y looking down) with -Z at screen-top, the model
@@ -74,29 +83,37 @@ function Box({ size, position, color, glass }: { size: [number, number, number];
   );
 }
 
+const LEAF_OPEN = 0.3; // radians a door leaf stands open, about 17°
+
 /** Frame plus a glass pane (window) or a slightly open leaf (door). Local x runs
- *  along the wall, local z across it, so the group is rotated to the wall. */
-function OpeningMesh({ opening, wall }: { opening: Opening; wall: Wall }) {
+ *  along the wall (a → b), local z across it, so the group is rotated to the wall.
+ *  With that rotation local +z is the wall's left normal (plan (-dy, dx)), and
+ *  turning the leaf by -LEAF_OPEN about y swings its tip towards +z: so "left"
+ *  turns -LEAF_OPEN and "right" +LEAF_OPEN, matching the 2D swing. */
+function OpeningMesh({ opening, wall, selected }: { opening: Opening; wall: Wall; selected: boolean }) {
   const d = wallDirection(wall);
   const { width: w, height: h, sillHeight: s } = opening;
   const depth = wall.thickness + 0.02; // frames stand a hair proud of the wall faces
   const midY = s + h / 2;
+  const frame = selected ? SCENE_COLORS.wallSelected : SCENE_COLORS.frame;
+  const turn = opening.swing === "right" ? LEAF_OPEN : -LEAF_OPEN;
   return (
     <group
       position={[wall.a.x + d.x * opening.offset, 0, wall.a.y + d.y * opening.offset]}
       rotation={[0, Math.atan2(-d.y, d.x), 0]} // rotateY(θ) maps local +x to (cos θ, 0, -sin θ) = the wall direction
+      userData={{ openingId: opening.id, kind: opening.kind }}
     >
-      <Box size={[FRAME, h, depth]} position={[-w / 2 + FRAME / 2, midY, 0]} color={SCENE_COLORS.frame} />
-      <Box size={[FRAME, h, depth]} position={[w / 2 - FRAME / 2, midY, 0]} color={SCENE_COLORS.frame} />
-      <Box size={[w, FRAME, depth]} position={[0, s + h - FRAME / 2, 0]} color={SCENE_COLORS.frame} />
+      <Box size={[FRAME, h, depth]} position={[-w / 2 + FRAME / 2, midY, 0]} color={frame} />
+      <Box size={[FRAME, h, depth]} position={[w / 2 - FRAME / 2, midY, 0]} color={frame} />
+      <Box size={[w, FRAME, depth]} position={[0, s + h - FRAME / 2, 0]} color={frame} />
       {opening.kind === "window" ? (
         <>
-          <Box size={[w, FRAME, depth]} position={[0, s + FRAME / 2, 0]} color={SCENE_COLORS.frame} />
+          <Box size={[w, FRAME, depth]} position={[0, s + FRAME / 2, 0]} color={frame} />
           <Box size={[w - 2 * FRAME, h - 2 * FRAME, 0.01]} position={[0, midY, 0]} color={SCENE_COLORS.glass} glass />
         </>
       ) : (
-        // Leaf hinged at the left jamb, swung open about 17°.
-        <group position={[-w / 2 + FRAME, 0, 0]} rotation={[0, 0.3, 0]}>
+        // Leaf hinged at the jamb nearer a, standing open towards the swing side.
+        <group position={[-w / 2 + FRAME, 0, 0]} rotation={[0, turn, 0]} userData={{ leaf: true }}>
           <Box size={[w - 2 * FRAME, h - FRAME, 0.04]} position={[(w - 2 * FRAME) / 2, s + (h - FRAME) / 2, 0]} color={SCENE_COLORS.door} />
         </group>
       )}
@@ -126,6 +143,7 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
   const wallGeometries = useWallGeometries(plan);
   const wallById = useMemo(() => new Map(plan.walls.map((w) => [w.id, w])), [plan.walls]);
   const selectedId = useSelectionStore((s) => s.selectedId);
+  const openingId = useSelectionStore((s) => s.openingId);
   const hoveredId = useSelectionStore((s) => s.hoveredId);
   const run = useSelectedRun();
   const inRun = useMemo(() => new Set(run), [run]);
@@ -134,8 +152,27 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
   /** The wall id a raycast hit, read back out of the mesh's userData. */
   const idOf = (object: THREE.Object3D) => String(object.userData.wallId);
 
+  // Development only: read the wall meshes back out of the live scene graph.
+  const groupRef = useRef<THREE.Group>(null);
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
+    const children = () => groupRef.current?.children ?? [];
+    const hook = {
+      wallIds: () => children().filter((c) => c.userData.wallId).map((c) => String(c.userData.wallId)),
+      // The leaf's real rotation, read back from the scene graph: which way the door stands open.
+      openings: () =>
+        children()
+          .filter((c) => c.userData.openingId)
+          .map((c) => ({ id: String(c.userData.openingId), kind: String(c.userData.kind), leafTurn: c.children.find((k) => k.userData.leaf)?.rotation.y ?? null })),
+    };
+    (window as unknown as { __scene3d?: typeof hook }).__scene3d = hook;
+    return () => {
+      if ((window as unknown as { __scene3d?: typeof hook }).__scene3d === hook) delete (window as unknown as { __scene3d?: typeof hook }).__scene3d;
+    };
+  }, []);
+
   return (
-    <group>
+    <group ref={groupRef}>
       {plan.walls.map((wall) => (
         <mesh
           key={wall.id}
@@ -169,7 +206,7 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
       ))}
       {plan.openings.map((o) => {
         const wall = wallById.get(o.wallId);
-        return wall ? <OpeningMesh key={o.id} opening={o} wall={wall} /> : null;
+        return wall ? <OpeningMesh key={o.id} opening={o} wall={wall} selected={o.id === openingId} /> : null;
       })}
       {rooms.map((room) => (
         <RoomSurface key={room.id} room={room} y={FLOOR_Y} color={floorColor(room.floorMaterial)} />

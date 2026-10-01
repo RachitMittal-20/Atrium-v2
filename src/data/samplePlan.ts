@@ -12,7 +12,7 @@
  * The living area is L-shaped (x 4–10, y 0–5, plus x 4–7, y 5–8). Wall ids are
  * readable on purpose so openings and rooms below are easy to check by eye.
  */
-import type { Opening, Plan, Vec2, Wall } from "@/types/plan";
+import type { Opening, Plan, SwingSide, Vec2, Wall } from "@/types/plan";
 
 const P: Record<string, Vec2> = {
   A: { x: 0, y: 0 },
@@ -34,6 +34,9 @@ const INTERIOR = 0.1;
 export const WALL_HEIGHT = 2.7;
 export const DOOR_SIZE = { height: 2.1, sillHeight: 0 };
 export const WINDOW_SIZE = { height: 1.2, sillHeight: 0.9 };
+/** The swing side every door had before sides were stored (step 4.5): the left
+ *  of its wall's a→b. New imported doors and migrated old ones both get it. */
+export const LEGACY_SWING: SwingSide = "left";
 
 // id is the two node letters it joins; thickness follows exterior/interior.
 const wall = (from: string, to: string, exterior: boolean): Wall => ({
@@ -70,6 +73,7 @@ const door = (id: string, wallId: string, offset: number, width = 0.9): Opening 
   offset,
   width,
   ...DOOR_SIZE,
+  swing: LEGACY_SWING,
 });
 
 const window_ = (id: string, wallId: string, offset: number, width = 1.2): Opening => ({

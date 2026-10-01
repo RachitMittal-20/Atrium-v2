@@ -45,12 +45,14 @@ export interface DoorSwing {
 }
 
 /**
- * A 90° door swing with leaf length = opening width. The Opening type has no
- * swing side, so the rule is fixed: the hinge is the gap end nearer the wall's
- * a end, and the door opens to the positive side of the normal (the left of
- * a→b). The arc runs from leafEnd to arcEnd, a quarter circle about the hinge.
+ * A 90° door swing with leaf length = opening width. The hinge is the gap end
+ * nearer the wall's a end; the leaf opens to the door's stored swing side,
+ * "left" (the positive side of the normal, the left of a→b) or "right". A door
+ * with no side yet is drawn "left", the rule every door followed before the side
+ * was stored. The arc runs from leafEnd to arcEnd, a quarter circle about the hinge.
  */
-export function doorSwing(wall: Segment, opening: Slot): DoorSwing {
+export function doorSwing(wall: Segment, opening: Slot & Pick<Opening, "swing">): DoorSwing {
   const f = openingFrame(wall, opening);
-  return { hinge: f.start, leafEnd: along(f.start, f.normal, opening.width), arcEnd: f.end };
+  const side = opening.swing === "right" ? -1 : 1;
+  return { hinge: f.start, leafEnd: along(f.start, f.normal, side * opening.width), arcEnd: f.end };
 }

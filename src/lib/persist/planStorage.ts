@@ -12,7 +12,7 @@
  * history is not stored either. Connects to: src/types/plan.ts; wired to the plan
  * store by src/store/persistence.ts; tested by scripts/test-persist.ts.
  */
-import type { Item, Opening, Plan, Room, Vec2, Wall } from "@/types/plan";
+import type { Item, Opening, OpeningKind, Plan, Room, Vec2, Wall } from "@/types/plan";
 
 export const STORAGE_KEY = "atrium-v2:plan";
 /** Bump when the stored shape changes, and add a case to `migrate`. */
@@ -105,7 +105,12 @@ function wall(v: unknown): Wall | null {
 function opening(v: unknown): Opening | null {
   if (!isObject(v) || !isStr(v.id) || !isStr(v.wallId) || (v.kind !== "door" && v.kind !== "window")) return null;
   if (!isNum(v.offset) || !isNum(v.width) || !isNum(v.height) || !isNum(v.sillHeight) || v.width <= 0) return null;
-  return { id: v.id, wallId: v.wallId, kind: v.kind, offset: v.offset, width: v.width, height: v.height, sillHeight: v.sillHeight };
+  // A door's swing side (step 4.5) is user data: dropping it would flip every flipped door back on reload.
+  // Absent is fine (older plans; loadPlan gives doors a default), present must be one of the two sides.
+  if (v.swing !== undefined && v.swing !== "left" && v.swing !== "right") return null;
+  const kind: OpeningKind = v.kind; // narrowed by the guard above
+  const base = { id: v.id, wallId: v.wallId, kind, offset: v.offset, width: v.width, height: v.height, sillHeight: v.sillHeight };
+  return v.swing === undefined ? base : { ...base, swing: v.swing };
 }
 
 function room(v: unknown): Room | null {
