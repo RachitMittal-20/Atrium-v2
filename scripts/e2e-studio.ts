@@ -24,6 +24,17 @@
  * keyboard; rename the plan; toggle units and check the total area changes by
  * 10.7639; no console errors; no horizontal scroll; nothing visible sticks out
  * past the viewport; then follow the "Import plan" link.
+ * Then checkMeasure (step 4.6): the Measure tool, with a mouse at 1440 and real
+ * touch at 390 — two points give a dimension line and a value in metres, a
+ * deliberately sloppy tap snaps to a wall corner, a marker can be dragged, zoom
+ * and pan keep the value and the markers anchored to the same plan points,
+ * Escape (1440) or Clear (390) cancels, a new measurement replaces the old one,
+ * leaving the tool clears it, and through all of it the plan, the undo history
+ * and the selection are exactly as before (also while dragging over a wall and
+ * tapping on a door). Last, checkAutosave in a fresh browser: edit the plan name,
+ * a room name and a wall through the real UI, wait for the save status to say
+ * saved (localStorage is only READ, never written, by this test), reload, and check the
+ * three edits are back while the selection, the Measure tool and the 2D zoom are not.
  * Screenshots go to /tmp/studio/.
  *
  * NOT covered: pinch zoom; whether the gilt tint is really painted on the 3D
@@ -40,21 +51,26 @@ import { chromium, type Page } from "playwright";
 
 const BASE = process.env.E2E_URL ?? "http://localhost:3000";
 const OUT = "/tmp/studio";
+/** Set E2E_CHROMIUM to a Chromium binary when the one Playwright expects is not installed. */
+const EXECUTABLE = process.env.E2E_CHROMIUM || undefined;
 
 type Rect = { x: number; y: number; width: number; height: number };
 type Pt = { x: number; y: number };
 type Wall = { id: string; a: Pt; b: Pt; thickness: number; height: number };
 type Store = {
   getState(): {
-    plan: { name: string; rooms: { id: string; name: string }[]; walls: Wall[] };
+    plan: { name: string; rooms: { id: string; name: string; wallIds: string[]; floorMaterial: string }[]; walls: Wall[]; openings: { id: string; wallId: string }[] };
     past: unknown[];
+    future: unknown[];
     renameRoom(id: string, name: string): void;
     moveWallEndpoint(wallId: string, end: "a" | "b", to: Pt): void;
     undo(): void;
   };
 };
 type Selection = { getState(): { selectedId: string | null; select(id: string | null): void } };
-type Win = Window & { __planStore?: Store; __selectionStore?: Selection };
+type Measurement = { a: Pt; b: Pt | null } | null;
+type Tools = { getState(): { tool: string; measurement: Measurement } };
+type Win = Window & { __planStore?: Store; __selectionStore?: Selection; __toolStore?: Tools };
 const plan = (page: Page) => page.evaluate(() => (window as Win).__planStore!.getState().plan);
 const selectedId = (page: Page) => page.evaluate(() => (window as Win).__selectionStore!.getState().selectedId);
 const num = async (page: Page, id: string) => parseFloat((await page.getByTestId(id).innerText()).replace(/[^\d.]/g, ""));
@@ -476,14 +492,350 @@ async function checkRuns(page: Page, tag: string, wide: boolean, touch: boolean)
   console.log(`${tag}: wall runs ok (both facade cases, ${touch ? "real touch events" : "mouse"})`);
 }
 
+
+// ---- the Measure tool and the one-key-to-cancel overlay (step 4.6)
+
+/** A mouse drag, in steps so the page sees real pointer moves. */
+async function mouseDrag(page: Page, from: Pt, to: Pt) {
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 3 });
+  await page.mouse.move(to.x, to.y, { steps: 3 });
+  await page.mouse.up();
+}
+
+/** What the editor holds: the plan, both history stacks and the selection. A measurement must change none of it. */
+const editorState = (page: Page) =>
+  page.evaluate(() => {
+    const s = (window as Win).__planStore!.getState();
+    return { plan: JSON.stringify(s.plan), past: s.past.length, future: s.future.length, selected: (window as Win).__selectionStore!.getState().selectedId };
+  });
+
+/**
+ * Measure at the current viewport. `touch` uses Chromium's own touch input
+ * (taps and drags), otherwise the mouse. Leaves the Select tool active, 2D shown.
+ */
+async function checkMeasure(page: Page, tag: string, wide: boolean, touch: boolean) {
+  await tid(page, "view-2d").click();
+  await tid(page, "plan-svg").waitFor();
+  await tid(page, "plan-fit").click();
+  await page.waitForTimeout(200);
+  const tap = async (p: Pt) => (touch ? page.touchscreen.tap(p.x, p.y) : page.mouse.click(p.x, p.y));
+  const drag = async (a: Pt, b: Pt) => (touch ? touchDrag(page, a, b) : mouseDrag(page, a, b));
+  const noSideScroll = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth && document.body.scrollWidth <= window.innerWidth);
+  const overlay = async () => {
+    const g = tid(page, "measure-overlay");
+    if ((await g.count()) === 0) return null;
+    const pt = (v: string | null): Pt | null => (v ? { x: +v.split(",")[0], y: +v.split(",")[1] } : null);
+    return { a: pt(await g.getAttribute("data-a"))!, b: pt(await g.getAttribute("data-b")), metres: parseFloat((await g.getAttribute("data-metres")) || "NaN") };
+  };
+  const value = async () => ((await tid(page, "measure-value").count()) ? ((await tid(page, "measure-value").textContent()) ?? "").trim() : null);
+  const centre = async (id: string): Promise<Pt> => {
+    const b = await box(page, id);
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  };
+  /** A page pixel back to plan metres through the canvas's own camera. */
+  const toWorld = async (p: Pt): Promise<Pt> => {
+    const c = await cam(page);
+    const b = await box(page, "plan-canvas");
+    return { x: (p.x - b.x - c.tx) / c.scale, y: (p.y - b.y - c.ty) / c.scale };
+  };
+  const dist = (p: Pt, q: Pt) => Math.hypot(p.x - q.x, p.y - q.y);
+  const start = await editorState(page);
+
+  // ---- choosing the tool
+  assert.equal(await tid(page, "tool-select").getAttribute("aria-pressed"), "true", `${tag}: Select is the active tool at first`);
+  if (touch) await tid(page, "tool-measure").tap();
+  else await tid(page, "tool-measure").click();
+  assert.equal(await tid(page, "tool-measure").getAttribute("aria-pressed"), "true", `${tag}: Measure is now pressed`);
+  assert.equal(await tid(page, "tool-select").getAttribute("aria-pressed"), "false", `${tag}: and Select is not`);
+  assert.equal(await tid(page, "plan-canvas").getAttribute("data-tool"), "measure", `${tag}: the canvas knows`);
+  assert.match(await tid(page, "measure-hint").innerText(), /first point/, `${tag}: a hint says what to do`);
+  assert.equal(await tid(page, "measure-overlay").count(), 0, `${tag}: nothing is measured yet`);
+
+  // ---- two points about 4 m apart, in open floor (no wall end or middle within reach)
+  const A = { x: 5.5, y: 1.5 };
+  const B = { x: 9.5, y: 1.5 };
+  const [pa, pb] = [await toScreen(page, A), await toScreen(page, B)];
+  await tap(pa);
+  assert.equal(await tid(page, "measure-point-a").count(), 1, `${tag}: the first point is marked`);
+  assert.equal(await tid(page, "measure-line").count(), 0, `${tag}: no line yet`);
+  assert.match(await tid(page, "measure-hint").innerText(), /second point/, `${tag}: the hint asks for the second point`);
+  await tap(pb);
+  assert.equal(await tid(page, "measure-line").count(), 1, `${tag}: a dimension line appears`);
+  assert.equal(await tid(page, "measure-point-b").count(), 1, `${tag}: with a marker at each end`);
+  const first = (await overlay())!;
+  assert.match((await value())!, /^\d+\.\d\d m$/, `${tag}: the value is in metres to the centimetre (${await value()})`);
+  near(first.metres, 4, 0.04, `${tag}: about 4 m apart`);
+  near(first.metres, dist(pa, pb) / (await cam(page)).scale, 1e-3, `${tag}: and exactly the pixel distance over the scale`);
+  near(parseFloat((await value())!), first.metres, 0.006, `${tag}: the label shows that distance`);
+  for (const [w, p] of [[first.a, pa], [first.b!, pb]] as const) near(dist(w, await toWorld(p)), 0, 0.01, `${tag}: a marker sits where it was clicked`);
+  // the line really runs between the markers, and the label is whole and clear of the line
+  const line = await box(page, "measure-line");
+  const [ca, cb] = [await centre("measure-point-a"), await centre("measure-point-b")];
+  near(line.width, Math.abs(cb.x - ca.x), 1.5, `${tag}: the line spans the two markers`);
+  const label = await box(page, "measure-label");
+  const canvas = await box(page, "plan-canvas");
+  assert.ok(label.x >= canvas.x && label.y >= canvas.y && label.x + label.width <= canvas.x + canvas.width && label.y + label.height <= canvas.y + canvas.height, `${tag}: the value is not clipped`);
+  assert.ok(!overlaps(label, { x: line.x, y: line.y - 1, width: line.width, height: line.height + 2 }), `${tag}: and does not sit on the line`);
+  assert.equal(await tid(page, "plan-wall").count(), (await plan(page)).walls.length, `${tag}: the line is not a wall: still one wall shape per wall`);
+
+  // ---- zoom and pan: same value, markers on the same plan points
+  const valueBefore = await value();
+  const fitCam = await cam(page);
+  if (touch) {
+    await tid(page, "plan-zoom-in").click(); // one step keeps both markers on a 390 px screen
+  } else {
+    const m = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 };
+    await page.mouse.move(m.x, m.y);
+    await page.mouse.wheel(0, -300);
+  }
+  await page.waitForTimeout(150);
+  const zoomed = await cam(page);
+  assert.ok(zoomed.scale > fitCam.scale * 1.2, `${tag}: the plan zoomed in (${fitCam.scale.toFixed(1)} → ${zoomed.scale.toFixed(1)} px/m)`);
+  // a pan: dragging the plan (in Measure a wall under the finger is not hit, so this pans wherever it starts);
+  // on a phone it goes left, to keep both markers on a 390 px screen
+  const emptyFrom = { x: canvas.x + (touch ? canvas.width * 0.75 : 20), y: canvas.y + canvas.height * 0.7 };
+  await drag(emptyFrom, { x: emptyFrom.x + (touch ? -60 : 30), y: emptyFrom.y - 25 });
+  const panned = await cam(page);
+  assert.ok(Math.abs(panned.tx - zoomed.tx) > 20, `${tag}: the plan panned`);
+  const after = (await overlay())!;
+  assert.deepEqual([after.a, after.b], [first.a, first.b], `${tag}: a pan or zoom never moves the measured points`);
+  assert.equal(await value(), valueBefore, `${tag}: the value is the same after zoom and pan`);
+  near(after.metres, first.metres, 1e-9, `${tag}: and so is the world distance`);
+  for (const [id, w] of [["measure-point-a", first.a], ["measure-point-b", first.b!]] as const) {
+    const want = await toScreen(page, w);
+    const got = await centre(id);
+    near(got.x, want.x, 1.2, `${tag}: ${id} stays on its plan point, x`);
+    near(got.y, want.y, 1.2, `${tag}: ${id} stays on its plan point, y`);
+  }
+  near((await box(page, "measure-line")).width, (first.metres * panned.scale) , 3, `${tag}: and the line is ${first.metres.toFixed(2)} m at the new scale`);
+  await page.screenshot({ path: `${OUT}/studio-${tag}-measure.png` });
+
+  // ---- a sloppy tap still lands on a wall corner; a marker can be dragged
+  await page.keyboard.press("Escape");
+  await tid(page, "plan-fit").click();
+  await page.waitForTimeout(100);
+  const slop = touch ? { x: 12, y: 10 } : { x: 6, y: 5 }; // off the corner by less than the snap reach
+  const cA = await toScreen(page, { x: 0, y: 0 });
+  const cB = await toScreen(page, { x: 4, y: 0 });
+  await tap({ x: cA.x + slop.x, y: cA.y + slop.y });
+  await tap({ x: cB.x - slop.x, y: cB.y + slop.y });
+  const snapped = (await overlay())!;
+  assert.deepEqual([snapped.a, snapped.b], [{ x: 0, y: 0 }, { x: 4, y: 0 }], `${tag}: two imprecise taps snapped to the corners`);
+  assert.equal(await value(), "4.00 m", `${tag}: so the value is exact`);
+  const bAt = await centre("measure-point-b");
+  const grab = { x: bAt.x + 8, y: bAt.y + 6 }; // off-centre, inside the marker's reach
+  const to = { x: grab.x - 30, y: grab.y + 45 };
+  await drag(grab, to);
+  const moved = (await overlay())!;
+  assert.deepEqual(moved.a, { x: 0, y: 0 }, `${tag}: dragging marker b leaves a alone`);
+  // The marker moves by the drag's distance: it does not jump to the finger.
+  const want = { x: snapped.b!.x + (to.x - grab.x) / (await cam(page)).scale, y: snapped.b!.y + (to.y - grab.y) / (await cam(page)).scale };
+  assert.ok(dist(moved.b!, want) < 0.03, `${tag}: and b moves by the drag distance (${moved.b!.x.toFixed(2)}, ${moved.b!.y.toFixed(2)} vs ${want.x.toFixed(2)}, ${want.y.toFixed(2)})`);
+  near(moved.metres, dist(moved.a, moved.b!), 1e-3, `${tag}: with the value updated (${await value()})`);
+
+  // ---- a diagonal, then a vertical, each replacing the one before
+  // (the vertical starts 0.5 m from the diagonal's first marker: a tap near a marker that
+  // does not drag it is still a tap, so it starts a new measurement)
+  await tap(await toScreen(page, { x: 5.5, y: 1.5 }));
+  assert.equal(await tid(page, "measure-line").count(), 0, `${tag}: a tap after a finished measurement starts a new one`);
+  await tap(await toScreen(page, { x: 8.5, y: 3.5 }));
+  const diag = (await overlay())!;
+  near(diag.metres, Math.sqrt(13), 0.04, `${tag}: diagonal ${Math.sqrt(13).toFixed(2)} m (${await value()})`);
+  await tap(await toScreen(page, { x: 5.5, y: 1 }));
+  await tap(await toScreen(page, { x: 5.5, y: 4 }));
+  const vert = (await overlay())!;
+  near(vert.metres, 3, 0.04, `${tag}: vertical 3 m (${await value()})`);
+  assert.equal(await tid(page, "measure-overlay").count(), 1, `${tag}: only one measurement at a time`);
+
+  // ---- cancel: Escape on a keyboard, the Clear button on a phone
+  if (touch) {
+    await tid(page, "measure-clear").tap();
+  } else {
+    await page.keyboard.press("Escape");
+  }
+  assert.equal(await tid(page, "measure-overlay").count(), 0, `${tag}: ${touch ? "Clear" : "Escape"} removes the measurement`);
+  assert.equal(await tid(page, "tool-measure").getAttribute("aria-pressed"), "true", `${tag}: and the tool stays on`);
+  assert.match(await tid(page, "measure-hint").innerText(), /first point/, `${tag}: ready for the next one`);
+  if (!touch) {
+    // Escape with the focus somewhere else on the page still cancels
+    await tap(await toScreen(page, { x: 5.5, y: 1.5 }));
+    await tid(page, "tool-measure").focus();
+    await page.keyboard.press("Escape");
+    assert.equal(await tid(page, "measure-overlay").count(), 0, `${tag}: Escape works from the tool rail too`);
+    await page.keyboard.press("Escape");
+  }
+
+  // ---- measuring edits nothing: not by dragging over a wall, not by tapping a door
+  const wall = await wallOf(page, "w-HI");
+  const wm = await toScreen(page, mid(wall));
+  await drag(wm, { x: wm.x, y: wm.y + 40 });
+  assert.equal(await tid(page, "plan-selection").count(), 0, `${tag}: a drag over a wall selects nothing in Measure`);
+  assert.equal(await tid(page, "wall-handle").count(), 0, `${tag}: and shows no handles`);
+  await tid(page, "plan-fit").click();
+  await page.waitForTimeout(100);
+  await tap(await toScreen(page, { x: 7, y: 0 })); // the front door d-front, on w-BC
+  assert.equal((await overlay())!.a.y, 0, `${tag}: a tap on a door only places a point`);
+  await tid(page, "measure-clear").click();
+  assert.deepEqual(await editorState(page), start, `${tag}: plan, undo history, redo history and selection are exactly as before`);
+  assert.equal(await tid(page, "wall-panel").count(), 0, `${tag}: no wall panel opened`);
+
+  // ---- undo has nothing to do with a measurement
+  await tap(await toScreen(page, A));
+  await tap(await toScreen(page, B));
+  await page.keyboard.press("Control+z");
+  assert.ok(await overlay(), `${tag}: Ctrl+Z leaves the measurement alone`);
+  assert.deepEqual(await editorState(page), start, `${tag}: and the history is still as it was`);
+
+  // ---- leaving the tool clears the measurement, and Select works as before
+  if (touch) await tid(page, "tool-select").tap();
+  else await tid(page, "tool-select").click();
+  assert.equal(await tid(page, "measure-overlay").count(), 0, `${tag}: switching to Select clears the measurement`);
+  assert.equal(await tid(page, "measure-hint").count(), 0, `${tag}: and the hint`);
+  assert.equal(await tid(page, "plan-canvas").getAttribute("data-tool"), "select");
+  await tap(await toScreen(page, mid(wall)));
+  assert.equal(await selectedId(page), "w-HI", `${tag}: clicking a wall selects it again`);
+  await page.keyboard.press("Escape");
+  assert.equal(await selectedId(page), null);
+  assert.deepEqual(await editorState(page), start, `${tag}: still nothing changed in the plan or history`);
+  assert.ok(await noSideScroll(), `${tag}: no horizontal scroll with Measure in use`);
+  console.log(`${tag}: measure ok (${touch ? "real touch events" : "mouse"}; 4.00 m line, diagonal ${diag.metres.toFixed(2)} m)`);
+}
+
+// ---- autosave and restore (step 4.6)
+
+/**
+ * A fresh browser (empty localStorage). Edits the plan name, a room name and a
+ * wall with the real UI, waits for the on-screen save status to say "saved",
+ * reloads, and checks the edits are back. Nothing is written to storage or
+ * pushed through a store API by this test: localStorage is only READ, to see that
+ * nothing is saved before an edit and something is after it. Reloads twice, so
+ * selection (while Select is active) and the Measure tool (with a point placed) are
+ * each checked to be forgotten, along with the 2D zoom and the undo history.
+ */
+async function checkAutosave() {
+  const tag = "1440 autosave";
+  const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
+  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  const stored = () => page.evaluate(() => localStorage.getItem("atrium-v2:plan")); // read only
+  const status = () => tid(page, "save-status").getAttribute("data-state");
+  const open = async () => {
+    await page.waitForSelector("canvas");
+    await tid(page, "plan-name").waitFor();
+    await page.waitForTimeout(500);
+  };
+
+  await page.goto(`${BASE}/studio`);
+  await open();
+  assert.equal(await stored(), null, `${tag}: nothing is saved right after mounting the editor`);
+  await page.waitForTimeout(1500); // well past the 800 ms debounce: a write caused by mounting alone would have landed by now
+  assert.equal(await stored(), null, `${tag}: and still nothing after the debounce: mounting the editor does not create a save`);
+  assert.equal(await status(), "idle", `${tag}: and the status is quiet`);
+  assert.equal((await plan(page)).name, "Two-bedroom house", `${tag}: the sample plan is what loads when nothing is saved`);
+
+  // ---- three real edits: the plan name, a room name, a wall
+  await tid(page, "plan-name").fill("Flat on Elm Street");
+  await tid(page, "plan-name").press("Enter");
+  assert.equal(await status(), "pending", `${tag}: an edit makes the save pending`);
+  assert.equal(await stored(), null, `${tag}: and nothing is written inline: saving waits out a short delay`);
+  const roomId = (await plan(page)).rooms[0].id;
+  await tid(page, "room-name-0").fill("Study");
+  await tid(page, "room-name-0").press("Enter");
+  await tid(page, "view-2d").click();
+  await tid(page, "plan-svg").waitFor();
+  await page.waitForTimeout(300);
+  const fitCam = await cam(page);
+  const target = await wallOf(page, "w-HI");
+  const from = await toScreen(page, mid(target));
+  await mouseDrag(page, from, await toScreen(page, { x: mid(target).x, y: mid(target).y + 1 })); // slide the wall 1 m south
+  assert.equal(await selectedId(page), "w-HI", `${tag}: the dragged wall is selected`);
+  const edited = await plan(page);
+  const wall = edited.walls.find((w) => w.id === "w-HI")!;
+  near(wall.a.y, target.a.y + 1, 0.12, `${tag}: the wall really moved`);
+  assert.equal(await status(), "pending", `${tag}: the drag leaves a save pending`);
+  await page.waitForSelector('[data-testid="save-status"][data-state="saved"]', { timeout: 6000 });
+  const raw = JSON.parse((await stored())!);
+  assert.equal(raw.schema, 1, `${tag}: the save carries a schema marker`);
+  assert.deepEqual(Object.keys(raw).sort(), ["plan", "savedAt", "schema"], `${tag}: and holds only the plan`);
+  assert.equal(raw.plan.name, "Flat on Elm Street");
+  // The write itself, read straight from the browser's storage: it holds the room name and the moved wall
+  // (this is the proof that the app wrote the edits; the test never writes storage).
+  assert.equal(raw.plan.rooms.find((r: { id: string }) => r.id === roomId).name, "Study", `${tag}: the stored plan has the new room name`);
+  assert.deepEqual(raw.plan.walls, edited.walls, `${tag}: and the edited walls, exactly`);
+  assert.deepEqual(raw.plan.openings, edited.openings, `${tag}: and the openings`);
+
+  // temporary state to leave behind: a selected wall (still selected), a zoomed 2D camera
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.wheel(0, -300);
+  await page.waitForTimeout(100);
+  assert.ok((await cam(page)).scale > fitCam.scale * 1.2, `${tag}: the 2D view is zoomed`);
+  assert.equal(await selectedId(page), "w-HI");
+
+  // ---- reload 1
+  await page.reload();
+  await open();
+  assert.equal(await tid(page, "plan-name").inputValue(), "Flat on Elm Street", `${tag}: the plan name is restored`);
+  assert.equal(await tid(page, "room-name-0").inputValue(), "Study", `${tag}: the room name is restored`);
+  const back = await plan(page);
+  assert.equal(back.rooms.find((r) => r.id === roomId)!.name, "Study");
+  assert.deepEqual(back.walls, edited.walls, `${tag}: the moved wall, and every other wall, is restored exactly`);
+  assert.deepEqual(back.openings, edited.openings, `${tag}: openings too`);
+  assert.deepEqual(back.rooms, edited.rooms, `${tag}: and the rooms with their names`);
+  assert.equal(await tid(page, "undo").isDisabled(), true, `${tag}: undo history starts empty after a reload`);
+  assert.equal(await tid(page, "redo").isDisabled(), true, `${tag}: and so does redo`);
+  const hist = await editorState(page);
+  assert.deepEqual([hist.past, hist.future], [0, 0], `${tag}: both history stacks are empty (restoring and autosaving added no entries)`);
+  assert.equal(await status(), "idle", `${tag}: restoring did not write anything back`);
+  assert.equal(await selectedId(page), null, `${tag}: the wall selection is not restored`);
+  assert.equal(await tid(page, "tool-select").getAttribute("aria-pressed"), "true", `${tag}: Select is the tool`);
+  await tid(page, "view-2d").click();
+  await tid(page, "plan-svg").waitFor();
+  await page.waitForTimeout(300);
+  assert.equal(await tid(page, "plan-canvas").getAttribute("data-selected"), "", `${tag}: and the 2D plan shows no selection`);
+  assert.equal(await tid(page, "plan-selection").count(), 0);
+  const camBack = await cam(page);
+  near(camBack.scale, fitCam.scale, 0.001, `${tag}: the 2D zoom is not restored: the plan is fitted again`);
+  near(camBack.tx, fitCam.tx, 0.01, `${tag}: nor is the 2D pan (x)`);
+  near(camBack.ty, fitCam.ty, 0.01, `${tag}: nor (y)`);
+  assert.ok((await labels(page)).some((l) => l.name === "Study"), `${tag}: the restored name is on the 2D plan`);
+  assert.equal(await tid(page, "plan-wall").count(), back.walls.length);
+  await page.screenshot({ path: `${OUT}/studio-1440-reload.png` });
+
+  // ---- reload 2: the Measure tool and a placed point are forgotten too
+  await tid(page, "tool-measure").click();
+  await page.mouse.click(...(Object.values(await toScreen(page, { x: 5.5, y: 1.5 })) as [number, number]));
+  assert.equal(await tid(page, "measure-point-a").count(), 1, `${tag}: a measurement point is placed`);
+  assert.equal(await tid(page, "tool-measure").getAttribute("aria-pressed"), "true");
+  assert.equal(await status(), "idle", `${tag}: measuring does not trigger a save`);
+  await page.waitForTimeout(1200); // longer than the save delay
+  assert.equal(await status(), "idle", `${tag}: not even after the delay`);
+  await page.reload();
+  await open();
+  assert.equal(await tid(page, "plan-name").inputValue(), "Flat on Elm Street", `${tag}: the plan is still restored after a second reload`);
+  assert.equal(await tid(page, "tool-measure").getAttribute("aria-pressed"), "false", `${tag}: the Measure tool is not restored`);
+  assert.equal(await tid(page, "tool-select").getAttribute("aria-pressed"), "true", `${tag}: Select is the tool again`);
+  await tid(page, "view-2d").click();
+  await tid(page, "plan-svg").waitFor();
+  assert.equal(await tid(page, "measure-overlay").count(), 0, `${tag}: the measurement is gone`);
+  assert.deepEqual((await plan(page)).walls, edited.walls, `${tag}: walls are still the edited ones`);
+  console.log(`${tag}: ok (plan name, room name and moved wall restored; selection, tool, measurement and zoom not)`);
+  await browser.close();
+}
+
 async function run(width: number, height: number) {
   const tag = String(width);
   const wide = width >= 768;
-  const browser = await chromium.launch({ args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
+  const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   const page = await browser.newPage({ viewport: { width, height }, hasTouch: !wide }); // the phone run uses real touch events
   page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
   page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  if (process.env.E2E_DEBUG) page.on("response", (r) => r.status() >= 400 && console.log(`${tag}: HTTP ${r.status()} ${r.url()}`));
   await page.goto(`${BASE}/studio`);
+  // Next's dev badge sits bottom left, over the phone tool bar's first button, and swallows taps there.
+  await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
   await tid(page, "plan-name").waitFor();
   await page.waitForSelector("canvas");
 
@@ -496,6 +848,7 @@ async function run(width: number, height: number) {
   await check2d(page, tag, wide, `${OUT}/studio-${tag}-2d.png`);
   await checkSelect(page, tag, wide, !wide);
   await checkRuns(page, tag, wide, !wide);
+  await checkMeasure(page, tag, wide, !wide);
   if (wide) {
     await tid(page, "view-split").click();
     await page.waitForSelector("canvas");
@@ -607,6 +960,7 @@ async function main() {
   mkdirSync(OUT, { recursive: true });
   await run(1440, 900);
   await run(390, 844);
+  await checkAutosave();
   assert.deepEqual(errors, [], `console errors:\n${errors.join("\n")}`);
   console.log("e2e-studio: ok; screenshots in", OUT);
 }

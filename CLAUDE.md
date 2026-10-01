@@ -45,6 +45,10 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - Selection lives in `src/store/selectionStore.ts`, not in the plan, so it is never undoable. It clears itself when the selected wall leaves the plan.
 - The drag maths is pure, in `src/lib/plan/edit.ts`; components only turn pointers into metres and call the store. A drag is one undo step because every pointer move re-applies the whole drag after `planStore.rollback()`.
 
+## Measure and autosave (step 4.6)
+- The active tool and the temporary Measure overlay live in `src/store/toolStore.ts`, never in the plan, so they are not undoable and not saved. A measurement is two points in plan metres, so the 2D camera draws it correctly at any zoom. Pure maths: `src/lib/plan2d/measure.ts`. In Measure mode walls are not picked, hovered or dragged, dragging empty space still pans, and Escape (or the Clear button, for touch) cancels. Leaving the tool clears it. Measure points snap to wall ends and midpoints only, never to a grid, so the value is the real distance.
+- Autosave stores ONLY the `Plan`, as `{ schema, savedAt, plan }` under one localStorage key (`src/lib/persist/planStorage.ts`). `src/store/persistence.ts` restores it once per page load, before the editor mounts, and writes after an 800 ms quiet time (at most 5 s apart). Anything corrupt, from another schema or the wrong shape is ignored and the sample plan stays. To change the stored shape, bump `SCHEMA_VERSION` and add a case to `migrate`. Restoring goes through `loadPlan`, which keeps stored room names by matching loops and label points; undo history is never saved or restored.
+
 ## Known limitations
 - The hollow fill cannot tell a wall whose gap is outside the accepted range from furniture drawn as long parallel lines. Both are just two long lines with white between them.
 - Walls whose gap is more than 3x the commonest gap are missed. On a plan with lots of narrow line pairs (window lines, shelving), the commonest gap can be narrower than the real walls, and then real walls are skipped.

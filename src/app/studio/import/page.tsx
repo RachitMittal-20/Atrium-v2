@@ -12,7 +12,8 @@
  * runs buildFromAnalysis and shows a summary → "Open in studio" calls the
  * plan store's loadPlan and goes to /studio.
  *
- * Nothing is persisted except the plan loaded into the store. Editing walls
+ * Nothing is kept except the plan loaded into the store, which autosaves to
+ * the browser (src/store/persistence.ts). Editing walls
  * here is a later piece; this screen only reviews.
  */
 import Link from "next/link";
@@ -20,6 +21,7 @@ import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { buildFromAnalysis, STAGES, type Analysis, type AnalysisWarning, type Stage } from "@/lib/blueprint/analyse";
 import { usePlanStore } from "@/store/planStore";
+import { usePersistenceReady } from "@/store/persistence";
 import type { PlanScale } from "@/types/blueprint";
 import type { Vec2 } from "@/types/plan";
 import { Cancelled, checkFile, decodeImage, runAnalysis, STAGE_LABELS } from "./importFile";
@@ -54,6 +56,7 @@ function warningText(w: AnalysisWarning, a: Analysis): string {
 
 export default function ImportPage() {
   const router = useRouter();
+  usePersistenceReady(); // start autosave here too, so the imported plan is saved and not replaced by an older save in /studio
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [dragging, setDragging] = useState(false);
   const [chosen, setChosen] = useState<PlanScale | null>(null);

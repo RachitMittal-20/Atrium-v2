@@ -4,12 +4,14 @@
  * src/components/studio/TopBar.tsx — the editor's top bar: plan name (editable,
  * undoable through planStore.renamePlan), Undo and Redo, the 3D | 2D | Split
  * switch, a view-options popover (ceilings), a link to /studio/import and an
- * Export menu whose formats are all "Coming soon". Split is hidden below 640 px.
+ * Export menu whose formats are all "Coming soon", and a quiet autosave status
+ * (src/store/persistence.ts). Split is hidden below 640 px.
  * Mounted by src/app/studio/page.tsx.
  */
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useCanRedo, useCanUndo, usePlanStore } from "@/store/planStore";
+import { useSaveStatus } from "@/store/persistence";
 import { EditableText } from "./EditableText";
 
 export type View = "3d" | "2d" | "split";
@@ -60,6 +62,7 @@ export function TopBar({ view, setView, showCeiling, setShowCeiling }: { view: V
   const { renamePlan, undo, redo } = usePlanStore.getState();
   const canUndo = useCanUndo();
   const canRedo = useCanRedo();
+  const saveStatus = useSaveStatus((s) => s.status);
 
   const views: { id: View; label: string; cls?: string }[] = [
     { id: "3d", label: "3D" },
@@ -79,6 +82,11 @@ export function TopBar({ view, setView, showCeiling, setShowCeiling }: { view: V
         {icon(<path d="M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3" />)}
         <span className="max-sm:sr-only">Redo</span>
       </button>
+
+      {/* Autosave status: on a phone it is read aloud only, to keep the bar short. */}
+      <span role="status" data-testid="save-status" data-state={saveStatus} className="text-xs text-vellum/80 max-sm:sr-only">
+        {{ idle: "", pending: "Saving…", saved: "Saved in this browser", error: "Couldn't save in this browser" }[saveStatus]}
+      </span>
 
       <div role="group" aria-label="View" className="flex rounded border border-vellum/40 p-0.5 md:ml-auto">
         {views.map((v) => (

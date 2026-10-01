@@ -23,6 +23,15 @@
  * src/lib/plan/edit.ts; this file only turns pointers into metres and calls the
  * store. Each drag is one undo step: see planStore.rollback for how.
  *
+ * Measure tool (src/store/toolStore.ts, src/lib/plan2d/measure.ts): a click or
+ * tap places the first point, the next the second, and a dimension line with its
+ * length in metres is drawn between them in plan coordinates, so it stays put
+ * while zooming and panning. Points snap to wall ends and midpoints (Alt turns
+ * that off; touch gets a wider radius), their markers can be dragged, and
+ * dragging empty space still pans. In this mode walls are neither picked,
+ * hovered nor dragged. The measurement is an overlay only: it never writes to
+ * the plan or to undo history. Escape cancels it (toolStore handles that).
+ *
  * Pan/zoom lives here, not in the store. Nothing animates, so
  * prefers-reduced-motion needs no special case.
  * Mounted by src/app/studio/page.tsx (2D view and the 2D half of Split).
@@ -49,11 +58,21 @@ import {
   type Snap,
 } from "@/lib/plan/edit";
 import { wallLength, wallOutline } from "@/lib/plan/geometry";
+import {
+  formatMeasure,
+  MEASURE_HIT_PX,
+  MEASURE_HIT_TOUCH_PX,
+  measureDistance,
+  measureSnapRadius,
+  pickMeasurePoint,
+  snapMeasurePoint,
+} from "@/lib/plan2d/measure";
 import { validatePlan } from "@/lib/plan/validate";
 import { doorSwing, openingFrame } from "@/lib/plan2d/openings";
 import { fitView, niceScaleBar, screenToWorld, worldToScreen, zoomAt, type Bounds, type View } from "@/lib/plan2d/view";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { useSelectedRun, useSelectionStore } from "@/store/selectionStore";
+import { useToolStore } from "@/store/toolStore";
 import type { Vec2, Wall } from "@/types/plan";
 
 const NAME_PX = 15; // text-sm
@@ -69,11 +88,19 @@ const CLICK_SLOP_PX = 3; // a press that moves less than this is a click, not a 
 const pts = (ps: Vec2[]) => ps.map((p) => `${p.x},${p.y}`).join(" ");
 const add = (p: Vec2, d: Vec2, k: number): Vec2 => ({ x: p.x + d.x * k, y: p.y + d.y * k });
 
+const MEASURE_TICK_PX = 14; // half the length of the end ticks on a dimension line (reaches past the marker ring)
+const MEASURE_PILL_H = 24; // the value label's height
+const MEASURE_GLYPH_PX = 7.6; // text-[13px] average glyph width, to size the label
+
 const SNAP_WORDS: Record<string, string> = { endpoint: "corner", midpoint: "middle", angle: "angle", grid: "grid" };
 
 /** What a pointer is doing: nothing, panning the camera, or editing a wall. */
 type Drag =
-  | { kind: "pan"; from: Vec2; moved: number }
+  /** `pinched`: a second finger joined, so lifting the first is not a tap. */
+  | { kind: "pan"; from: Vec2; moved: number; pinched?: boolean }
+  /** Pressing a placed Measure marker: a drag moves it by the drag's distance (`grab` is the marker's
+   *  world offset from the pointer, so it does not jump to the finger); a press that never moves is a tap. */
+  | { kind: "measurePoint"; which: "a" | "b"; moved: number; grab: Vec2 }
   /** `joint` and `other` are the dragged end and the far end as they were when the
    *  drag started, and `walls` the plan it started from: snap targets must not
    *  drift under the cursor as the preview moves. */
@@ -109,6 +136,9 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
   const select = useSelectionStore((s) => s.select);
   const hover = useSelectionStore((s) => s.hover);
   const setWarnings = useSelectionStore((s) => s.setWarnings);
+  const tool = useToolStore((s) => s.tool);
+  const measurement = useToolStore((s) => s.measurement);
+  const measuring = tool === "measure";
 
   const [view, setView] = useState<View>({ scale: 1, tx: 0, ty: 0 });
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -235,10 +265,22 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
     if (pointers.current.size >= 1 && drag.current && drag.current.kind !== "pan") cancelDrag();
     e.currentTarget.setPointerCapture(e.pointerId);
     pointers.current.set(e.pointerId, local(e));
-    if (pointers.current.size > 1) return;
+    if (pointers.current.size > 1) {
+      if (drag.current?.kind === "pan") drag.current.pinched = true; // a pinch must not end as a Measure tap
+      return;
+    }
 
     root.current!.focus({ preventScroll: true }); // so Escape, Delete and the arrows reach this canvas
     burst.current.at = 0;
+    if (measuring) {
+      // Measure: no wall is picked or dragged. A placed marker can be grabbed; anything else pans, or taps.
+      const touch = e.pointerType === "touch";
+      const at = world(local(e));
+      const grabbed = measurement ? pickMeasurePoint(measurement, at, (touch ? MEASURE_HIT_TOUCH_PX : MEASURE_HIT_PX) / view.scale) : null;
+      const marker = grabbed && measurement ? measurement[grabbed] : null;
+      drag.current = marker ? { kind: "measurePoint", which: grabbed!, moved: 0, grab: { x: marker.x - at.x, y: marker.y - at.y } } : { kind: "pan", from: local(e), moved: 0 };
+      return;
+    }
     const hit = pickAt(local(e), e.pointerType === "touch");
     if (!hit) {
       drag.current = { kind: "pan", from: local(e), moved: 0 };
@@ -255,11 +297,22 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
   const onPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
     const prev = pointers.current.get(e.pointerId);
     if (!prev) {
-      if (!drag.current) hover(pickAt(local(e), false)?.wallId ?? null); // plain hover, no button down
+      if (!drag.current) hover(measuring ? null : (pickAt(local(e), false)?.wallId ?? null)); // plain hover, no button down
       return;
     }
     const pos = local(e);
     const d = drag.current;
+
+    if (d?.kind === "measurePoint") {
+      pointers.current.set(e.pointerId, pos);
+      d.moved += Math.abs(pos.x - prev.x) + Math.abs(pos.y - prev.y);
+      if (d.moved > CLICK_SLOP_PX) {
+        const w = world(pos);
+        const target = { x: w.x + d.grab.x, y: w.y + d.grab.y };
+        useToolStore.getState().moveMeasurePoint(d.which, snapMeasurePoint(target, plan.walls, measureSnapRadius(view.scale, e.pointerType === "touch"), e.altKey));
+      }
+      return;
+    }
 
     if (d?.kind === "endpoint" || d?.kind === "body") {
       pointers.current.set(e.pointerId, pos);
@@ -301,8 +354,15 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
     pointers.current.delete(e.pointerId);
     const d = drag.current;
     if (!d) return;
-    if (d.kind === "pan") {
-      if (d.moved <= CLICK_SLOP_PX) select(null); // a click on empty space clears the selection
+    if (d.kind === "measurePoint" || d.kind === "pan") {
+      if (d.moved <= CLICK_SLOP_PX) {
+        if (d.kind === "pan" && !measuring) select(null); // a click on empty space clears the selection
+        else if (measuring && e.type === "pointerup" && !(d.kind === "pan" && d.pinched)) {
+          // a tap (including one on a marker that was not dragged) places a Measure point, snapped to a wall end or midpoint when one is near
+          const radius = measureSnapRadius(view.scale, e.pointerType === "touch");
+          useToolStore.getState().placeMeasurePoint(snapMeasurePoint(world(local(e)), plan.walls, radius, e.altKey));
+        }
+      }
       drag.current = null;
       return;
     }
@@ -333,7 +393,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
       } else select(null);
       return;
     }
-    if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
+    if ((e.key === "Delete" || e.key === "Backspace") && selectedId && !measuring) {
       e.preventDefault();
       usePlanStore.getState().deleteWall(selectedId); // selectionStore clears the selection when the wall goes
       return;
@@ -347,7 +407,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
       ArrowDown: { x: 0, y: step },
     };
     const wall = selectedId ? plan.walls.find((w) => w.id === selectedId) : undefined;
-    if (wall && nudges[e.key] && !e.altKey) {
+    if (wall && !measuring && nudges[e.key] && !e.altKey) {
       e.preventDefault();
       const offset = normalComponent(wall, nudges[e.key]);
       if (Math.abs(offset) < 1e-9) return; // along the wall: a horizontal wall ignores left and right
@@ -410,11 +470,12 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
       ref={root}
       tabIndex={0}
       role="group"
-      aria-label="2D plan. Click a wall to select it, arrow keys nudge the selected wall or pan when none is selected, Delete removes it, Escape clears the selection. Plus and minus zoom, 0 fits the plan."
+      aria-label="2D plan. Click a wall to select it, arrow keys nudge the selected wall or pan when none is selected, Delete removes it, Escape clears the selection. With the Measure tool, click two points to measure between them; Escape cancels. Plus and minus zoom, 0 fits the plan."
       data-testid="plan-canvas"
       data-scale={view.scale.toFixed(4)}
       data-tx={view.tx.toFixed(2)}
       data-ty={view.ty.toFixed(2)}
+      data-tool={tool}
       data-selected={selectedId ?? ""}
       data-run={run.join(" ")}
       onKeyDown={onKeyDown}
@@ -428,7 +489,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
           role="img"
           aria-label={`Floor plan with ${rooms.length} ${rooms.length === 1 ? "room" : "rooms"}`}
           data-testid="plan-svg"
-          className={`block touch-none ${hoveredId ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
+          className={`block touch-none ${measuring ? "cursor-crosshair" : hoveredId ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerEnd}
@@ -560,6 +621,9 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
             </g>
           )}
 
+          {/* Measure: the dimension line and its value, drawn from plan metres through the same camera */}
+          {measuring && measurement && <MeasureOverlay a={S(measurement.a)} b={measurement.b && S(measurement.b)} metres={measurement.b ? measureDistance(measurement.a, measurement.b) : 0} size={size} world={measurement} />}
+
           {/* scale bar, bottom left */}
           <g data-testid="plan-scalebar" className="font-sans" transform={`translate(16 ${size.height - 16})`}>
             <path d={`M0,-6V0H${barPx}V-6`} fill="none" className="stroke-iron" strokeWidth={1.5} />
@@ -568,6 +632,21 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
             </text>
           </g>
         </svg>
+      )}
+
+      {/* Measure: what to do next, at the top so it clears the scale bar and the drag message.
+          Clear is the touch way to cancel (a phone has no Escape key); Escape does the same. */}
+      {measuring && (
+        <div className="pointer-events-none absolute left-1/2 top-3 flex max-w-[calc(100%-6rem)] -translate-x-1/2 items-center gap-2 rounded border border-stone bg-vellum py-1 pl-3 pr-1 text-xs text-iron shadow">
+          <p role="status" data-testid="measure-hint" className="py-1">
+            {!measurement ? "Measure: click or tap the first point" : !measurement.b ? "Now the second point" : "Click or tap to measure again"}
+          </p>
+          {measurement && (
+            <button type="button" data-testid="measure-clear" onClick={() => useToolStore.getState().cancelMeasure()} className="pointer-events-auto min-h-10 rounded px-3 text-iron hover:bg-limestone">
+              Clear
+            </button>
+          )}
+        </div>
       )}
 
       {/* why a drag stopped short, in plain words */}
@@ -600,5 +679,75 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
         ))}
       </div>
     </div>
+  );
+}
+
+/**
+ * The Measure overlay: a thin cyanotype dimension line with end ticks, a marker
+ * on each point and the length in a vellum label beside the line. A limestone
+ * casing under the line keeps it readable over iron walls and room tints, and
+ * its thinness and colour keep it from reading as a wall. `a` and `b` are
+ * already in screen pixels; `world` carries the plan-metre points for the
+ * data attributes the browser test reads. The label sits beside the line (on its
+ * upper side), clear of it, and is clamped inside the canvas so it never clips.
+ */
+function MeasureOverlay({ a, b, metres, size, world }: { a: Vec2; b: Vec2 | null; metres: number; size: { width: number; height: number }; world: { a: Vec2; b: Vec2 | null } }) {
+  const text = b ? formatMeasure(metres) : "";
+  const w = text.length * MEASURE_GLYPH_PX + 18;
+  let pill = { x: 0, y: 0 };
+  let tickA: Vec2[] = [];
+  let tickB: Vec2[] = [];
+  if (b) {
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const dir = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+    let n = { x: -dir.y, y: dir.x }; // a normal; take the one pointing up the screen (right for a vertical line)
+    if (n.y > 1e-9 || (Math.abs(n.y) <= 1e-9 && n.x < 0)) n = { x: -n.x, y: -n.y };
+    const tick = (p: Vec2) => [add(p, n, MEASURE_TICK_PX), add(p, n, -MEASURE_TICK_PX)];
+    [tickA, tickB] = [tick(a), tick(b)];
+    // Far enough off the line that the label's own box clears it, whatever the angle.
+    const off = (Math.abs(n.x) * w) / 2 + (Math.abs(n.y) * MEASURE_PILL_H) / 2 + 8;
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    pill = {
+      x: Math.min(Math.max(mid.x + n.x * off, w / 2 + 4), Math.max(w / 2 + 4, size.width - w / 2 - 4)),
+      y: Math.min(Math.max(mid.y + n.y * off, MEASURE_PILL_H / 2 + 4), Math.max(MEASURE_PILL_H / 2 + 4, size.height - MEASURE_PILL_H / 2 - 4)),
+    };
+  }
+  const line = (p: Vec2, q: Vec2, cls: string, sw: number, testId?: string) => <line x1={p.x} y1={p.y} x2={q.x} y2={q.y} className={cls} strokeWidth={sw} strokeLinecap="round" data-testid={testId} />;
+  const dot = (p: Vec2, id: string) => (
+    <g>
+      <circle cx={p.x} cy={p.y} r={11} className="fill-cyanotype stroke-cyanotype" fillOpacity={0.12} strokeOpacity={0.35} strokeWidth={1} />
+      <circle cx={p.x} cy={p.y} r={4.5} className="fill-cyanotype stroke-vellum" strokeWidth={2} data-testid={id} />
+    </g>
+  );
+  return (
+    <g
+      pointerEvents="none"
+      className="font-sans"
+      data-testid="measure-overlay"
+      data-a={`${world.a.x},${world.a.y}`}
+      data-b={world.b ? `${world.b.x},${world.b.y}` : ""}
+      data-metres={world.b ? metres.toFixed(4) : ""}
+    >
+      {b && (
+        <>
+          {line(a, b, "stroke-limestone", 5)}
+          {line(tickA[0], tickA[1], "stroke-limestone", 5)}
+          {line(tickB[0], tickB[1], "stroke-limestone", 5)}
+          {line(a, b, "stroke-cyanotype", 1.5, "measure-line")}
+          {line(tickA[0], tickA[1], "stroke-cyanotype", 1.5)}
+          {line(tickB[0], tickB[1], "stroke-cyanotype", 1.5)}
+        </>
+      )}
+      {dot(a, "measure-point-a")}
+      {b && dot(b, "measure-point-b")}
+      {b && (
+        <g data-testid="measure-label">
+          <rect x={pill.x - w / 2} y={pill.y - MEASURE_PILL_H / 2} width={w} height={MEASURE_PILL_H} rx={3} className="fill-vellum stroke-cyanotype" strokeWidth={1} />
+          <text x={pill.x} y={pill.y} textAnchor="middle" dominantBaseline="central" className="fill-cyanotype" fontSize={13} data-testid="measure-value">
+            {text}
+          </text>
+        </g>
+      )}
+    </g>
   );
 }
