@@ -4,6 +4,11 @@
  * PlanModel.tsx — renders the plan from usePlanStore as a 3D model. A derived
  * view of Plan: nothing here is edited or stored.
  *
+ * Selecting: each wall mesh carries its wall id in userData, so the raycast hit
+ * R3F hands to onClick maps straight back to a wall and into selectionStore —
+ * the same selection the 2D plan shows. Selected walls are tinted gilt, hovered
+ * ones lighter. Walls are NOT draggable in 3D; editing happens in the 2D plan.
+ *
  * Coordinates: plan (x, y) → world (x, 0, y); plan units are metres; world up
  * is +Y. Seen from above (+Y looking down) with -Z at screen-top, the model
  * reads exactly like the 2D plan: x to the right, y (south) downward.
@@ -18,6 +23,7 @@ import { wallDirection } from "@/lib/plan/geometry";
 import { buildFloorGeometry, buildWallGeometry, wallSignature } from "@/lib/plan/meshBuilders";
 import type { DerivedRoom } from "@/lib/plan/rooms";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
+import { useSelectionStore } from "@/store/selectionStore";
 import type { Opening, Plan, Wall } from "@/types/plan";
 
 const FLOOR_Y = 0.01; // just above y = 0 so floors never z-fight the wall bottoms
@@ -117,12 +123,36 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
   const rooms = useDerivedRooms();
   const wallGeometries = useWallGeometries(plan);
   const wallById = useMemo(() => new Map(plan.walls.map((w) => [w.id, w])), [plan.walls]);
+  const selectedId = useSelectionStore((s) => s.selectedId);
+  const hoveredId = useSelectionStore((s) => s.hoveredId);
+  const select = useSelectionStore((s) => s.select);
+  const hover = useSelectionStore((s) => s.hover);
+  /** The wall id a raycast hit, read back out of the mesh's userData. */
+  const idOf = (object: THREE.Object3D) => String(object.userData.wallId);
 
   return (
     <group>
       {plan.walls.map((wall) => (
-        <mesh key={wall.id} geometry={wallGeometries.get(wall.id)!.geo} castShadow receiveShadow>
-          <meshStandardMaterial color={SCENE_COLORS.wall} roughness={0.9} />
+        <mesh
+          key={wall.id}
+          geometry={wallGeometries.get(wall.id)!.geo}
+          userData={{ wallId: wall.id }}
+          castShadow
+          receiveShadow
+          onClick={(e) => {
+            e.stopPropagation(); // only the nearest wall is selected, not everything behind it
+            select(idOf(e.object));
+          }}
+          onPointerOver={(e) => {
+            e.stopPropagation();
+            hover(idOf(e.object));
+          }}
+          onPointerOut={() => hover(null)}
+        >
+          <meshStandardMaterial
+            color={wall.id === selectedId ? SCENE_COLORS.wallSelected : wall.id === hoveredId ? SCENE_COLORS.wallHovered : SCENE_COLORS.wall}
+            roughness={0.9}
+          />
         </mesh>
       ))}
       {plan.openings.map((o) => {

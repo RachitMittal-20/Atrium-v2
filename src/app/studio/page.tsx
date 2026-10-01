@@ -15,6 +15,7 @@ import { Scene3D } from "@/components/studio/Scene3D";
 import { ToolRail } from "@/components/studio/ToolRail";
 import { TopBar, type View } from "@/components/studio/TopBar";
 import { installPlanShortcuts } from "@/store/planStore";
+import { installSelectionShortcuts } from "@/store/selectionStore";
 
 const SPLIT_QUERY = "(min-width: 640px)"; // Split is offered from here up (see TopBar)
 const watchWide = (cb: () => void) => {
@@ -28,6 +29,7 @@ export default function Studio() {
   const [ceiling, setCeiling] = useState(false);
   const [unit, setUnit] = useState<Unit>("m2");
   useEffect(() => installPlanShortcuts(), []);
+  useEffect(() => installSelectionShortcuts(), []); // Escape clears the selection from anywhere
 
   const wide = useSyncExternalStore(watchWide, () => window.matchMedia(SPLIT_QUERY).matches, () => true);
   const shown = view === "split" && !wide ? "3d" : view; // a phone that was split on a wider window shows 3D

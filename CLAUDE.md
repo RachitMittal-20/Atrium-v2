@@ -39,6 +39,11 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - Pixel to plan: `buildPlan` maps deskewed pixels to metres as x = (px − origin.x) / pxPerM, y = (py − origin.y) / pxPerM, where origin is the top-left of the walls' bounding box. No flip: plan y points south, the same way image y points down.
 - OCR reads the deskewed but UNFILLED image; the hollow-wall fill also fills some letter strokes. In hollow mode, windows drawn as lines inside walls are filled as wall, so their openings are not detected.
 
+## Editing (step 4.3, Select)
+- Walls are selected in both views but edited only in 2D: clicking a wall mesh in 3D selects it, and **dragging in 3D is not implemented**. The 3D scene tints the selection and nothing more.
+- Selection lives in `src/store/selectionStore.ts`, not in the plan, so it is never undoable. It clears itself when the selected wall leaves the plan.
+- The drag maths is pure, in `src/lib/plan/edit.ts`; components only turn pointers into metres and call the store. A drag is one undo step because every pointer move re-applies the whole drag after `planStore.rollback()`.
+
 ## Known limitations
 - The hollow fill cannot tell a wall whose gap is outside the accepted range from furniture drawn as long parallel lines. Both are just two long lines with white between them.
 - Walls whose gap is more than 3x the commonest gap are missed. On a plan with lots of narrow line pairs (window lines, shelving), the commonest gap can be narrower than the real walls, and then real walls are skipped.
@@ -47,6 +52,9 @@ Next.js 16 (App Router), React 19, TypeScript (strict), Tailwind 4 (`@theme` tok
 - When no scale can be worked out, the fallback is the user clicking a wall and typing its length.
 - `OpeningCandidate.widthPx` is the clear gap between the wall ends as drawn, in deskewed pixels. A wall end next to a T-joint can be snapped into the joint, which makes that opening up to about one wall thickness too wide.
 - Gap pairing has no maximum width, so two collinear free ends across a room can pair into a fake door (06 has a 481 px one). `buildPlan` (`src/lib/blueprint/toPlan.ts`) classifies each gap by real width once the scale is known: up to 2.4 m is a normal opening; over 2.4 m up to 4 m is a wide opening, kept and listed in `report.wideOpenings` (a wide passage stays a door, because the Plan has only door and window kinds); over 4 m is not bridged, its two wall ends stay free, and it is listed in `report.droppedPairs`.
+- Sliding one half of a wall that was split at a T-junction tilts the other half. The dragged half and the stem both keep their directions, so the joint lands on the stem, and the far half has to follow it off its own line. Dragging the stem instead is exact: the T joint slides along the run and both halves stay straight.
+- A joint shared by more than two non-parallel walls can only keep one of them pointing the same way during a body drag. `dragWallBody` keeps the least parallel one (its line crosses at the steepest angle) and the rest follow the joint, so their directions change.
+- A wall body drag checks the 0.2 m minimum at 64 points along the slide, so a joining wall that dips below the minimum and comes back inside one 64th of a drag step is not caught.
 - Door versus window is a guess from the pixels: a double door drawn in thin lines can read as a window, and grey outlines on wall faces can read as doors. The review screen lets the user change the kind.
 
 <!-- BEGIN:nextjs-agent-rules -->

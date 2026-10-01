@@ -51,6 +51,16 @@ interface PlanState {
 
   /** Run `fn`; every edit inside becomes a single undo step. Synchronous only. */
   transaction: (fn: () => void) => void;
+  /**
+   * Undo the newest step and drop it from history: nothing is left to redo.
+   * `transaction()` is synchronous, so a drag that spans many pointer events
+   * cannot hold one open. Instead the editor re-applies the whole drag from the
+   * start on every move — rollback, then one transaction — so the plan is live
+   * in the store (3D and openings follow) while history holds exactly one entry.
+   * Escape mid-drag is then a bare rollback, and holding an arrow key folds the
+   * presses into one step the same way. Used by PlanCanvas.
+   */
+  rollback: () => void;
   undo: () => void;
   redo: () => void;
 }
@@ -210,6 +220,13 @@ export const usePlanStore = create<PlanState>((set, get) => {
           set((s) => ({ past: [...s.past, open.entry].slice(-HISTORY_LIMIT), future: [] }));
         }
       }
+    },
+
+    rollback: () => {
+      const { past, plan } = get();
+      const entry = past[past.length - 1];
+      if (!entry || tx) return;
+      set((s) => ({ plan: applyPatches(plan, entry.inverse), past: s.past.slice(0, -1), future: [] }));
     },
 
     undo: () => {

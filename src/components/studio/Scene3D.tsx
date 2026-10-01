@@ -3,7 +3,9 @@
 /*
  * src/components/studio/Scene3D.tsx — the 3D canvas of the editor: lights, grid,
  * FitCamera, orbit controls and PlanModel (a derived view of the plan). Framed
- * once from the plan's bounds when it mounts. Mounted by src/app/studio/page.tsx.
+ * once from the plan's bounds when it mounts. Clicking a wall selects it (see
+ * PlanModel); clicking past everything clears the selection. Mounted by
+ * src/app/studio/page.tsx.
  */
 import { OrbitControls, Grid } from "@react-three/drei";
 import { Canvas, useThree } from "@react-three/fiber";
@@ -12,6 +14,7 @@ import * as THREE from "three";
 import { PlanModel } from "@/components/three/PlanModel";
 import { SCENE_COLORS } from "@/data/materials";
 import { usePlanStore } from "@/store/planStore";
+import { useSelectionStore } from "@/store/selectionStore";
 
 /** The walls' bounding box in world space: x/z on the ground, `height` up. */
 interface Bounds {
@@ -103,7 +106,7 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
   }, [cx, cz]);
 
   return (
-    <Canvas shadows dpr={[1, 2]} camera={{ fov: 45, near: 0.1, far: 500 }}>
+    <Canvas shadows dpr={[1, 2]} camera={{ fov: 45, near: 0.1, far: 500 }} onPointerMissed={() => useSelectionStore.getState().select(null)}>
         <color attach="background" args={[SCENE_COLORS.background]} />
         <hemisphereLight args={["#ffffff", "#b8ad98", 0.9]} />
         {/* The sun's shadow frustum is centred on the plan, not the world origin. */}

@@ -19,6 +19,8 @@ export const floorColor = (materialId: string) => FLOOR_COLORS[materialId] ?? FA
 export const SCENE_COLORS = {
   background: "#e9e2d4", // = limestone
   wall: "#f4efe5", // = vellum
+  wallSelected: "#c9a05a", // vellum pulled towards gilt, to match the 2D selection
+  wallHovered: "#e4d3b0", // the same tint, lighter
   ceiling: "#f7f3ea",
   frame: "#5b4a37",
   door: "#7d6446",
