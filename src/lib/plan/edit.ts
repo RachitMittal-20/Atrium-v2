@@ -5,7 +5,9 @@
  * drawing new walls (where a click lands, whether a new wall is allowed, and
  * splitting the wall it joins at a T-junction), placing and editing doors and
  * windows (usable span, placement, slide, resize, height and sill, picking, the
- * door swing side and its migration), and the tolerances the editor works to. Every number the editor rounds or limits to is declared here and
+ * door swing side and its migration), the 3D tools' opening edits (one side,
+ * the top or the sill moved with the opposite edge fixed, and a slide along the
+ * wall; step 4.7b), and the tolerances the editor works to. Every number the editor rounds or limits to is declared here and
  * printed by scripts/test-edit.ts. Connects to: src/types/plan.ts, ./geometry.ts;
  * src/lib/plan2d/openings.ts; called by src/components/plan2d/PlanCanvas.tsx,
  * src/components/studio/{WallPanel,OpeningPanel}.tsx and src/store/planStore.ts.
@@ -860,4 +862,97 @@ export function pickTarget(p: Vec2, plan: Openings, tol: { wall: number; handle:
     if (op.band || !onWall) return { kind: "opening", id: op.id };
   }
   return wall ? { kind: "wall", wallId: wall.wallId } : null;
+}
+
+// ---------------------------------------------------------------- 3D opening faces (step 4.7b)
+
+/**
+ * What a 3D opening edit says: `ok` false only when the edit is refused outright
+ * (an opening that is gone, a door's sill); a value clamped to a limit is ok, with
+ * the reason in plain words. All values are metres, rounded to 1 cm.
+ */
+export type FaceEdit<T> = { ok: true; value: T; reason: string | null } | { ok: false; value: null; reason: string };
+
+export const DOOR_ON_FLOOR = "A door stays on the floor";
+export const NEXT_TO_OPENING = "Next to another opening";
+const GONE: FaceEdit<never> = { ok: false, value: null, reason: "That opening is no longer in the plan." };
+
+/**
+ * Move ONE side of an opening along its wall, SketchUp style: the dragged edge
+ * ("A" is the side nearer the wall's a end, "B" the side nearer b) goes to
+ * `edgeOffset` metres from the wall's a end and the other edge stays exactly
+ * where it is. The width is rounded to 1 cm and held to OPENING_WIDTH_RANGE and to
+ * the free stretch on the dragged side: the usable span's end, or the neighbouring
+ * opening ("Next to another opening"). Compare resizeOpening, which keeps the centre.
+ */
+export function resizeOpeningEdge(plan: Openings, id: string, edge: "A" | "B", edgeOffset: number): FaceEdit<{ offset: number; width: number }> {
+  const o = plan.openings.find((x) => x.id === id);
+  const r = freeRange(plan, id);
+  if (!o || !r) return GONE;
+  const [lo, hi] = edges(o);
+  const [min, max] = OPENING_WIDTH_RANGE;
+  const room = edge === "B" ? r.hiEdge - lo : hi - r.loEdge; // how wide it can get with the fixed edge where it is
+  const by = edge === "B" ? r.hiBy : r.loBy;
+  if (room < min - 1e-9) return { ok: true, value: { offset: o.offset, width: o.width }, reason: "There's no room for it to be any wider here." };
+  let width = roundTo(edge === "B" ? edgeOffset - lo : hi - edgeOffset);
+  let reason: string | null = null;
+  if (width < min) [width, reason] = [min, `Openings can't be narrower than ${min} m, so it's ${min} m.`];
+  if (width > max) [width, reason] = [max, `Openings can't be wider than ${max} m, so it's ${max} m.`];
+  if (width > room + 1e-9) [width, reason] = [clean(room), by === "the end of the wall" ? "Stopped at the end of the wall" : NEXT_TO_OPENING];
+  return { ok: true, value: { offset: clean(edge === "B" ? lo + width / 2 : hi - width / 2), width }, reason };
+}
+
+/**
+ * Move the top of an opening to `top` metres above the floor; the bottom (the
+ * sill, or the floor for a door) stays. A door is at least DOOR_HEIGHT_MIN tall,
+ * a window WINDOW_HEIGHT_MIN, and sill + height never passes the wall's top
+ * ("Wall is 2.70 m high").
+ */
+export function resizeOpeningHead(plan: Openings, id: string, top: number): FaceEdit<{ height: number }> {
+  const o = plan.openings.find((x) => x.id === id);
+  const wall = o && plan.walls.find((w) => w.id === o.wallId);
+  if (!o || !wall) return GONE;
+  const min = o.kind === "door" ? DOOR_HEIGHT_MIN : WINDOW_HEIGHT_MIN;
+  const max = wall.height - o.sillHeight;
+  let height = roundTo(top - o.sillHeight);
+  let reason: string | null = null;
+  if (height < min) [height, reason] = [min, `A ${o.kind} can't be under ${min} m tall, so it's ${min} m.`];
+  if (height > max + 1e-9) [height, reason] = [clean(max), `Wall is ${wall.height.toFixed(2)} m high`];
+  return { ok: true, value: { height }, reason };
+}
+
+/**
+ * Move a window's sill to `sill` metres above the floor; the top stays, so the
+ * window gets taller as the sill goes down. The sill never goes below the floor
+ * (the OpeningPanel's minimum) and the window keeps WINDOW_HEIGHT_MIN. A door is
+ * refused: "A door stays on the floor".
+ */
+export function resizeOpeningSill(plan: Openings, id: string, sill: number): FaceEdit<{ sillHeight: number; height: number }> {
+  const o = plan.openings.find((x) => x.id === id);
+  if (!o || !plan.walls.some((w) => w.id === o.wallId)) return GONE;
+  if (o.kind === "door") return { ok: false, value: null, reason: DOOR_ON_FLOOR };
+  const top = o.sillHeight + o.height;
+  const highest = top - WINDOW_HEIGHT_MIN;
+  let s = roundTo(sill);
+  let reason: string | null = null;
+  if (s < 0) [s, reason] = [0, "The sill can't be below the floor, so it's 0 m."];
+  if (s > highest + 1e-9) [s, reason] = [clean(highest), `A window can't be under ${WINDOW_HEIGHT_MIN} m tall, so the sill stops at ${highest.toFixed(2)} m.`];
+  return { ok: true, value: { sillHeight: s, height: clean(top - s) }, reason };
+}
+
+/**
+ * Slide an opening along its wall to centre `offset`, as the 2D tools do: the
+ * centre snaps to the wall's midpoint within `radius` metres, else to OPENING_STEP
+ * (`free`, Alt: rounded to 1 cm), then slideOpening holds it inside the usable span
+ * and clear of its neighbours, saying what stopped it.
+ */
+export function moveOpening(plan: Openings, id: string, offset: number, opts: { radius: number; free?: boolean }): FaceEdit<{ offset: number; snap: "midpoint" | "grid" | null }> {
+  const o = plan.openings.find((x) => x.id === id);
+  const wall = o && plan.walls.find((w) => w.id === o.wallId);
+  if (!o || !wall) return GONE;
+  const half = clean(wallLength(wall) / 2);
+  const snap = opts.free ? null : Math.abs(offset - half) <= opts.radius ? "midpoint" : "grid";
+  const at = snap === "midpoint" ? half : roundTo(offset, snap === "grid" ? OPENING_STEP : ROUND_STEP);
+  const slid = slideOpening(plan, id, at);
+  return { ok: true, value: { offset: slid.offset, snap: slid.limited ? null : snap }, reason: slid.limited ?? null };
 }

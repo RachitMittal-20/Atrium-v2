@@ -12,20 +12,21 @@
  * Exit, joystick) sits beside it, not inside, so its buttons are never walking
  * input. While walking, orbit controls are off, FitCamera never refits, nothing
  * is picked, and a soft fill light brightens the interior under the ceilings.
+ * The 3D tools (Push/Pull and Move, src/components/three/PushPullTool.tsx) read
+ * the same host; its cursor says what a press would do.
  */
 import { OrbitControls, Grid } from "@react-three/drei";
 import { Canvas, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { PlanModel } from "@/components/three/PlanModel";
-import { isWired } from "@/lib/plan/pushpull";
 import { PushPullTool } from "@/components/three/PushPullTool";
 import { WalkControls } from "@/components/three/WalkControls";
 import { SCENE_COLORS } from "@/data/materials";
 import { usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
 import { usePushPullStore } from "@/store/pushPullStore";
-import { useToolStore } from "@/store/toolStore";
+import { is3dTool, useToolStore } from "@/store/toolStore";
 import { useViewStore } from "@/store/viewStore";
 import { PushPullOverlay } from "./PushPullOverlay";
 import { WalkOverlay } from "./WalkOverlay";
@@ -121,9 +122,15 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
   }, [cx, cz]);
   const host = useRef<HTMLDivElement>(null);
   const walking = useViewStore((s) => s.mode === "walk");
-  // Push/Pull's cursor says what a press would do: a wired face pulls, any other face does nothing yet
-  const cursor = usePushPullStore((s) => (s.pull ? "ns-resize" : s.hover ? (isWired(s.hover.role) ? "ns-resize" : "not-allowed") : undefined));
-  const pushPull = useToolStore((s) => s.tool === "pushpull") && !walking;
+  // A 3D tool's cursor says what a press would do: a face that can't be pulled says no (the store has the reason
+  // as its message), a door's or window's side resizes sideways, Move moves, everything else resizes up and down
+  const cursor = usePushPullStore((s) => {
+    const face = s.pull?.face ?? s.hover;
+    if (!face) return undefined;
+    if (!s.pull && s.message) return "not-allowed";
+    return s.kind === "move" ? "move" : face.role === "jambA" || face.role === "jambB" ? "ew-resize" : "ns-resize";
+  });
+  const pushPull = is3dTool(useToolStore((s) => s.tool)) && !walking;
 
   return (
     <>
@@ -131,7 +138,7 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
         ref={host}
         tabIndex={0}
         role="group"
-        aria-label="3D view. Drag to orbit. With the Push/Pull tool, drag a wall top to change its height, or type a distance and press Enter. In Walk: W A S D move, arrows turn, drag to look, Shift runs, Escape exits."
+        aria-label="3D view. Drag to orbit. Click a wall, door or window to select it. With the Push/Pull tool, drag a wall top, or a door's or window's side, top or sill, to resize it; with the Move tool, drag a door or window along its wall; or type a distance and press Enter. In Walk: W A S D move, arrows turn, drag to look, Shift runs, Escape exits."
         data-testid="scene-3d"
         className="absolute inset-0 focus-visible:outline-offset-[-3px]"
         style={{ touchAction: walking ? "none" : undefined, cursor: pushPull ? cursor : undefined }} // a walking drag looks; it never scrolls the page

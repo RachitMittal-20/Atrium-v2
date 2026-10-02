@@ -12,7 +12,9 @@
  * (src/store/persistence.ts), so both cameras fit the restored plan. Walking
  * (src/store/viewStore.ts) turns ceilings on and puts the previous setting back
  * on exit; the View popover can still toggle them meanwhile. Leaving the 3D
- * pane (2D only) ends the walk.
+ * pane (2D only) ends the walk. The 3D tools (Push/Pull, Move) step back to
+ * Select when the 3D pane goes away and when a walk starts. Tool keys come from
+ * toolStore.TOOL_SHORTCUTS (P, V).
  * Connects to src/components/studio/*, src/components/plan2d/* and
  * src/store/toolStore.ts.
  */
@@ -26,7 +28,7 @@ import { isTypingTarget } from "@/lib/keyboard";
 import { installPlanShortcuts } from "@/store/planStore";
 import { usePersistenceReady } from "@/store/persistence";
 import { installSelectionShortcuts } from "@/store/selectionStore";
-import { installToolShortcuts, useToolStore } from "@/store/toolStore";
+import { installToolShortcuts, is3dTool, TOOL_SHORTCUTS, useToolStore, type Tool } from "@/store/toolStore";
 import { useViewStore } from "@/store/viewStore";
 
 const SPLIT_QUERY = "(min-width: 640px)"; // Split is offered from here up (see TopBar)
@@ -54,7 +56,7 @@ export default function Studio() {
   useEffect(
     () =>
       useToolStore.subscribe((s, prev) => {
-        if (s.tool === "select" || s.tool === "pushpull" || s.tool === prev.tool) return; // Push/Pull is a 3D tool: it never opens the 2D plan
+        if (s.tool === "select" || is3dTool(s.tool) || s.tool === prev.tool) return; // Push/Pull and Move are 3D tools: they never open the 2D plan
         const isWide = window.matchMedia(SPLIT_QUERY).matches;
         setView((v) => (v === "2d" || (v === "split" && isWide) ? v : isWide ? "split" : "2d"));
       }),
@@ -67,6 +69,7 @@ export default function Studio() {
     () =>
       useViewStore.subscribe((s, prev) => {
         if (s.mode === prev.mode) return;
+        if (s.mode === "walk" && is3dTool(useToolStore.getState().tool)) useToolStore.getState().setTool("select"); // walking has no 3D tools
         if (s.mode === "walk")
           setCeiling((c) => {
             ceilingBefore.current = c; // the updater may run twice in dev; it stores the same value both times
@@ -79,15 +82,16 @@ export default function Studio() {
   // The walk camera lives in the 3D pane: hiding the pane ends the walk.
   useEffect(() => {
     if (shown === "2d") useViewStore.getState().exitWalk();
-    if (shown === "2d" && useToolStore.getState().tool === "pushpull") useToolStore.getState().setTool("select"); // no 3D pane, no Push/Pull
+    if (shown === "2d" && is3dTool(useToolStore.getState().tool)) useToolStore.getState().setTool("select"); // no 3D pane, no 3D tools
   }, [shown]);
-  // P picks Push/Pull, when the 3D pane is showing and nothing is being typed into a field
+  // P picks Push/Pull and V picks Move, when the 3D pane is showing, nobody is walking and nothing is being typed into a field
   useEffect(() => {
     if (shown === "2d") return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() !== "p" || e.metaKey || e.ctrlKey || e.altKey || e.repeat || isTypingTarget(e.target)) return;
-      if (useViewStore.getState().mode === "walk") return;
-      useToolStore.getState().setTool("pushpull");
+      if (e.metaKey || e.ctrlKey || e.altKey || e.repeat || isTypingTarget(e.target)) return;
+      const tool = (Object.keys(TOOL_SHORTCUTS) as Tool[]).find((t) => TOOL_SHORTCUTS[t] === e.key.toLowerCase());
+      if (!tool || useViewStore.getState().mode === "walk") return;
+      useToolStore.getState().setTool(tool);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

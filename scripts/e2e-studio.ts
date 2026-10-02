@@ -71,7 +71,10 @@
  * Last, checkSwingPersists (regression, fresh browser each at 1440 and 390): Flip the
  * Bedroom 1 door in the panel, let the real autosave run, reload, select the door again
  * and check its swing side is the flipped one and nothing else about it changed.
- * E2E_ONLY=swing runs just that. Screenshots go to /tmp/studio/.
+ * E2E_ONLY=swing runs just that. Then checkPushPull (4.7a, wall tops) and
+ * checkOpenings3d (4.7b): door and window faces with Push/Pull, the Move tool and
+ * selecting openings in 3D, at 1440 (mouse) and 390 (real touch); E2E_ONLY=pushpull
+ * runs just those two. Screenshots go to /tmp/studio/.
  *
  * NOT covered: pinch zoom; whether the gilt tint is really painted on the 3D
  * walls (the test reads the selection the 3D material is derived from, and
@@ -109,11 +112,13 @@ type Opening = { id: string; wallId: string; kind: "door" | "window"; offset: nu
 type Scene3d = { wallIds(): string[]; openings(): { id: string; kind: string; leafTurn: number | null }[] };
 type Measurement = { a: Pt; b: Pt | null } | null;
 type Tools = { getState(): { tool: string; measurement: Measurement } };
+type Box3d = { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number };
 type Studio3d = {
   project(p: { x: number; y: number; z: number }): Pt;
-  wallBox(id: string): { minY: number; maxY: number } | null;
+  wallBox(id: string): Box3d | null;
+  openingBox(id: string): Box3d | null;
 };
-type PushPullDebug = { hoverFace: { wallId: string; role: string } | null; active: boolean };
+type PushPullDebug = { tool: string; hover: { wallId: string; openingId: string | null; role: string } | null; hoverFace: { wallId: string; role: string } | null; active: boolean };
 type Win = Window & { __planStore?: Store; __selectionStore?: Selection; __toolStore?: Tools; __scene3d?: Scene3d; __studio3d?: Studio3d; __pushPullDebug?: PushPullDebug };
 const plan = (page: Page) => page.evaluate(() => (window as Win).__planStore!.getState().plan);
 const selectedId = (page: Page) => page.evaluate(() => (window as Win).__selectionStore!.getState().selectedId);
@@ -1805,6 +1810,321 @@ async function checkPushPull(width: number, height: number, touch: boolean) {
   await browser.close();
 }
 
+// ---- 3D door and window faces, the Move tool, 3D opening selection (step 4.7b)
+
+/**
+ * Door and window faces with Push/Pull, the Move tool, and selecting a door or window
+ * in 3D, with the mouse at 1440 and real touch at 390. A fresh browser. The dev-only
+ * hooks are used ONLY to find where to point (a world point's place on the page), to
+ * read what is hovered and to read the real meshes; every action is a real pointer,
+ * touch or key event.
+ * The window is win-bath on the south wall w-EL, which runs east to west (E(10,8) to
+ * L(7,8)): from the default camera its RIGHT jamb is the east one, at x 8.8, which is
+ * jambA (the edge nearer the wall's a end), and its left jamb (x 8.2) is jambB. The
+ * door is d-front on the north wall w-BC (x 6.5–7.5), 0.9 m short of win-living-n.
+ * 1440: hover the right jamb (debug role, the blue edge line in pixels), drag it out
+ * about 60 px (width grows by the label's value, the other edge stays, the frame mesh
+ * matches, the window becomes the selection), Ctrl+Z, Escape mid-drag, typed 0.2 then
+ * Enter, the top pulled past the wall (clamped, reason shown), the sill pulled down
+ * (head stays), a door's bottom (refused with its reason); Move: a wall says why not,
+ * the door slides along its wall about 80 px and stops at the window with the reason;
+ * Select in Split: a click on the window selects it in the panel and the 2D pane, a
+ * 40 px orbit drag selects nothing; Walk: both 3D tools disabled and the tool back
+ * to Select. 390 (real touch): the jamb drag, a Move, a Select tap, a touch orbit
+ * drag, and Walk.
+ */
+async function checkOpenings3d(width: number, height: number, touch: boolean) {
+  const tag = `${width} openings 3D`;
+  const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
+  const page = await browser.newPage({ viewport: { width, height }, hasTouch: touch });
+  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
+  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  await page.goto(`${BASE}/studio`);
+  await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" }); // the dev badge swallows phone taps
+  await tid(page, "plan-name").waitFor();
+  await page.waitForSelector("canvas");
+  await page.waitForTimeout(1500); // the scene's first frames and the camera fit
+
+  const W3 = { x: 0, y: 0, z: 0 };
+  type P3 = typeof W3;
+  const proj = (p: P3) => page.evaluate((q) => (window as Win).__studio3d!.project(q), p);
+  const op = async (id: string) => (await plan(page)).openings.find((o) => o.id === id)!;
+  const past = () => page.evaluate(() => (window as Win).__planStore!.getState().past.length);
+  const debug = () => page.evaluate(() => { const d = (window as Win).__pushPullDebug!; return { tool: d.tool, hover: d.hover, active: d.active }; });
+  const meshBox = async (id: string) => (await page.evaluate((i) => (window as Win).__studio3d!.openingBox(i), id))!;
+  const openingSel = () => page.evaluate(() => (window as Win).__selectionStore!.getState().openingId);
+  const text = async (id: string) => ((await tid(page, `pushpull-${id}`).count()) ? (await tid(page, `pushpull-${id}`).innerText()).trim() : "");
+  const unit = (a: Pt, b: Pt) => { const n = Math.hypot(b.x - a.x, b.y - a.y); return { x: (b.x - a.x) / n, y: (b.y - a.y) / n }; };
+  const along = (p: Pt, u: Pt, px: number) => ({ x: p.x + u.x * px, y: p.y + u.y * px });
+  const hoverAt = async (p: Pt) => {
+    await page.mouse.move(p.x, p.y);
+    await page.waitForTimeout(250);
+  };
+  /** A press-drag-release: the mouse in steps, or Chromium's own touch input. */
+  const drag = async (from: Pt, to: Pt, hold?: () => Promise<void>) => {
+    if (touch) return touchDrag(page, from, to, hold);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 5 });
+    await page.mouse.move(to.x, to.y, { steps: 5 });
+    if (hold) await hold();
+    await page.mouse.up();
+  };
+  const tap = async (p: Pt) => {
+    if (touch) await page.touchscreen.tap(p.x, p.y);
+    else await page.mouse.click(p.x, p.y);
+    await page.waitForTimeout(touch ? 300 : 150);
+  };
+  const press = async (id: string) => {
+    if (touch) await tid(page, id).tap();
+    else await tid(page, id).click();
+    await page.waitForTimeout(150);
+  };
+  const undo = async () => {
+    if (touch) await tid(page, "undo").tap();
+    else await page.keyboard.press("Control+z");
+    await page.waitForTimeout(150);
+  };
+  /** Light-blue pixels (the tool's highlight colour) in a real screenshot of a small square around `c`. */
+  const bluePx = async (c: Pt) => {
+    const r = 18;
+    const clip = { x: Math.max(0, c.x - r), y: Math.max(0, c.y - r), width: 2 * r, height: 2 * r };
+    const { data, info } = await sharp(await page.screenshot({ clip })).raw().toBuffer({ resolveWithObject: true });
+    let n = 0;
+    for (let i = 0; i < data.length; i += info.channels) if (data[i + 2] - data[i] > 45 && data[i + 2] > 170) n++;
+    return n;
+  };
+  const inPane = async (p: Pt, what: string) => {
+    const pane = await box(page, "scene-3d");
+    assert.ok(p.x > pane.x + 4 && p.x < pane.x + pane.width - 4 && p.y > pane.y + 4 && p.y < pane.y + pane.height - 4, `${tag}: ${what} is inside the 3D pane at (${p.x.toFixed(0)}, ${p.y.toFixed(0)})`);
+  };
+
+  const WIN = "win-bath"; // on w-EL, south face at z = 8.1
+  const win0 = await op(WIN);
+  const fixedB = (o: Opening) => o.offset + o.width / 2; // jambB's place along the wall: it must not move when jambA is pulled
+  const right = await proj({ x: 8.8, y: 1.5, z: 8.1 }); // jambA, the east side, half-way up
+  const left = await proj({ x: 8.2, y: 1.5, z: 8.1 }); // jambB
+  const outward = unit(left, right); // along the wall on screen, away from the window's middle past its right side
+  await inPane(right, "the window's right jamb");
+
+  // ---- Push/Pull on the window's right jamb
+  await press("tool-pushpull");
+  assert.equal(await tid(page, "tool-pushpull").getAttribute("aria-pressed"), "true", `${tag}: Push/Pull chosen`);
+  if (!touch) {
+    const calm = await bluePx(right);
+    await hoverAt(right);
+    assert.deepEqual((await debug()).hover, { wallId: "w-EL", openingId: WIN, role: "jambA" }, `${tag}: hovering the window's right jamb resolves to jambA (w-EL runs east to west, so the east side is its A side)`);
+    assert.equal((await debug()).tool, "pushpull");
+    assert.equal(await tid(page, "pushpull-edge").count(), 1, `${tag}: the edge line is drawn`);
+    const lit = await bluePx(right);
+    assert.ok(lit > calm + 20, `${tag}: and it is visible: ${calm} → ${lit} light-blue pixels round the jamb`);
+    assert.equal(await text("face"), "Opening side", `${tag}: the label names it`);
+    assert.equal(await openingSel(), null, `${tag}: hovering selected nothing`);
+    await page.screenshot({ path: `${OUT}/pushpull-jamb-hover-1440.png` });
+  }
+
+  // press-drag outward: the window grows by the label's value, its left side stays, the frame mesh follows
+  let mid = { distance: 0, value: "", fixed: "" };
+  const pullOut = along(right, outward, touch ? 40 : 60);
+  await drag(right, pullOut, async () => {
+    await page.waitForTimeout(150);
+    assert.equal((await debug()).active, true, `${tag}: a pull is active mid-drag`);
+    mid = { distance: parseFloat((await text("distance")).replace("+", "")), value: await text("value"), fixed: await text("fixed") };
+    await page.screenshot({ path: `${OUT}/pushpull-jamb-mid-drag-${width}.png` });
+  });
+  await page.waitForTimeout(200);
+  const w1 = await op(WIN);
+  assert.ok(mid.distance > 0.1, `${tag}: dragging the right jamb outward pulled it out (label ${mid.distance} m)`);
+  near(w1.width, win0.width + mid.distance, 1e-6, `${tag}: the width grew by exactly the label's value`);
+  assert.equal(mid.value, `Width ${w1.width.toFixed(2)} m`, `${tag}: the label stated the resulting width`);
+  assert.equal(mid.fixed, "Fixed: the side nearer the wall's end", `${tag}: and which side stays`);
+  near(fixedB(w1), fixedB(win0), 1e-9, `${tag}: the left (fixed) side did not move`);
+  const m1 = await meshBox(WIN);
+  near(m1.maxX - m1.minX, w1.width, 0.002, `${tag}: the 3D frame is that wide`);
+  near(m1.minX, 10 - fixedB(win0), 0.002, `${tag}: and its left side is still at x ${(10 - fixedB(win0)).toFixed(2)}`);
+  assert.equal(await past(), 1, `${tag}: the whole drag is one history entry`);
+  assert.equal(await openingSel(), WIN, `${tag}: and the window is now selected, so the panel shows its numbers`);
+  if (!touch) near(parseFloat(await tid(page, "opening-width").inputValue()), w1.width, 1e-9, `${tag}: the OpeningPanel shows the new width`);
+
+  // one undo restores it
+  await undo();
+  assert.deepEqual(await op(WIN), win0, `${tag}: one undo restores the window exactly`);
+  near((await meshBox(WIN)).maxX - (await meshBox(WIN)).minX, win0.width, 0.002, `${tag}: and its frame`);
+  assert.equal(await past(), 0);
+
+  if (!touch) {
+    // ---- Escape mid-drag: history unchanged
+    await page.mouse.move(right.x, right.y);
+    await page.mouse.down();
+    await page.mouse.move(along(right, outward, 45).x, along(right, outward, 45).y, { steps: 5 });
+    assert.equal((await debug()).active, true, `${tag}: a pull is active before Escape`);
+    assert.notEqual((await op(WIN)).width, win0.width, `${tag}: and live in the plan`);
+    await page.keyboard.press("Escape");
+    assert.equal((await debug()).active, false, `${tag}: Escape cancels the pull`);
+    await page.mouse.up();
+    assert.deepEqual(await op(WIN), win0, `${tag}: the window is as it was`);
+    assert.equal(await past(), 0, `${tag}: and history is unchanged`);
+
+    // ---- typed 0.2, then Enter: exactly 0.2 m wider, the left side still fixed
+    await page.mouse.click(right.x, right.y); // a click arms the pull and gives the 3D pane the keyboard
+    assert.equal((await debug()).active, true, `${tag}: a click on the jamb arms a pull`);
+    await page.keyboard.type("0.2");
+    assert.match(await text("typed"), /0\.2/);
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(150);
+    const typed = await op(WIN);
+    near(typed.width, win0.width + 0.2, 1e-9, `${tag}: typed 0.2 widened it by exactly 0.2 m`);
+    near(fixedB(typed), fixedB(win0), 1e-9, `${tag}: with the left side fixed`);
+    assert.equal(await past(), 1, `${tag}: one undo step`);
+    await undo();
+    assert.deepEqual(await op(WIN), win0);
+
+    // ---- the top pulled up past the wall: clamped, and the label says why
+    const head = await proj({ x: 8.5, y: 2.1, z: 8.1 });
+    await hoverAt(head);
+    assert.equal((await debug()).hover?.role, "head", `${tag}: the window's top edge resolves to head`);
+    let headNote = "";
+    await drag(head, { x: head.x, y: head.y - 160 }, async () => {
+      await page.waitForTimeout(150);
+      headNote = await text("note");
+      assert.ok(await tid(page, "pushpull-note").isVisible(), `${tag}: the reason is visible on screen`);
+      assert.equal(await text("value"), "Height 1.80 m", `${tag}: the label says the clamped height`);
+    });
+    assert.equal(headNote, "Wall is 2.70 m high", `${tag}: pulling the top past the wall says why it stopped`);
+    const tall = await op(WIN);
+    assert.deepEqual([tall.sillHeight, tall.height], [0.9, 1.8], `${tag}: the top stopped at the wall's top; the sill stayed`);
+    await undo();
+
+    // ---- the sill pulled down: the sill lowers, the head stays
+    const sill = await proj({ x: 8.5, y: 0.9, z: 8.1 });
+    await hoverAt(sill);
+    assert.equal((await debug()).hover?.role, "sill", `${tag}: the window's bottom edge resolves to sill`);
+    let sillValue = "";
+    await drag(sill, { x: sill.x, y: sill.y + 40 }, async () => {
+      await page.waitForTimeout(150);
+      sillValue = await text("value");
+    });
+    const low = await op(WIN);
+    assert.ok(low.sillHeight < win0.sillHeight - 0.1, `${tag}: pulling the sill down lowered it (${win0.sillHeight} → ${low.sillHeight})`);
+    near(low.sillHeight + low.height, win0.sillHeight + win0.height, 1e-9, `${tag}: and the head stayed at ${win0.sillHeight + win0.height} m`);
+    assert.equal(sillValue, `Sill ${low.sillHeight.toFixed(2)} m`, `${tag}: the label said the sill height`);
+    await undo();
+    assert.deepEqual(await op(WIN), win0);
+
+    // ---- a door's bottom: it says why, and a click on it changes nothing (a click, so the camera is not orbited)
+    const doorBottom = await proj({ x: 7, y: 0, z: 0.1 });
+    await hoverAt(doorBottom);
+    assert.deepEqual((await debug()).hover, { wallId: "w-BC", openingId: "d-front", role: "sill" }, `${tag}: a door's bottom edge is found`);
+    assert.equal(await text("message"), "A door stays on the floor", `${tag}: and says "A door stays on the floor"`);
+    await page.mouse.click(doorBottom.x, doorBottom.y);
+    assert.equal((await debug()).active, false, `${tag}: pressing it starts no pull`);
+    assert.equal(await past(), 0, `${tag}: and records nothing`);
+  }
+
+  // ---- Move: a door slides along its wall and stops at the window next to it
+  const DOOR = "d-front";
+  const door0 = await op(DOOR);
+  await press("tool-move");
+  assert.equal(await tid(page, "tool-move").getAttribute("aria-pressed"), "true", `${tag}: Move chosen`);
+  assert.equal((await debug()).tool, "move");
+  const doorTop = await proj({ x: 7, y: 2.07, z: 0.1 }); // the door frame's head, half-way along
+  const wallDir = unit(await proj({ x: 6.5, y: 1, z: 0.1 }), await proj({ x: 7.5, y: 1, z: 0.1 })); // w-BC's a → b on screen
+  await inPane(doorTop, "the front door");
+  if (!touch) {
+    await hoverAt(await proj({ x: 5.5, y: 1.2, z: 8.1 })); // the south wall's face
+    assert.equal(await text("message"), "Wall moves arrive with the side faces", `${tag}: Move over a wall says why not`);
+    assert.equal((await debug()).hover?.openingId, null);
+    const calm = await bluePx(doorTop);
+    await hoverAt(doorTop);
+    assert.equal((await debug()).hover?.openingId, DOOR, `${tag}: Move hovers the door`);
+    assert.equal(await text("face"), "Move this door");
+    assert.ok((await bluePx(doorTop)) > calm + 20, `${tag}: and highlights it`);
+  }
+  let moveMid = { value: "", note: "", distance: 0 };
+  await drag(doorTop, along(doorTop, wallDir, 80), async () => {
+    await page.waitForTimeout(150);
+    moveMid = { value: await text("value"), note: await text("note"), distance: parseFloat((await text("distance")).replace("+", "")) };
+    if (!touch) await page.screenshot({ path: `${OUT}/move-door-mid-drag-1440.png` });
+  });
+  const door1 = await op(DOOR);
+  const window1 = await op("win-living-n");
+  assert.equal(door1.width, door0.width, `${tag}: moving does not resize`);
+  assert.equal(door1.wallId, door0.wallId, `${tag}: and the door stays on its wall`);
+  near(door1.offset - door0.offset, moveMid.distance, 1e-6, `${tag}: it moved by the label's distance (${moveMid.distance} m)`);
+  assert.equal(moveMid.value, `Centre ${door1.offset.toFixed(2)} m from the wall start`, `${tag}: the label said where its centre is`);
+  if (!touch) {
+    near(door1.offset + door1.width / 2, window1.offset - window1.width / 2, 1e-9, `${tag}: about 80 px along the wall it stopped against the window`);
+    assert.match(moveMid.note, /window next to it/, `${tag}: and said why ("${moveMid.note}")`);
+  } else {
+    assert.ok(door1.offset > door0.offset, `${tag}: a touch drag along the wall moved it towards the wall's end`);
+  }
+  assert.equal(await past(), 1, `${tag}: one history entry`);
+  assert.equal(await openingSel(), DOOR, `${tag}: and the moved door is selected`);
+  await undo();
+  assert.deepEqual(await op(DOOR), door0, `${tag}: one undo puts it back`);
+
+  // ---- Select in 3D: a click on the window selects it, in the panel and (Split) in the 2D pane
+  await press("tool-select");
+  if (!touch) {
+    await tid(page, "view-split").click();
+    await tid(page, "plan-svg").waitFor();
+    await page.waitForTimeout(800); // the 3D camera refits to the narrower pane
+  }
+  await tap(await proj({ x: 8.5, y: 0, z: 9 })); // empty ground south of the house: clears whatever the tools selected
+  assert.equal(await openingSel(), null, `${tag}: a click on empty ground clears the selection`);
+  const glass = await proj({ x: 8.5, y: 1.5, z: 8 });
+  await inPane(glass, "the window's glass");
+  await tap(glass);
+  assert.equal(await openingSel(), WIN, `${tag}: a click on the window in 3D selects it`);
+  assert.equal(await selectedId(page), null, `${tag}: not the wall it sits in`);
+  if (!touch) {
+    assert.ok(await tid(page, "opening-panel").isVisible(), `${tag}: the OpeningPanel shows it`);
+    assert.equal(await tid(page, "opening-type").innerText(), "Window");
+    assert.equal(await tid(page, "plan-opening-selection").getAttribute("data-opening"), WIN, `${tag}: and the 2D pane selects it too`);
+    await page.keyboard.press("Escape");
+  } else {
+    await page.getByRole("button", { name: /Plan details/ }).click();
+    assert.ok(await tid(page, "opening-panel").isVisible(), `${tag}: the OpeningPanel shows it`);
+    await page.getByRole("button", { name: /Plan details/ }).click();
+    await tap(await proj({ x: 8.5, y: 0, z: 9 }));
+  }
+  assert.equal(await openingSel(), null, `${tag}: ${touch ? "a tap on empty ground" : "Escape"} clears it`);
+  // an orbit drag that starts on the window and moves 40 px selects nothing
+  await drag(glass, { x: glass.x + 40, y: glass.y });
+  await page.waitForTimeout(200);
+  assert.equal(await openingSel(), null, `${tag}: a 40 px orbit drag from the window selected no opening`);
+  assert.equal(await selectedId(page), null, `${tag}: and no wall`);
+
+  // ---- Walk: the 3D tools are disabled and the tool goes back to Select
+  if (!touch) await tid(page, "view-3d").click();
+  await press("tool-move");
+  assert.equal(await tid(page, "tool-move").getAttribute("aria-pressed"), "true");
+  await press("camera-walk");
+  await page.waitForTimeout(400);
+  assert.equal(await tid(page, "tool-select").getAttribute("aria-pressed"), "true", `${tag}: entering Walk switched the tool to Select`);
+  for (const t of ["move", "pushpull"]) assert.equal(await tid(page, `tool-${t}`).getAttribute("aria-disabled"), "true", `${tag}: ${t} is disabled while walking`);
+  assert.equal((await page.locator("#tip-move").textContent())?.trim(), "Exit Walk to use Move", `${tag}: with a tooltip that says why`);
+  if (touch) await tid(page, "tool-move").tap({ force: true }); // a real tap on the disabled button: Playwright would otherwise refuse it
+  else await tid(page, "tool-move").click({ force: true });
+  assert.equal(await tid(page, "tool-move").getAttribute("aria-pressed"), "false", `${tag}: and choosing it does nothing`);
+  if (!touch) {
+    await page.keyboard.press("v");
+    assert.equal(await tid(page, "tool-move").getAttribute("aria-pressed"), "false", `${tag}: nor does V`);
+  }
+  await press("walk-exit");
+  assert.equal(await tid(page, "tool-move").getAttribute("aria-disabled"), "false", `${tag}: after Walk, Move is enabled again`);
+  if (!touch) {
+    await page.getByTestId("scene-3d").focus();
+    await page.keyboard.press("v");
+    assert.equal(await tid(page, "tool-move").getAttribute("aria-pressed"), "true", `${tag}: V picks Move`);
+  }
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${tag}: no horizontal scroll`);
+  const rail = await box(page, "tool-move");
+  assert.ok(rail.x >= 0 && rail.x + rail.width <= width + 1, `${tag}: the Move button is inside the screen`);
+  console.log(`${tag}: ok (${touch ? "real touch: jamb drag, Move, Select tap, touch orbit, Walk" : "mouse: jamb hover/drag/undo/Escape/typed, head clamp, sill, door bottom, Move to the neighbour, Select in Split, orbit, Walk"})`);
+  await browser.close();
+}
+
 async function run(width: number, height: number) {
   const tag = String(width);
   const wide = width >= 768;
@@ -1953,6 +2273,8 @@ async function main() {
     // just the 3D Push/Pull checks (fast: handy when working on the tool)
     await checkPushPull(1440, 900, false);
     await checkPushPull(390, 844, true);
+    await checkOpenings3d(1440, 900, false);
+    await checkOpenings3d(390, 844, true);
     assert.deepEqual(errors, [], `console errors:\n${errors.join("\n")}`);
     console.log("e2e-studio (push/pull only): ok");
     return;
@@ -1964,6 +2286,8 @@ async function main() {
   await checkSwingPersists(390, 844, true);
   await checkPushPull(1440, 900, false);
   await checkPushPull(390, 844, true);
+  await checkOpenings3d(1440, 900, false);
+  await checkOpenings3d(390, 844, true);
   assert.deepEqual(errors, [], `console errors:\n${errors.join("\n")}`);
   console.log("e2e-studio: ok; screenshots in", OUT);
 }

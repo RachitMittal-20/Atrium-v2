@@ -4,6 +4,7 @@
  *   rayAxisParam            where along an axis the pointer's ray comes closest
  *   isClick                 a press and release that was a click, not a drag
  *   screenFallbackDistance  metres from pixels, for when the ray is too parallel
+ *   metresPerPixel          the scale that uses, at a point's depth (also the Move tool's snap reach)
  *   startPull / pullDistance  the three above, wired together: the method is chosen
  *                           ONCE when the face is grabbed, so a pull can never jump
  *                           between the two while it is under way.
@@ -78,9 +79,13 @@ export function isClick(down: PointerStamp, up: PointerStamp): boolean {
  * horizontal), which is the safe way to be wrong.
  */
 export function screenFallbackDistance(deltaPixels: { x: number; y: number }, camera: CameraInfo, anchor: Vec3, viewportHeightPx: number): number {
+  return metresPerPixel(camera, anchor, viewportHeightPx) * -deltaPixels.y;
+}
+
+/** How many metres one screen pixel spans at the depth of `anchor` (the Move tool's snap reach uses it too). */
+export function metresPerPixel(camera: CameraInfo, anchor: Vec3, viewportHeightPx: number): number {
   const depth = Math.max(1e-6, dot(sub(anchor, camera.position), camera.forward));
-  const metresPerPixel = (2 * depth * Math.tan((camera.fovDeg * Math.PI) / 360)) / Math.max(1, viewportHeightPx);
-  return metresPerPixel * -deltaPixels.y;
+  return (2 * depth * Math.tan((camera.fovDeg * Math.PI) / 360)) / Math.max(1, viewportHeightPx);
 }
 
 /** A face grabbed for pulling: where, along which axis, and which method measures it. */

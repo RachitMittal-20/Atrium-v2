@@ -20,12 +20,13 @@ export const SCENE_COLORS = {
   background: "#e9e2d4", // = limestone
   wall: "#f4efe5", // = vellum
   wallSelected: "#c9a05a", // vellum pulled towards gilt, to match the 2D selection
-  wallHovered: "#e4d3b0", // the same tint, lighter
+  wallHovered: "#e4d3b0", // the same tint, lighter (also a hovered door or window frame)
   wallRun: "#eee3c9", // lighter still: the rest of the straight wall the selection belongs to
   ceiling: "#f7f3ea",
   frame: "#5b4a37",
   door: "#7d6446",
   glass: "#a9c8d8",
+  toolHighlight: "#6cb6ff", // light blue: what a 3D tool (Push/Pull, Move) would act on
   gridCell: "#cfc5b3", // = stone
   gridSection: "#6f675c", // = smoke
 };

@@ -402,7 +402,8 @@ const sel0 = JSON.stringify([useSelectionStore.getState().selectedId, useSelecti
   assert.deepEqual(S().plan, base, "and one undo restores the openings too");
 
   // every face that is not wired: highlights and says "Not yet", changes nothing
-  const roles = ["endA", "endB", "sideLeft", "sideRight", "jambA", "jambB", "head", "sill"] as const;
+  // (4.7b wired the opening faces jambA, jambB, head and sill: scripts/test-pushpull-openings.ts covers them)
+  const roles: FaceRole[] = ["endA", "endB", "sideLeft", "sideRight"];
   for (const role of roles) {
     const planNow = S().plan;
     const past = S().past.length;
