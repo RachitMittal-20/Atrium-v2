@@ -56,7 +56,7 @@
  * name back, Redo button reapplies, Ctrl+Z / Ctrl+Shift+Z do the same from the
  * keyboard; rename the plan; toggle units and check the total area changes by
  * 10.7639; no console errors; no horizontal scroll; nothing visible sticks out
- * past the viewport; then follow the "Import plan" link.
+ * past the viewport; then follow the Import menu's "Floor plan image…" link.
  * Then checkMeasure (step 4.6): the Measure tool, with a mouse at 1440 and real
  * touch at 390 — two points give a dimension line and a value in metres, a
  * deliberately sloppy tap snaps to a wall corner, a marker can be dragged, zoom
@@ -2531,7 +2531,8 @@ async function run(width: number, height: number) {
   assert.equal(noRing.length, 0, `${tag}: focused without a ring: ${noRing.join(", ")}`);
   console.log(`${tag}: ${stops.size} tab stops, all with a focus ring`);
 
-  // ---- import link
+  // ---- import link (inside the Import menu since step I.1)
+  await tid(page, "import-menu").click();
   await tid(page, "import-link").click();
   await page.waitForURL("**/studio/import");
   console.log(`${tag}: Import plan link goes to ${new URL(page.url()).pathname}`);

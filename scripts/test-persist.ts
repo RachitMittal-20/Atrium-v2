@@ -171,6 +171,34 @@ fresh();
   assert.equal(loadSavedPlan(throwing), null);
 }
 
+// ---------------------------------------------------------------- step I.1: imported models (Item.import)
+
+// A plan saved before I.1 (items with no `import` field) loads exactly as it was, and with no `import` key added.
+{
+  const old = { schema: 1, savedAt: "2026-05-01T10:00:00.000Z", plan: { ...structuredClone(samplePlan), items: [{ id: "i-1", catalogId: "chair-01", position: { x: 1, y: 0, z: 2 }, rotationY: 0.5, scale: 1, colorOverrides: { seat: "#aa0000" } }] } };
+  const loaded = parseStoredPlan(JSON.stringify(old))!;
+  assert.ok(loaded, "an old save with a catalogue item loads");
+  assert.deepEqual(loaded, old.plan, "unchanged");
+  assert.equal("import" in loaded.items[0], false, "no import field is invented");
+}
+// A plan with an imported model round-trips, overrides and all; a malformed one is refused like any other corrupt data.
+{
+  const info = { assetId: "0123456789abcdef", name: "Chair", format: "glb", unitToMetres: 0.01, upAxis: "z", doubleSided: true, nodeOverrides: { "0": { hidden: true }, "0/2/1": { deleted: true } } };
+  const item = { id: "i-2", catalogId: "import:0123456789abcdef", position: { x: 3, y: 0.4, z: -1 }, rotationY: 1, scale: 2, colorOverrides: {}, import: info };
+  const plan = { ...structuredClone(samplePlan), items: [item] };
+  assert.deepEqual(parseStoredPlan(serializePlan(plan as Plan)), plan, "an imported model survives save and load");
+  const broken = (change: Record<string, unknown>) => JSON.stringify({ schema: 1, savedAt: "", plan: { ...plan, items: [{ ...item, import: { ...info, ...change } }] } });
+  for (const [what, change] of [
+    ["an asset id that is not 16 hex characters", { assetId: "nope" }],
+    ["an unknown format", { format: "skp" }],
+    ["a zero unit", { unitToMetres: 0 }],
+    ["an up axis of x", { upAxis: "x" }],
+    ["a node path with letters", { nodeOverrides: { "a/b": { hidden: true } } }],
+    ["a hidden flag as text", { nodeOverrides: { "0": { hidden: "yes" } } }],
+  ] as const)
+    assert.equal(parseStoredPlan(broken(change)), null, `an imported model with ${what} is refused`);
+}
+
 // restoring from bad storage leaves the current (sample) plan exactly as it was
 {
   for (const junk of ["garbage", "{}", JSON.stringify({ schema: 99, plan: samplePlan })]) {

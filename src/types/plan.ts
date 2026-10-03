@@ -65,10 +65,43 @@ export interface Room {
   floorMaterial: string;
 }
 
-/** A furniture/fixture instance placed from the catalogue. */
+/** Model formats that can be imported in the browser (step I.1). */
+export type ImportFormat = "glb" | "gltf" | "obj" | "fbx" | "dae" | "stl" | "3ds";
+
+/** Per-node changes to an imported model, keyed by the node's child-index path from the model root ("0/3/1"). */
+export interface NodeOverride {
+  hidden?: boolean;
+  deleted?: boolean;
+}
+
+/**
+ * What makes an Item an imported 3D model (step I.1). The file's bytes are NOT
+ * here: they live in the browser's asset store (src/lib/import/assetStore.ts)
+ * under `assetId`, and the Plan only points at them, so autosave stays small.
+ */
+export interface ImportInfo {
+  /** First 16 hex characters of the SHA-256 of the file bytes; identical re-imports share it. */
+  assetId: string;
+  name: string;
+  format: ImportFormat;
+  /** Metres per source unit: 1 for metres, 0.01 for centimetres, 0.0254 for inches… */
+  unitToMetres: number;
+  /** The file's up axis; "z" is turned to the plan's y-up when drawn. */
+  upAxis: "y" | "z";
+  doubleSided: boolean;
+  nodeOverrides: Record<string, NodeOverride>;
+}
+
+/**
+ * A furniture/fixture instance placed from the catalogue, or an imported model
+ * (`import` set, catalogId "import:" + assetId). Imported models are meshes only:
+ * walls, rooms, collision, the validator and schedules ignore them.
+ */
 export interface Item {
   id: string;
   catalogId: string;
+  /** World space (x east, y up, z south): plan x, height, plan y. For an imported
+   *  model, where its base point (the bottom centre of its bounding box) goes. */
   position: Vec3;
   /** Radians around the vertical axis. */
   rotationY: number;
@@ -76,6 +109,7 @@ export interface Item {
   scale: number;
   /** Material slot name → hex colour, overriding the catalogue default. */
   colorOverrides: Record<string, string>;
+  import?: ImportInfo;
 }
 
 export interface PlanMeta {

@@ -8,7 +8,9 @@
  * T-junction convention) inside the same transaction. `placeOpening` and
  * `flipDoor` add a door or window and flip a door's swing side, one undo step
  * each; plans made before swing sides were stored are migrated on load
- * (edit.withSwingSides). Connects to:
+ * (edit.withSwingSides). `addImportedItem` and `setNodeOverride` add an imported
+ * 3D model and hide, delete or restore its parts (step I.1), one undo step each;
+ * imported models never touch walls or rooms. Connects to:
  * src/types/plan.ts, src/lib/plan/{validate,geometry,rooms,edit}.ts,
  * src/lib/keyboard.ts; the 3D scene, 2D plan and exports read `plan` from here.
  */
@@ -21,7 +23,7 @@ import { drawProblem, flipSide, hostAt, placeOpening as planOpening, splitWallAt
 import { clampOpening, JOINT_EPS, wallLength } from "@/lib/plan/geometry";
 import { deriveRooms, toStoredRoom, type DerivedRoom } from "@/lib/plan/rooms";
 import { validatePlan } from "@/lib/plan/validate";
-import type { Item, Opening, OpeningKind, Plan, Vec2, Wall } from "@/types/plan";
+import type { ImportInfo, Item, NodeOverride, Opening, OpeningKind, Plan, Vec2, Vec3, Wall } from "@/types/plan";
 
 enablePatches();
 
@@ -64,7 +66,11 @@ interface PlanState {
   updateOpening: (id: string, changes: Partial<Omit<Opening, "id">>) => void;
   deleteOpening: (id: string) => void;
   addItem: (item: Omit<Item, "id">) => string;
+  /** An imported 3D model (step I.1) with its base point at `position` (world: plan x, height, plan y). One undo step. */
+  addImportedItem: (info: ImportInfo, position: Vec3) => string;
   updateItem: (id: string, changes: Partial<Omit<Item, "id">>) => void;
+  /** Hide, show, delete or restore one node of an imported model by its index path. `null` clears the override. One undo step. */
+  setNodeOverride: (itemId: string, path: string, override: NodeOverride | null) => void;
   deleteItem: (id: string) => void;
   renameRoom: (id: string, name: string) => void;
   /** Trims, caps at PLAN_NAME_MAX; an empty name is ignored. Undoable. */
@@ -239,7 +245,17 @@ export const usePlanStore = create<PlanState>((set, get) => {
       edit((d) => void d.items.push({ ...item, id }));
       return id;
     },
+    addImportedItem: (info, position) =>
+      get().addItem({ catalogId: `import:${info.assetId}`, position: { ...position }, rotationY: 0, scale: 1, colorOverrides: {}, import: structuredClone(info) }),
     updateItem: (id, changes) => patchById("items", id, changes),
+    setNodeOverride: (itemId, path, override) =>
+      edit((d) => {
+        const overrides = d.items.find((i) => i.id === itemId)?.import?.nodeOverrides;
+        if (!overrides) return;
+        const clean = override && { ...(override.hidden && { hidden: true }), ...(override.deleted && { deleted: true }) }; // false flags are just absent
+        if (clean && Object.keys(clean).length > 0) overrides[path] = clean;
+        else delete overrides[path];
+      }),
     deleteItem: (id) =>
       edit((d) => {
         d.items = d.items.filter((i) => i.id !== id);

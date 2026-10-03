@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+<asset><contributor><authoring_tool>atrium test fixtures</authoring_tool></contributor><unit name="centimeter" meter="0.01"/><up_axis>Z_UP</up_axis></asset>
+<library_effects><effect id="e0"><profile_COMMON><technique sid="common"><lambert><diffuse><color>0.7 0.6 0.5 1</color></diffuse></lambert></technique></profile_COMMON></effect></library_effects>
+<library_materials><material id="m0" name="fabric"><instance_effect url="#e0"/></material></library_materials>
+<library_geometries>
+<geometry id="g0" name="Sofa"><mesh>
+<source id="g0-pos"><float_array id="g0-arr" count="24">0 0 0 200 0 0 200 90 0 0 90 0 0 0 80 200 0 80 200 90 80 0 90 80</float_array>
+<technique_common><accessor source="#g0-arr" count="8" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common></source>
+<vertices id="g0-v"><input semantic="POSITION" source="#g0-pos"/></vertices>
+<triangles count="12" material="mat"><input semantic="VERTEX" source="#g0-v" offset="0"/><p>0 2 1 0 3 2 4 5 6 4 6 7 0 1 5 0 5 4 3 7 6 3 6 2 0 4 7 0 7 3 1 2 6 1 6 5</p></triangles>
+</mesh></geometry>
+<geometry id="g1" name="Table"><mesh>
+<source id="g1-pos"><float_array id="g1-arr" count="24">240 0 0 360 0 0 360 80 0 240 80 0 240 0 75 360 0 75 360 80 75 240 80 75</float_array>
+<technique_common><accessor source="#g1-arr" count="8" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common></source>
+<vertices id="g1-v"><input semantic="POSITION" source="#g1-pos"/></vertices>
+<triangles count="12" material="mat"><input semantic="VERTEX" source="#g1-v" offset="0"/><p>0 2 1 0 3 2 4 5 6 4 6 7 0 1 5 0 5 4 3 7 6 3 6 2 0 4 7 0 7 3 1 2 6 1 6 5</p></triangles>
+</mesh></geometry>
+<geometry id="g2" name="Lamp"><mesh>
+<source id="g2-pos"><float_array id="g2-arr" count="24">400 20 0 440 20 0 440 60 0 400 60 0 400 20 160 440 20 160 440 60 160 400 60 160</float_array>
+<technique_common><accessor source="#g2-arr" count="8" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common></source>
+<vertices id="g2-v"><input semantic="POSITION" source="#g2-pos"/></vertices>
+<triangles count="12" material="mat"><input semantic="VERTEX" source="#g2-v" offset="0"/><p>0 2 1 0 3 2 4 5 6 4 6 7 0 1 5 0 5 4 3 7 6 3 6 2 0 4 7 0 7 3 1 2 6 1 6 5</p></triangles>
+</mesh></geometry>
+</library_geometries>
+<library_visual_scenes><visual_scene id="scene" name="Room">
+<node id="n0" name="Sofa"><instance_geometry url="#g0"><bind_material><technique_common><instance_material symbol="mat" target="#m0"/></technique_common></bind_material></instance_geometry></node>
+<node id="n1" name="Table"><instance_geometry url="#g1"><bind_material><technique_common><instance_material symbol="mat" target="#m0"/></technique_common></bind_material></instance_geometry></node>
+<node id="n2" name="Lamp"><instance_geometry url="#g2"><bind_material><technique_common><instance_material symbol="mat" target="#m0"/></technique_common></bind_material></instance_geometry></node>
+</visual_scene></library_visual_scenes>
+<scene><instance_visual_scene url="#scene"/></scene>
+</COLLADA>

@@ -8,6 +8,8 @@
  * src/lib/plan/pushpull.ts, the pointer maths in src/lib/handles3d/{math,edges}.ts;
  * this file turns pointer events into those calls.
  *
+ * - An imported 3D model (step I.1) nearest under the pointer is never a target: the tools
+ *   hover nothing, say "Imported objects are edited in the panel", and a press there orbits.
  * - What the pointer is over:
  *   1. Move only, first: a door's or window's frame, leaf or glass under the pointer (an
  *      opening within one wall thickness behind the nearest wall wins, edges.pickAlongRay).
@@ -119,6 +121,8 @@ interface CornerPick {
 const isCorner = (h: Pick | CornerPick | null): h is CornerPick => !!h && "corner" in h;
 
 const NO_ORBIT = -1; // an action OrbitControls does not know: the gesture does nothing
+/** What both 3D tools say over an imported model (step I.1): they leave it alone. */
+export const IMPORTED_MESSAGE = "Imported objects are edited in the panel";
 const UP = { x: 0, y: 1, z: 0 };
 const v3 = (p: { x: number; y: number; z: number }) => new THREE.Vector3(p.x, p.y, p.z);
 
@@ -187,7 +191,7 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
     const livePlan = () => usePlanStore.getState().plan;
 
     // ---- the scene's meshes
-    const meshes = (key: "wallId" | "openingId") => {
+    const meshes = (key: "wallId" | "openingId" | "importItemId") => {
       const out: THREE.Mesh[] = [];
       scene.traverse((o) => {
         if (o.userData[key] !== undefined && (o as THREE.Mesh).isMesh) out.push(o as THREE.Mesh);
@@ -293,6 +297,19 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
         screen.splice(screen.findIndex((s) => s.id === r.id), 1);
       }
       return null;
+    };
+
+    // ---- 0: an imported model (step I.1) nearest under the pointer: neither tool works on it in this step
+    const modelInFront = (clientX: number, clientY: number) => {
+      const models = meshes("importItemId");
+      if (models.length === 0) return false;
+      rayAt(clientX, clientY);
+      const first = raycaster.current.intersectObjects([...models, ...meshes("wallId"), ...meshes("openingId")], false)[0];
+      return first?.object.userData.importItemId !== undefined;
+    };
+    const blockModel = (clientX: number, clientY: number) => {
+      store.setState({ hover: null, corner: null, edge: null, marker: null, message: IMPORTED_MESSAGE });
+      store.getState().setPointer(hostPoint(clientX, clientY));
     };
 
     // ---- 1: a door's or window's own meshes (Move)
@@ -457,6 +474,10 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
         return;
       }
 
+      if (modelInFront(e.clientX, e.clientY)) {
+        blockModel(e.clientX, e.clientY); // an imported model: say where it is edited, and the press orbits
+        return;
+      }
       const hit = pick(e.clientX, e.clientY, touch);
       if (!hit) return; // empty space and anything that is not a wall or opening: orbit as usual
       const r = canvas.getBoundingClientRect();
@@ -518,6 +539,7 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
         state.setHover(null); // orbiting: what was under the pointer has moved
         return;
       }
+      if (modelInFront(e.clientX, e.clientY)) return blockModel(e.clientX, e.clientY);
       const hit = pick(e.clientX, e.clientY, false);
       if (isCorner(hit)) state.setCorner(hit.corner, hit.seg, hit.marker);
       else state.setHover(hit ? hit.face : null, hit?.seg ?? null);

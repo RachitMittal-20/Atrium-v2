@@ -3,13 +3,17 @@
 /*
  * src/components/studio/TopBar.tsx — the editor's top bar: plan name (editable,
  * undoable through planStore.renamePlan), Undo and Redo, the 3D | 2D | Split
- * switch, a view-options popover (ceilings), a link to /studio/import and an
- * Export menu whose formats are all "Coming soon", and a quiet autosave status
- * (src/store/persistence.ts). Split is hidden below 640 px.
+ * switch, a view-options popover (ceilings), an Import menu ("Floor plan image…"
+ * goes to /studio/import; "3D model…" opens a file picker whose files go to
+ * src/store/importStore.ts, step I.1), an Export menu whose formats are all
+ * "Coming soon" (so there is no project file yet to warn about imported models),
+ * and a quiet autosave status (src/store/persistence.ts). Split is hidden below 640 px.
  * Mounted by src/app/studio/page.tsx.
  */
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ACCEPT } from "@/lib/import/loadModel";
+import { useImportStore } from "@/store/importStore";
 import { useCanRedo, useCanUndo, usePlanStore } from "@/store/planStore";
 import { useSaveStatus } from "@/store/persistence";
 import { EditableText } from "./EditableText";
@@ -24,8 +28,8 @@ const icon = (d: ReactNode) => (
 
 const BTN = "inline-flex min-h-10 items-center gap-1.5 rounded px-2.5 text-sm hover:bg-vellum/10";
 
-/** A button that opens a small vellum panel; closes on Escape, outside click or tabbing away. */
-function Popover({ label, shortLabel, glyph, testId, children }: { label: string; shortLabel: string; glyph: ReactNode; testId: string; children: ReactNode }) {
+/** A button that opens a small vellum panel; closes on Escape, outside click or tabbing away. `children` may take a close function. */
+function Popover({ label, shortLabel, glyph, testId, children }: { label: string; shortLabel: string; glyph: ReactNode; testId: string; children: ReactNode | ((close: () => void) => ReactNode) }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -52,7 +56,7 @@ function Popover({ label, shortLabel, glyph, testId, children }: { label: string
         {glyph}
         <span className="max-sm:sr-only">{shortLabel}</span>
       </button>
-      {open && <div className="absolute right-0 top-full z-30 mt-2 w-56 rounded border border-stone bg-vellum p-2 text-sm text-iron shadow-lg">{children}</div>}
+      {open && <div className="absolute right-0 top-full z-30 mt-2 w-56 rounded border border-stone bg-vellum p-2 text-sm text-iron shadow-lg">{typeof children === "function" ? children(() => setOpen(false)) : children}</div>}
     </div>
   );
 }
@@ -63,6 +67,7 @@ export function TopBar({ view, setView, showCeiling, setShowCeiling }: { view: V
   const canUndo = useCanUndo();
   const canRedo = useCanRedo();
   const saveStatus = useSaveStatus((s) => s.status);
+  const picker = useRef<HTMLInputElement>(null);
 
   const views: { id: View; label: string; cls?: string }[] = [
     { id: "3d", label: "3D" },
@@ -111,9 +116,44 @@ export function TopBar({ view, setView, showCeiling, setShowCeiling }: { view: V
           </label>
         </Popover>
 
-        <Link href="/studio/import" data-testid="import-link" className={BTN}>
-          Import plan
-        </Link>
+        <Popover label="Import" shortLabel="Import" testId="import-menu" glyph={icon(<path d="M12 15V4M7 9l5-5 5 5M5 20h14" />)}>
+          {(close) => (
+            <ul>
+              <li>
+                <Link href="/studio/import" data-testid="import-link" className="flex min-h-10 items-center rounded px-2 hover:bg-limestone">
+                  Floor plan image…
+                </Link>
+              </li>
+              <li>
+                <button
+                  type="button"
+                  data-testid="import-model"
+                  onClick={() => {
+                    close();
+                    picker.current?.click();
+                  }}
+                  className="flex min-h-10 w-full items-center rounded px-2 text-left hover:bg-limestone"
+                >
+                  3D model…
+                </button>
+              </li>
+            </ul>
+          )}
+        </Popover>
+        {/* The real file input, outside the menu so it outlives it. Files are read in this browser and never uploaded. */}
+        <input
+          ref={picker}
+          type="file"
+          multiple
+          accept={ACCEPT}
+          hidden
+          data-testid="import-model-input"
+          onChange={(e) => {
+            const files = [...(e.target.files ?? [])];
+            e.target.value = ""; // so choosing the same file again still fires
+            void useImportStore.getState().openFiles(files);
+          }}
+        />
 
         <Popover label="Export" shortLabel="Export" testId="export-menu" glyph={icon(<path d="M12 4v11M7 10l5 5 5-5M5 20h14" />)}>
           <ul>

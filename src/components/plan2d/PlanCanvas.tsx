@@ -59,6 +59,12 @@
  * overlay only: never in the plan or undo history. Escape clears it (toolStore),
  * and a second Escape goes back to Select.
  *
+ * Imported 3D models (step I.1): each one's footprint (the bounding box of the
+ * placed, turned model, projected to the floor: model.footprint) is drawn as a
+ * dashed outline with its name, gilt when selected. A click inside one that picks
+ * no wall, door or window selects the model (selectionStore.itemId). Models are
+ * never dragged here in this step; the panel moves them.
+ *
  * Pan/zoom lives here, not in the store. Nothing animates, so
  * prefers-reduced-motion needs no special case.
  * Mounted by src/app/studio/page.tsx (2D view and the 2D half of Split).
@@ -110,6 +116,9 @@ import {
 import { validatePlan } from "@/lib/plan/validate";
 import { doorSwing, openingFrame } from "@/lib/plan2d/openings";
 import { fitView, niceScaleBar, screenToWorld, worldToScreen, zoomAt, type Bounds, type View } from "@/lib/plan2d/view";
+import { PLACEHOLDER_BOX, useImportedAssets } from "@/lib/import/assetCache";
+import { footprint, itemLocalBox } from "@/lib/import/model";
+import { pointInPolygon } from "@/lib/plan/rooms";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { useSelectedRun, useSelectionStore } from "@/store/selectionStore";
 import { useToolStore } from "@/store/toolStore";
@@ -201,6 +210,19 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
   const select = useSelectionStore((s) => s.select);
   const openingId = useSelectionStore((s) => s.openingId);
   const selectOpening = useSelectionStore((s) => s.selectOpening);
+  const itemId = useSelectionStore((s) => s.itemId);
+  const assets = useImportedAssets(plan.items);
+  /** Imported models' floor outlines in plan metres; a missing file's is its 1 m placeholder's, a loading one has none yet. */
+  const footprints = useMemo(
+    () =>
+      plan.items.flatMap((it) => {
+        const a = it.import && assets[it.import.assetId];
+        if (!it.import || !a || a.status === "loading") return [];
+        const local = a.status === "ready" ? itemLocalBox(a.model.root, a.model.box, it.import) : PLACEHOLDER_BOX;
+        return local ? [{ id: it.id, name: it.import.name, poly: footprint(it, local) }] : [];
+      }),
+    [plan.items, assets],
+  );
   const hover = useSelectionStore((s) => s.hover);
   const setWarnings = useSelectionStore((s) => s.setWarnings);
   const tool = useToolStore((s) => s.tool);
@@ -622,7 +644,13 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
       if (tool === "measure") placeMeasure(local(e), e);
       else if (tool === "wall") placePoint(local(e), e.altKey);
       else if (tool === "door" || tool === "window") placeAt(local(e));
-      else select(null); // a click on empty space clears the selection
+      else {
+        // no wall, door or window here: an imported model's footprint (the one drawn on top), or empty space
+        const at = world(local(e));
+        const model = [...footprints].reverse().find((f) => pointInPolygon(at, f.poly));
+        if (model) useSelectionStore.getState().selectItem(model.id);
+        else select(null); // a click on empty space clears the selection
+      }
       return;
     }
     // Round to 1 cm on release, then say what the edit broke, if anything.
@@ -931,6 +959,21 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
                 {line(h, "stroke-iron", 1.2)}
                 {line(-h, "stroke-iron", 1.2)}
                 {line(0, "stroke-cyanotype", 1)}
+              </g>
+            );
+          })}
+
+          {/* imported 3D models: a dashed footprint and the name; gilt when selected */}
+          {footprints.map((f) => {
+            const poly = f.poly.map(S);
+            const c = { x: poly.reduce((n, p) => n + p.x, 0) / 4, y: poly.reduce((n, p) => n + p.y, 0) / 4 };
+            const on = f.id === itemId;
+            return (
+              <g key={`item-${f.id}`} data-testid="plan-item" data-item={f.id} data-selected={on}>
+                <polygon points={pts(poly)} className={on ? "fill-gilt stroke-gilt" : "fill-none stroke-iron"} fillOpacity={on ? 0.12 : 0} strokeWidth={on ? 2 : 1.2} strokeDasharray="6 4" />
+                <text x={c.x} y={c.y} textAnchor="middle" dominantBaseline="middle" className="fill-iron stroke-limestone text-xs" style={{ paintOrder: "stroke", strokeWidth: 3 }}>
+                  {f.name}
+                </text>
               </g>
             );
           })}

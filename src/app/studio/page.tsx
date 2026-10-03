@@ -14,12 +14,14 @@
  * on exit; the View popover can still toggle them meanwhile. Leaving the 3D
  * pane (2D only) ends the walk. The 3D tools (Push/Pull, Move) step back to
  * Select when the 3D pane goes away and when a walk starts. Tool keys come from
- * toolStore.TOOL_SHORTCUTS (P, V).
+ * toolStore.TOOL_SHORTCUTS (P, V). Mounts the "Import a 3D model" dialog
+ * (ImportModelDialog, step I.1) once.
  * Connects to src/components/studio/*, src/components/plan2d/* and
  * src/store/toolStore.ts.
  */
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { PlanCanvas } from "@/components/plan2d/PlanCanvas";
+import { ImportModelDialog } from "@/components/studio/ImportModelDialog";
 import { PlanPanel, type Unit } from "@/components/studio/PlanPanel";
 import { Scene3D } from "@/components/studio/Scene3D";
 import { ToolRail } from "@/components/studio/ToolRail";
@@ -118,6 +120,7 @@ export default function Studio() {
         </main>
         <PlanPanel unit={unit} setUnit={setUnit} />
       </div>
+      <ImportModelDialog />
     </div>
   );
 }

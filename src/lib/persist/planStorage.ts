@@ -9,10 +9,12 @@
  *      move writes once, after it settles.
  * Only the Plan is stored. Selection, hover, the tool, 2D pan/zoom and the
  * Measure overlay live in other stores and never come through here, and undo
- * history is not stored either. Connects to: src/types/plan.ts; wired to the plan
+ * history is not stored either. An imported model's Item keeps only its asset id and
+ * settings (`Item.import`); the file bytes live in IndexedDB (src/lib/import/assetStore.ts)
+ * and never come through here. Connects to: src/types/plan.ts; wired to the plan
  * store by src/store/persistence.ts; tested by scripts/test-persist.ts.
  */
-import type { Item, Opening, OpeningKind, Plan, Room, Vec2, Wall } from "@/types/plan";
+import type { ImportFormat, ImportInfo, Item, NodeOverride, Opening, OpeningKind, Plan, Room, Vec2, Wall } from "@/types/plan";
 
 export const STORAGE_KEY = "atrium-v2:plan";
 /** Bump when the stored shape changes, and add a case to `migrate`. */
@@ -125,7 +127,27 @@ function item(v: unknown): Item | null {
   if (!isNum(x) || !isNum(y) || !isNum(z)) return null;
   const overrides = Object.entries(v.colorOverrides);
   if (!overrides.every(([, c]) => isStr(c))) return null;
-  return { id: v.id, catalogId: v.catalogId, position: { x, y, z }, rotationY: v.rotationY, scale: v.scale, colorOverrides: Object.fromEntries(overrides) as Record<string, string> };
+  const base: Item = { id: v.id, catalogId: v.catalogId, position: { x, y, z }, rotationY: v.rotationY, scale: v.scale, colorOverrides: Object.fromEntries(overrides) as Record<string, string> };
+  // An imported model (step I.1) is user data like a door's swing: dropping it would lose the model on reload.
+  // Absent is fine (every plan before I.1); present must be well formed.
+  if (v.import === undefined) return base;
+  const info = importInfo(v.import);
+  return info ? { ...base, import: info } : null;
+}
+
+const FORMATS: readonly ImportFormat[] = ["glb", "gltf", "obj", "fbx", "dae", "stl", "3ds"];
+const NODE_PATH = /^(\d+(\/\d+)*)?$/; // "" is the model root, "0/3/1" a descendant
+
+function importInfo(v: unknown): ImportInfo | null {
+  if (!isObject(v) || !isStr(v.assetId) || !/^[0-9a-f]{16}$/.test(v.assetId) || !isStr(v.name) || !FORMATS.includes(v.format as ImportFormat)) return null;
+  if (!isNum(v.unitToMetres) || v.unitToMetres <= 0 || (v.upAxis !== "y" && v.upAxis !== "z") || typeof v.doubleSided !== "boolean" || !isObject(v.nodeOverrides)) return null;
+  const nodeOverrides: Record<string, NodeOverride> = {};
+  for (const [path, o] of Object.entries(v.nodeOverrides)) {
+    if (!NODE_PATH.test(path) || !isObject(o)) return null;
+    if ((o.hidden !== undefined && typeof o.hidden !== "boolean") || (o.deleted !== undefined && typeof o.deleted !== "boolean")) return null;
+    nodeOverrides[path] = { ...(o.hidden !== undefined && { hidden: o.hidden }), ...(o.deleted !== undefined && { deleted: o.deleted }) };
+  }
+  return { assetId: v.assetId, name: v.name, format: v.format as ImportFormat, unitToMetres: v.unitToMetres, upAxis: v.upAxis, doubleSided: v.doubleSided, nodeOverrides };
 }
 
 /** Map every element through `one`; null when the input is not an array or any element is bad. */

@@ -14,15 +14,23 @@
  * is picked, and a soft fill light brightens the interior under the ceilings.
  * The 3D tools (Push/Pull and Move, src/components/three/PushPullTool.tsx) read
  * the same host; its cursor says what a press would do.
+ *
+ * Imported 3D models (step I.1) are drawn by ImportedItems; files dropped on this
+ * pane go to the same import flow as the top bar's file picker
+ * (src/store/importStore.ts), and a thin bar along the top shows while a stored
+ * model is being read.
  */
 import { OrbitControls, Grid } from "@react-three/drei";
 import { Canvas, useThree } from "@react-three/fiber";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import * as THREE from "three";
+import { ImportedItems } from "@/components/three/ImportedItems";
 import { PlanModel } from "@/components/three/PlanModel";
 import { PushPullTool } from "@/components/three/PushPullTool";
 import { WalkControls } from "@/components/three/WalkControls";
 import { SCENE_COLORS } from "@/data/materials";
+import { useAssetsLoading } from "@/lib/import/assetCache";
+import { useImportStore } from "@/store/importStore";
 import { usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
 import { usePushPullStore } from "@/store/pushPullStore";
@@ -131,6 +139,9 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
     return s.kind === "move" ? "move" : face.role === "jambA" || face.role === "jambB" ? "ew-resize" : "ns-resize";
   });
   const pushPull = is3dTool(useToolStore((s) => s.tool)) && !walking;
+  const loading = useAssetsLoading();
+  const [dropping, setDropping] = useState(false);
+  const hasFiles = (e: ReactDragEvent) => e.dataTransfer.types.includes("Files");
 
   return (
     <>
@@ -142,6 +153,19 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
         data-testid="scene-3d"
         className="absolute inset-0 focus-visible:outline-offset-[-3px]"
         style={{ touchAction: walking ? "none" : undefined, cursor: pushPull ? cursor : undefined }} // a walking drag looks; it never scrolls the page
+        onDragOver={(e) => {
+          if (!hasFiles(e)) return;
+          e.preventDefault(); // allows the drop
+          e.dataTransfer.dropEffect = "copy";
+          setDropping(true);
+        }}
+        onDragLeave={(e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setDropping(false)}
+        onDrop={(e) => {
+          if (!hasFiles(e)) return;
+          e.preventDefault(); // never let the browser open the file itself
+          setDropping(false);
+          void useImportStore.getState().openFiles([...e.dataTransfer.files]);
+        }}
       >
         <Canvas
           shadows
@@ -181,11 +205,20 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
           />
           <FitCamera bounds={bounds} />
           <PlanModel showCeiling={showCeiling} />
+          <ImportedItems />
           <OrbitControls makeDefault enabled={!walking} target={[cx, 0, cz]} maxPolarAngle={Math.PI / 2 - 0.02} />
           <WalkControls host={host} />
           <PushPullTool host={host} />
         </Canvas>
+        {dropping && (
+          <div className="pointer-events-none absolute inset-2 grid place-items-center rounded border-2 border-dashed border-cyanotype bg-vellum/60 text-sm text-cyanotype" data-testid="drop-hint">
+            Drop a 3D model to import it
+          </div>
+        )}
       </div>
+      {loading && (
+        <div role="progressbar" aria-label="Loading a 3D model" data-testid="model-loading" className="pointer-events-none absolute inset-x-0 top-0 h-0.5 bg-cyanotype motion-safe:animate-pulse" />
+      )}
       <WalkOverlay host={host} />
       <PushPullOverlay />
     </>

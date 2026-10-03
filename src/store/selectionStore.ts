@@ -1,6 +1,6 @@
 /**
- * selectionStore.ts — which wall OR which door/window is selected (never both:
- * choosing one clears the other), which wall is hovered, the run of pieces the
+ * selectionStore.ts — which wall OR which door/window OR which imported model is
+ * selected (only one at a time: choosing one clears the others), which wall is hovered, the run of pieces the
  * selected wall belongs to, plus the warnings the last edit raised. `selectedId`
  * is always a wall id and `openingId` an opening id, so code written for walls
  * keeps working unchanged. Deliberately NOT part of the plan store:
@@ -25,6 +25,8 @@ interface SelectionState {
   selectedId: string | null;
   /** The selected door or window. */
   openingId: string | null;
+  /** The selected imported model (an Item id, step I.1). */
+  itemId: string | null;
   hoveredId: string | null;
   /** Plain-words problems the last edit introduced, shown in the right panel. */
   warnings: string[];
@@ -32,6 +34,8 @@ interface SelectionState {
   select: (id: string | null) => void;
   /** Select a door or window (clears any wall). */
   selectOpening: (id: string | null) => void;
+  /** Select an imported model (clears any wall or opening). */
+  selectItem: (id: string | null) => void;
   hover: (id: string | null) => void;
   setWarnings: (warnings: string[]) => void;
 }
@@ -39,11 +43,13 @@ interface SelectionState {
 export const useSelectionStore = create<SelectionState>((set) => ({
   selectedId: null,
   openingId: null,
+  itemId: null,
   hoveredId: null,
   warnings: [],
   // A new selection starts with a clean slate: old warnings belonged to the old wall.
-  select: (selectedId) => set({ selectedId, openingId: null, warnings: [] }),
-  selectOpening: (openingId) => set({ openingId, selectedId: null, warnings: [] }),
+  select: (selectedId) => set({ selectedId, openingId: null, itemId: null, warnings: [] }),
+  selectOpening: (openingId) => set({ openingId, selectedId: null, itemId: null, warnings: [] }),
+  selectItem: (itemId) => set({ itemId, selectedId: null, openingId: null, warnings: [] }),
   hover: (hoveredId) => set({ hoveredId }),
   setWarnings: (warnings) => set({ warnings }),
 }));
@@ -62,11 +68,12 @@ export function useSelectedRun(): string[] {
 
 /** Forget a wall or opening that is no longer in the plan (deleted, or undone away). */
 usePlanStore.subscribe((state) => {
-  const { selectedId, openingId, hoveredId } = useSelectionStore.getState();
+  const { selectedId, openingId, itemId, hoveredId } = useSelectionStore.getState();
   const gone = (id: string | null) => id !== null && !state.plan.walls.some((w) => w.id === id);
   if (gone(selectedId)) useSelectionStore.setState({ selectedId: null, warnings: [] });
   if (gone(hoveredId)) useSelectionStore.setState({ hoveredId: null });
   if (openingId !== null && !state.plan.openings.some((o) => o.id === openingId)) useSelectionStore.setState({ openingId: null, warnings: [] });
+  if (itemId !== null && !state.plan.items.some((i) => i.id === itemId)) useSelectionStore.setState({ itemId: null });
 });
 
 /**
@@ -77,8 +84,8 @@ usePlanStore.subscribe((state) => {
 export function installSelectionShortcuts(): () => void {
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== "Escape" || isTypingTarget(e.target)) return;
-    const { selectedId, openingId } = useSelectionStore.getState();
-    if (selectedId || openingId) useSelectionStore.getState().select(null);
+    const { selectedId, openingId, itemId } = useSelectionStore.getState();
+    if (selectedId || openingId || itemId) useSelectionStore.getState().select(null);
   };
   window.addEventListener("keydown", onKeyDown);
   return () => window.removeEventListener("keydown", onKeyDown);
