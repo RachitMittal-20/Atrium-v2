@@ -21,8 +21,10 @@
  */
 import { create } from "zustand";
 import { isTypingTarget } from "@/lib/keyboard";
+import { faceExposed } from "@/lib/plan/pushpull";
 import { moveMeasurePoint, placeMeasurePoint, type Measurement } from "@/lib/plan2d/measure";
 import type { Vec2 } from "@/types/plan";
+import { usePlanStore } from "./planStore";
 import { usePushPullStore } from "./pushPullStore";
 import { useSelectionStore } from "./selectionStore";
 
@@ -86,15 +88,26 @@ if (process.env.NODE_ENV === "development" && typeof window !== "undefined") {
 }
 
 // Development and test builds only: the browser test reads which 3D tool is active, what is hovered and whether a
-// pull is under way. `hoverFace` is the 4.7a shape, kept so the 4.7a checks read it unchanged.
+// pull is under way. `hoverFace` is the 4.7a shape, kept so the 4.7a checks read it unchanged. 4.7c adds `corner`
+// (the plan point of the corner hovered or dragged, or null) and `exposed` (whether the hovered face can be seen;
+// null with nothing hovered).
 if (process.env.NODE_ENV !== "production" && typeof window !== "undefined") {
   const face = () => usePushPullStore.getState().hover;
-  const debug = {} as { tool: Tool; hover: { wallId: string; openingId: string | null; role: string } | null; hoverFace: { wallId: string; role: string } | null; active: boolean };
+  const debug = {} as {
+    tool: Tool;
+    hover: { wallId: string; openingId: string | null; role: string } | null;
+    hoverFace: { wallId: string; role: string } | null;
+    active: boolean;
+    corner: { x: number; y: number } | null;
+    exposed: boolean | null;
+  };
   Object.defineProperties(debug, {
     tool: { get: () => useToolStore.getState().tool, enumerable: true },
     hover: { get: () => { const h = face(); return h ? { wallId: h.wallId, openingId: h.openingId, role: h.role } : null; }, enumerable: true },
     hoverFace: { get: () => { const h = face(); return h ? { wallId: h.wallId, role: h.role } : null; }, enumerable: true },
     active: { get: () => usePushPullStore.getState().pull !== null, enumerable: true },
+    corner: { get: () => { const c = usePushPullStore.getState().corner; return c ? { ...c.point } : null; }, enumerable: true },
+    exposed: { get: () => { const h = face(); return h ? faceExposed(usePlanStore.getState().plan, h) : null; }, enumerable: true },
   });
   (window as unknown as { __pushPullDebug?: typeof debug }).__pushPullDebug = debug;
 }

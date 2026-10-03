@@ -8,14 +8,17 @@
  *      kept inside a lowered wall, typed distances, negative distances;
  *   3. the tool's store (src/store/pushPullStore.ts): one pull is one undo step,
  *      Escape leaves history as it was, a typed distance equals a dragged one,
- *      and every face that is not wired yet changes nothing and says "Not yet".
+ *      and a hidden wall end (one at a joint) changes nothing and says why.
+ *   4. exposed faces (step 4.7c): the north wall's split and corner ends expose no end
+ *      faces, a T stem's end is not exposed, a free end is, and every opening's jamb,
+ *      head and sill faces are exposed over exactly the visible reveal, no more.
  * Run: npx tsx scripts/test-pushpull.ts (throws on the first failure).
  */
 import assert from "node:assert/strict";
 import { samplePlan } from "../src/data/samplePlan";
 import { wallDirection } from "../src/lib/plan/geometry";
-import { buildWallGeometry, buildWallMeshData, faceRoleAt, type FaceRole, type WallFaceData } from "../src/lib/plan/meshBuilders";
-import { parseSignedDistance, pullWallTop, scopeLabel } from "../src/lib/plan/pushpull";
+import { buildWallGeometry, buildWallMeshData, faceRoleAt, pickableFaceAt, type FaceRole, type WallFaceData } from "../src/lib/plan/meshBuilders";
+import { HIDDEN_END, parseSignedDistance, pullWallTop, scopeLabel } from "../src/lib/plan/pushpull";
 import { validatePlan } from "../src/lib/plan/validate";
 import { startPull, pullDistance } from "../src/lib/handles3d/math";
 import { usePlanStore } from "../src/store/planStore";
@@ -149,7 +152,7 @@ for (const o of samplePlan.openings) {
 
 // faceRoleAt on a triangle that does not exist
 {
-  const faces: WallFaceData = { wallId: "w", roles: ["top"], openingIds: [null] };
+  const faces: WallFaceData = { wallId: "w", roles: ["top"], openingIds: [null], exposed: [true] };
   assert.deepEqual(faceRoleAt(faces, 0), { role: "top", openingId: null });
   assert.equal(faceRoleAt(faces, 1), null, "past the end: null");
   assert.equal(faceRoleAt(faces, -1), null, "before the start: null");
@@ -401,19 +404,20 @@ const sel0 = JSON.stringify([useSelectionStore.getState().selectedId, useSelecti
   S().undo();
   assert.deepEqual(S().plan, base, "and one undo restores the openings too");
 
-  // every face that is not wired: highlights and says "Not yet", changes nothing
-  // (4.7b wired the opening faces jambA, jambB, head and sill: scripts/test-pushpull-openings.ts covers them)
-  const roles: FaceRole[] = ["endA", "endB", "sideLeft", "sideRight"];
+  // a wall end at a joint can't be pulled: it says why and changes nothing. (4.7b wired the opening faces and 4.7c
+  // the wall sides and free ends: scripts/test-pushpull-openings.ts and test-pushpull-walls.ts cover them.) Both ends
+  // of w-AB are at joints (the corner A, the split B), so in 3D they are hidden and never hovered; this is the store's guard.
+  const roles: FaceRole[] = ["endA", "endB"];
   for (const role of roles) {
     const planNow = S().plan;
     const past = S().past.length;
-    const face: Face = { wallId: "w-AB", role, openingId: role === "head" || role === "sill" || role.startsWith("jamb") ? "d-front" : null };
+    const face: Face = { wallId: "w-AB", role, openingId: null };
     T().setHover(face);
-    assert.deepEqual(T().hover, face, `${role}: it can be hovered (highlighted)`);
-    assert.equal(T().message, "Not yet", `${role}: and says Not yet`);
+    assert.deepEqual(T().hover, face, `${role}: the store takes the hover`);
+    assert.equal(T().message, HIDDEN_END, `${role}: and says why it can't be pulled`);
     assert.equal(T().begin(face, { mode: "drag" }), false, `${role}: a press does not start a pull`);
     assert.equal(T().pull, null, `${role}: no pull`);
-    assert.equal(T().message, "Not yet");
+    assert.equal(T().message, HIDDEN_END);
     T().setTyped("0.3");
     assert.equal(T().applyTyped(), false, `${role}: a typed distance does nothing either`);
     T().setTyped("");
@@ -423,6 +427,84 @@ const sel0 = JSON.stringify([useSelectionStore.getState().selectedId, useSelecti
     assert.equal(T().message, null, "moving off clears the message");
   }
   assert.equal(JSON.stringify([useSelectionStore.getState().selectedId, useSelectionStore.getState().openingId, useSelectionStore.getState().hoveredId]), sel0, "the selection store was never touched by any of this");
+}
+
+// ================================================================= 4. exposed faces (4.7c)
+
+/** Sum of the areas of the triangles of `faces` (in `geo`) that pass `keep`, and their lowest and highest y. */
+function areaOf(geo: { getAttribute(n: string): { getX(i: number): number; getY(i: number): number; getZ(i: number): number } }, count: number, keep: (tri: number) => boolean) {
+  const pos = geo.getAttribute("position");
+  let area = 0;
+  let y0 = Infinity;
+  let y1 = -Infinity;
+  for (let tri = 0; tri < count; tri++) {
+    if (!keep(tri)) continue;
+    const [p, q, r] = [0, 1, 2].map((k) => ({ x: pos.getX(tri * 3 + k), y: pos.getY(tri * 3 + k), z: pos.getZ(tri * 3 + k) }));
+    const u = { x: q.x - p.x, y: q.y - p.y, z: q.z - p.z };
+    const v = { x: r.x - p.x, y: r.y - p.y, z: r.z - p.z };
+    area += Math.hypot(u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z, u.x * v.y - u.y * v.x) / 2;
+    for (const c of [p, q, r]) [y0, y1] = [Math.min(y0, c.y), Math.max(y1, c.y)];
+  }
+  return { area, y0, y1 };
+}
+const exposedRoles = (plan: Pick<Plan, "walls" | "openings">, wallId: string) => {
+  const { faces } = buildWallMeshData(plan.walls.find((w) => w.id === wallId)!, plan.walls, plan.openings);
+  assert.equal(faces.exposed.length, faces.roles.length, `${wallId}: one exposed flag per triangle`);
+  return { faces, exposed: new Set(faces.roles.filter((_, i) => faces.exposed[i])), hidden: new Set(faces.roles.filter((_, i) => !faces.exposed[i])) };
+};
+{
+  // the north wall A(0,0)–B(4,0)–C(10,0): split at B (where the T stem w-BI meets it), corners at A and C. No end face of either piece can be seen.
+  for (const id of ["w-AB", "w-BC"]) {
+    const { exposed, hidden } = exposedRoles(samplePlan, id);
+    assert.ok(!exposed.has("endA") && !exposed.has("endB"), `${id}: the split point and the corners expose no end face`);
+    assert.ok(hidden.has("endA") && hidden.has("endB"), `${id}: the end caps are still built (and tagged), just hidden`);
+    assert.ok(exposed.has("top") && exposed.has("sideLeft") && exposed.has("sideRight"), `${id}: top and both sides are exposed`);
+  }
+  // T stems: w-BI's a end butts into the north wall at B, w-KM's b end into the east wall at M, w-KL's b end into the south wall at L
+  assert.ok(!exposedRoles(samplePlan, "w-BI").exposed.has("endA"), "w-BI: a T stem's end is not exposed");
+  assert.ok(!exposedRoles(samplePlan, "w-KM").exposed.has("endB"), "w-KM: a T stem's end is not exposed");
+  assert.ok(!exposedRoles(samplePlan, "w-KL").exposed.has("endB"), "w-KL: a T stem's end is not exposed");
+  // the sample has no free end anywhere, so no end face of it is exposed at all
+  for (const w of samplePlan.walls) {
+    const { exposed } = exposedRoles(samplePlan, w.id);
+    assert.ok(!exposed.has("endA") && !exposed.has("endB"), `${w.id}: every end of the closed sample is at a joint`);
+  }
+  // a stub from the joint K(7,5) north into the living room: its a end (at K) is hidden, its b end is FREE and exposed
+  const stub: Wall = { id: "w-stub", a: { x: 7, y: 5 }, b: { x: 7, y: 3 }, thickness: 0.1, height: 2.7 };
+  const withStub = { walls: [...samplePlan.walls, stub], openings: samplePlan.openings };
+  const s = exposedRoles(withStub, "w-stub");
+  assert.ok(s.exposed.has("endB"), "a free wall end IS exposed");
+  assert.ok(!s.exposed.has("endA"), "its other end, at a joint, is not");
+  const free = buildWallMeshData(stub, withStub.walls, []);
+  const endB = areaOf(free.geometry, free.faces.roles.length, (i) => free.faces.roles[i] === "endB" && free.faces.exposed[i]);
+  close(endB.area, 0.1 * 2.7, 1e-5, "the free end is exposed over its whole face: 0.10 m × 2.70 m (float32 positions)");
+  // pickableFaceAt: the role of an exposed triangle, null for a hidden one
+  const tri = (role: FaceRole, exp: boolean) => free.faces.roles.findIndex((r, i) => r === role && free.faces.exposed[i] === exp);
+  assert.deepEqual(pickableFaceAt(free.faces, tri("endB", true)), { role: "endB", openingId: null });
+  assert.equal(pickableFaceAt(free.faces, tri("endA", false)), null, "a hidden triangle is never a target");
+  assert.deepEqual(faceRoleAt(free.faces, tri("endA", false)), { role: "endA", openingId: null }, "though it keeps its role");
+
+  // every opening: its jamb, head and sill faces are exposed over exactly the reveal (thickness × height, or × width),
+  // between the sill and the head; the bands of the same caps beside the sill and lintel slices, and the slices' own caps, are hidden
+  for (const o of samplePlan.openings) {
+    const wall = samplePlan.walls.find((w) => w.id === o.wallId)!;
+    const { geometry, faces } = buildWallMeshData(wall, samplePlan.walls, samplePlan.openings);
+    const n = faces.roles.length;
+    const sill = o.sillHeight;
+    const head = o.sillHeight + o.height;
+    const want: [FaceRole, number][] = [["jambA", wall.thickness * o.height], ["jambB", wall.thickness * o.height], ["head", wall.thickness * o.width]];
+    if (o.kind === "window") want.push(["sill", wall.thickness * o.width]);
+    for (const [role, area] of want) {
+      const mine = (i: number) => faces.roles[i] === role && faces.openingIds[i] === o.id;
+      const shown = areaOf(geometry, n, (i) => mine(i) && faces.exposed[i]);
+      close(shown.area, area, 1e-5, `${o.id} ${role}: exposed over exactly the reveal`);
+      if (role === "jambA" || role === "jambB") {
+        close(shown.y0, sill, 1e-5, `${o.id} ${role}: the exposed jamb starts at the sill`);
+        close(shown.y1, head, 1e-5, `${o.id} ${role}: and stops at the head`);
+        assert.ok(areaOf(geometry, n, (i) => mine(i) && !faces.exposed[i]).area > 0.01, `${o.id} ${role}: the parts of the cap behind the sill and lintel slices are hidden`);
+      }
+    }
+  }
 }
 
 console.log("OK");

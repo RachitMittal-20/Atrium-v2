@@ -12,7 +12,7 @@
  *      the labels, faceAxis, faceBlock.
  *   3. the store (src/store/pushPullStore.ts): one pull is one undo step, redo works,
  *      Escape leaves history as it was, typed equals dragged, a commit selects the
- *      opening, Move's typed direction, Move refuses a wall; openings stay inside their
+ *      opening, Move's typed direction, Move refuses a wall top (4.7c: a wall side moves); openings stay inside their
  *      wall when the wall is edited afterwards.
  *   4. picking (src/lib/handles3d/edges.ts): resolveOpeningEdge with hand-made
  *      segments, the edge lines (a door has no sill edge, the face toward the camera),
@@ -26,7 +26,7 @@ import { samplePlan } from "../src/data/samplePlan";
 import { EDGE_TOL_MOUSE_PX, EDGE_TOL_TOUCH_PX, openingEdgeLines, openingFaceQuad, pickAlongRay, resolveOpeningEdge, type ScreenEdge } from "../src/lib/handles3d/edges";
 import { DOOR_ON_FLOOR, moveOpening, NEXT_TO_OPENING, openingProblem, resizeOpening, resizeOpeningEdge, resizeOpeningHead, resizeOpeningSill } from "../src/lib/plan/edit";
 import { wallLength } from "../src/lib/plan/geometry";
-import { faceAxis, faceBlock, MOVE_WALL, NOT_YET, pullOpening } from "../src/lib/plan/pushpull";
+import { faceAxis, faceBlock, MOVE_TOP, pullOpening } from "../src/lib/plan/pushpull";
 import { usePlanStore } from "../src/store/planStore";
 import { usePushPullStore, type Face } from "../src/store/pushPullStore";
 import { useSelectionStore } from "../src/store/selectionStore";
@@ -246,9 +246,10 @@ anchoredEdgeHolds((plan, id, b) => ok(resizeOpeningEdge(plan, id, "B", b), "edge
   assert.equal(faceBlock(plan, face("sill", "d-front")), "A door stays on the floor");
   assert.equal(faceBlock(plan, face("sill", win.id)), null);
   assert.equal(faceBlock(plan, face("jambA", win.id)), null);
-  assert.equal(faceBlock(plan, face("sideLeft", null)), NOT_YET, "wall sides wait for 4.7c");
+  assert.equal(faceBlock(plan, face("sideLeft", null)), null, "4.7c wired the wall sides");
   assert.equal(faceBlock(plan, face("top", null)), null);
-  assert.equal(faceBlock(plan, face("sideLeft", null), true), MOVE_WALL, "Move over a wall says why not");
+  assert.equal(faceBlock(plan, face("sideLeft", null), true), null, "4.7c: Move over a wall side moves the wall");
+  assert.equal(faceBlock(plan, face("top", null), true), MOVE_TOP, "Move over a wall top says why not");
   assert.equal(faceBlock(plan, face("jambB", "d-front"), true), null, "Move over an opening's face moves the opening");
 
   // faceAxis: sides along the wall through the centre at mid-height, top and sill along world Y
@@ -379,11 +380,11 @@ const winFace = (role: Face["role"]): Face => ({ wallId: "w-BC", role, openingId
   T().applyTyped();
   assert.deepEqual(S().plan, moved, "typing 0.55 moves it where dragging 0.55 m does");
   S().undo();
-  // Move refuses a wall
-  const wallFace: Face = { wallId: "w-HA", role: "sideLeft", openingId: null };
+  // Move refuses a wall top (4.7c moves wall sides: scripts/test-pushpull-walls.ts)
+  const wallFace: Face = { wallId: "w-HA", role: "top", openingId: null };
   const beforeWall = S().plan;
   T().setHover(wallFace);
-  assert.equal(T().message, "Wall moves arrive with the side faces");
+  assert.equal(T().message, "Pull the top with Push/Pull");
   assert.equal(T().begin(wallFace, { mode: "drag" }), false);
   assert.equal(S().plan, beforeWall, "nothing changed");
   T().setHover(null);

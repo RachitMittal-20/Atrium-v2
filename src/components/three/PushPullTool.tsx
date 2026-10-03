@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * PushPullTool.tsx — the 3D Push/Pull and Move tools (steps 4.7a and 4.7b). Lives
+ * PushPullTool.tsx — the 3D Push/Pull and Move tools (steps 4.7a, 4.7b and 4.7c). Lives
  * inside the R3F <Canvas> (mounted by Scene3D, next to PlanModel) and renders only
  * the face highlight. Active when toolStore.tool is "pushpull" or "move" and the 3D
  * pane is not walking. The state is in src/store/pushPullStore.ts, the rules in
@@ -18,15 +18,26 @@
  *      edge-on from the front, so this band is what makes it grabbable. The edge is
  *      drawn as a 3 px blue line by the overlay. Push/Pull also has a band on a door's
  *      bottom, which says "A door stays on the floor".
- *   3. the face-role raycast on the wall meshes (meshBuilders face roles), with rings of
- *      rays round a finger. An edge beats a face of its own straight wall and any face
- *      behind it; a face of another wall IN FRONT of the edge keeps the pointer; with no
- *      face under the pointer the nearer of edge and ring face wins (see `pick`). In Move
- *      a wall face that belongs to an opening means that opening; any other wall face
- *      says "Wall moves arrive with the side faces" and does nothing.
- *   The face is tinted light blue (a polygon-offset overlay: a wall face's triangles, an
- *   opening face's reveal quad; in Move every face of the opening, and PlanModel tints
- *   its frame). Hover never selects.
+ *   3. Move only: a CORNER (4.7c). Every distinct joint is a vertical line from the floor
+ *      to its tallest wall's top, projected to the screen; the nearest within 14 px (44 px
+ *      for a finger) wins (edges.resolveCorner) unless a wall hides it. Drawn as a 3 px
+ *      blue line with a small marker at its foot. The order edge > corner > face holds
+ *      within 14 px; past that (a finger's 44 px), the nearer wins, and a finger right on
+ *      a wall face keeps it (see `pick`).
+ *   4. the face-role raycast on the wall meshes (meshBuilders face roles), with rings of
+ *      rays round a finger. Only EXPOSED triangles count (meshBuilders.pickableFaceAt):
+ *      a hidden face (inside the wall, or a wall end at a joint) is never hovered or
+ *      picked; the ray goes on to the next hit. An edge beats a face of its own straight
+ *      wall and any face behind it; a face of another wall IN FRONT of the edge keeps the
+ *      pointer; with no face under the pointer the nearer of edge and ring face wins (see
+ *      `pick`). In Move a wall face that belongs to an opening means that opening, a wall
+ *      side moves the whole straight wall sideways, and a wall top says "Pull the top
+ *      with Push/Pull".
+ *   So the order is: (Move) the opening's own meshes, then an opening edge, then (Move) a
+ *   corner, then a wall face. The face is tinted light blue (a polygon-offset overlay: a
+ *   wall face's exposed triangles, across the whole straight wall for a side; an opening
+ *   face's reveal quad; in Move every face of the opening, or of the whole wall, and
+ *   PlanModel tints an opening's frame). Hover never selects.
  * - Start: pointerdown on something that can be pulled starts a pull and keeps
  *   OrbitControls from also orbiting, by switching its left-button and one-finger
  *   actions off for that press. A press anywhere else, a face that can't be pulled, the
@@ -35,15 +46,24 @@
  *   up as a click (math.isClick) leaves the pull armed: move the pointer, click again.
  * - The pointer becomes a distance along the face's axis (pushpull.faceAxis: a wall top
  *   up through the grab point; an opening's sides, and a Move, along the wall through
- *   the opening's centre at mid-height; its top and sill along world Y), measured from
- *   where it was grabbed so nothing jumps (math.startPull / pullDistance). The
- *   ray-versus-pixels method is fixed at the grab. Move's midpoint snap reaches 12 px
+ *   the opening's centre at mid-height; its top and sill along world Y; a wall side
+ *   along its outward normal and a wall end along the wall, through the grab point),
+ *   measured from where it was grabbed so nothing jumps (math.startPull / pullDistance).
+ *   The ray-versus-pixels method is fixed at the grab. Move's midpoint snap reaches 12 px
  *   at the opening's depth (math.metresPerPixel), like the 2D tool's.
+ * - A corner is dragged on the horizontal plane through the point where it was grabbed
+ *   (math.rayPlanePoint), measured from the grab so it does not jump: the joint moves
+ *   by the pointer's movement on that plane. When the ray misses the plane (aimed above
+ *   the horizon) the last valid position is held. Snapping is the 2D handle drag's
+ *   (pushpull.dragCorner), reaching 12 px at the joint's depth; Alt turns it off. No
+ *   typed distance: the status line says to type exact lengths in the wall panel.
  * - Keys, only while the 3D host (src/components/studio/Scene3D.tsx) has focus and
  *   not in a text field: digits, a minus, a point and unit letters fill the typed
  *   field, Enter applies it exactly, Backspace edits it, Escape cancels, Alt
- *   means "this piece only" (a wall top) and no snapping. Escape, pointercancel,
- *   window blur and a second finger cancel the pull and leave history as it was.
+ *   means "this piece only" (a wall top) and no snapping, Shift on a wall side moves
+ *   the wall instead of thickening it (latched while a distance is being typed, since
+ *   a typed inch mark needs Shift). Escape, pointercancel, window blur and a second
+ *   finger cancel the pull and leave history as it was.
  * - A coarse pointer (a finger) tests a 44 px target around the touch, so thin
  *   faces are grabbable.
  * - Development and test builds: window.__studio3d = { project, wallBox, openingBox }
@@ -58,17 +78,18 @@ import { useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, type RefObject } from "react";
 import * as THREE from "three";
 import { SCENE_COLORS } from "@/data/materials";
-import { EDGE_TOL_MOUSE_PX, EDGE_TOL_TOUCH_PX, openingEdgeLine, openingEdgeLines, openingFaceQuad, pickAlongRay, resolveOpeningEdge, type EdgeLine, type RayHit, type ScreenEdge } from "@/lib/handles3d/edges";
-import { isClick, metresPerPixel, pullDistance, startPull, CLICK_MAX_PX, type CameraInfo, type PullGrab, type Ray } from "@/lib/handles3d/math";
+import { EDGE_TOL_MOUSE_PX, EDGE_TOL_TOUCH_PX, openingEdgeLine, openingEdgeLines, openingFaceQuad, pickAlongRay, resolveCorner, resolveOpeningEdge, type EdgeLine, type RayHit, type ScreenCorner, type ScreenEdge } from "@/lib/handles3d/edges";
+import { isClick, metresPerPixel, pullDistance, rayPlanePoint, startPull, CLICK_MAX_PX, type CameraInfo, type PullGrab, type Ray } from "@/lib/handles3d/math";
 import { isTypingTarget } from "@/lib/keyboard";
 import { SNAP_MAX_M, SNAP_MIN_M, SNAP_TOL_PX, wallRun } from "@/lib/plan/edit";
-import { buildWallMeshData, faceRoleAt, type WallFaceData } from "@/lib/plan/meshBuilders";
-import { faceAxis, faceBlock, isOpeningRole } from "@/lib/plan/pushpull";
+import { wallDirection } from "@/lib/plan/geometry";
+import { buildWallMeshData, pickableFaceAt, type FaceRole, type WallFaceData } from "@/lib/plan/meshBuilders";
+import { faceAxis, faceBlock, isOpeningRole, isSideRole, planCorners } from "@/lib/plan/pushpull";
 import { usePlanStore } from "@/store/planStore";
-import { usePushPullStore, type EdgeSeg, type Face } from "@/store/pushPullStore";
+import { usePushPullStore, type CornerRef, type EdgeSeg, type Face } from "@/store/pushPullStore";
 import { is3dTool, useToolStore } from "@/store/toolStore";
 import { useViewStore } from "@/store/viewStore";
-import type { Plan } from "@/types/plan";
+import type { Plan, Vec2 } from "@/types/plan";
 
 const TOUCH_TARGET_PX = 44; // a finger's hit area around the touch point
 const OCCLUDE_EPS = 0.05; // m: a wall this much nearer than an edge hides it (less is the edge's own corner)
@@ -86,7 +107,19 @@ interface Pick {
   depth: number;
 }
 
+/** A corner the pointer is on (Move): the joint, where along its line (0 floor, 1 top), its line on screen and its foot. */
+interface CornerPick {
+  corner: CornerRef;
+  height: number;
+  t: number;
+  seg: EdgeSeg | null;
+  marker: { x: number; y: number } | null;
+  px: number;
+}
+const isCorner = (h: Pick | CornerPick | null): h is CornerPick => !!h && "corner" in h;
+
 const NO_ORBIT = -1; // an action OrbitControls does not know: the gesture does nothing
+const UP = { x: 0, y: 1, z: 0 };
 const v3 = (p: { x: number; y: number; z: number }) => new THREE.Vector3(p.x, p.y, p.z);
 
 export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> }) {
@@ -105,6 +138,8 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
   const raycaster = useRef(new THREE.Raycaster());
   const press = useRef<{ id: number; down: { x: number; y: number; t: number }; started: boolean; restore: () => void } | null>(null);
   const grab = useRef<(PullGrab & { sign: 1 | -1 }) | null>(null);
+  /** A corner drag: where on the horizontal plane at `height` it was grabbed, the joint then, and the last valid pointer point. */
+  const cornerGrab = useRef<{ at: { x: number; z: number }; joint: Vec2; height: number; last: Vec2 } | null>(null);
   const pointers = useRef(new Set<number>());
 
   // ---- development and test builds only: where to point, and the real meshes' sizes
@@ -175,24 +210,25 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
       const r = el.getBoundingClientRect();
       return { x: clientX - r.left, y: clientY - r.top };
     };
-    /** An edge line as a segment in the host's own pixels, for the overlay to draw. */
-    const segOf = (line: EdgeLine): EdgeSeg | null => {
+    /** An edge or corner line as a segment in the host's own pixels, for the overlay to draw. */
+    const segOf = (line: { a: { x: number; y: number; z: number }; b: { x: number; y: number; z: number } }): EdgeSeg | null => {
       const [a, b] = [toClient(v3(line.a)), toClient(v3(line.b))];
       if (!a || !b) return null;
       const [p, q] = [hostPoint(a.x, a.y), hostPoint(b.x, b.y)];
       return { x1: p.x, y1: p.y, x2: q.x, y2: q.y };
     };
 
-    // ---- 1 and 2: edge bands
-    /** True when a wall stands in front of the point `t` of the way along `line`. */
-    const hidden = (line: EdgeLine, t: number, walls: THREE.Mesh[]) => {
-      const p = v3(line.a).lerp(v3(line.b), t);
+    // ---- 2: edge bands
+    /** True when a wall stands more than `slack` m in front of `p`. */
+    const hiddenAt = (p: THREE.Vector3, walls: THREE.Mesh[], slack = OCCLUDE_EPS) => {
       const dir = p.clone().sub(camera.position);
       const dist = dir.length();
       raycaster.current.set(camera.position, dir.normalize());
       const hit = raycaster.current.intersectObjects(walls, false)[0];
-      return !!hit && hit.distance < dist - OCCLUDE_EPS;
+      return !!hit && hit.distance < dist - slack;
     };
+    /** True when a wall stands in front of the point `t` of the way along `line`. */
+    const hidden = (line: EdgeLine, t: number, walls: THREE.Mesh[]) => hiddenAt(v3(line.a).lerp(v3(line.b), t), walls);
     /** The nearest visible edge in `lines` within `tol` px of the pointer. */
     const nearestEdge = (clientX: number, clientY: number, lines: { line: EdgeLine; openingId: string; wallId: string }[], tol: number, walls: THREE.Mesh[]): Pick | null => {
       const screen = new Map<ScreenEdge, (typeof lines)[number]>();
@@ -228,7 +264,38 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
       return nearestEdge(clientX, clientY, edges, tol, walls) ?? (moving ? null : nearestEdge(clientX, clientY, floors, tol, walls));
     };
 
-    // ---- 3: a door's or window's own meshes (Move)
+    // ---- 3: corners (Move)
+    /** A joint's vertical line, floor to top, as world points. */
+    const cornerLine = (p: Vec2, height: number) => ({ a: { x: p.x, y: 0, z: p.y }, b: { x: p.x, y: height, z: p.y } });
+    const footOf = (p: Vec2) => {
+      const c = toClient(v3({ x: p.x, y: 0, z: p.y }));
+      return c ? hostPoint(c.x, c.y) : null;
+    };
+    const pickCorner = (clientX: number, clientY: number, touch: boolean, walls: THREE.Mesh[]): CornerPick | null => {
+      const p = livePlan();
+      const list = planCorners(p);
+      const screen: ScreenCorner[] = [];
+      list.forEach((c, i) => {
+        const [a, b] = [toClient(v3({ x: c.point.x, y: 0, z: c.point.y })), toClient(v3({ x: c.point.x, y: c.height, z: c.point.y }))];
+        if (a && b) screen.push({ id: String(i), a, b });
+      });
+      const tol = touch ? EDGE_TOL_TOUCH_PX : EDGE_TOL_MOUSE_PX;
+      // ponytail: drop a hidden winner and ask again, at most 4 times, as nearestEdge does
+      for (let tries = 0; tries < 4 && screen.length > 0; tries++) {
+        const r = resolveCorner({ x: clientX, y: clientY }, screen, tol);
+        if (!r) return null;
+        const c = list[Number(r.id)];
+        // The joint's line runs inside the walls' corner, so the walls there may stand in front of it by up to about their thickness.
+        const slack = Math.max(...c.wallIds.map((id) => p.walls.find((w) => w.id === id)?.thickness ?? 0)) + OCCLUDE_EPS;
+        if (!hiddenAt(new THREE.Vector3(c.point.x, r.t * c.height, c.point.y), walls, slack)) {
+          return { corner: { wallId: c.wallId, end: c.end, point: c.point }, height: c.height, t: r.t, seg: segOf(cornerLine(c.point, c.height)), marker: footOf(c.point), px: r.distancePx };
+        }
+        screen.splice(screen.findIndex((s) => s.id === r.id), 1);
+      }
+      return null;
+    };
+
+    // ---- 1: a door's or window's own meshes (Move)
     const pickOpeningMesh = (clientX: number, clientY: number, walls: THREE.Mesh[]): Pick | null => {
       rayAt(clientX, clientY);
       const hits: RayHit[] = raycaster.current.intersectObjects([...walls, ...meshes("openingId")], false).map((h) =>
@@ -240,15 +307,16 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
       return o ? { face: { wallId: o.wallId, role: "jambA", openingId: o.id }, point: null, seg: null, px: 0, depth: hits[0]?.distance ?? 0 } : null;
     };
 
-    // ---- 4: the face-role raycast
+    // ---- 4: the face-role raycast (exposed triangles only)
     const castAt = (clientX: number, clientY: number, walls: THREE.Mesh[]): Pick | null => {
       rayAt(clientX, clientY);
-      const hit = raycaster.current.intersectObjects(walls, false)[0];
-      const faces = hit?.object.userData.faces as WallFaceData | undefined;
-      if (!hit || !faces || hit.faceIndex == null) return null;
-      const info = faceRoleAt(faces, hit.faceIndex);
-      if (!info) return null;
-      return { face: { wallId: faces.wallId, role: info.role, openingId: info.openingId }, point: hit.point.clone(), seg: null, px: 0, depth: hit.distance };
+      // the first EXPOSED triangle along the ray: a hidden one (inside a wall, or a wall end at a joint) is passed by
+      for (const hit of raycaster.current.intersectObjects(walls, false)) {
+        const faces = hit.object.userData.faces as WallFaceData | undefined;
+        const info = faces && hit.faceIndex != null ? pickableFaceAt(faces, hit.faceIndex) : null;
+        if (faces && info) return { face: { wallId: faces.wallId, role: info.role, openingId: info.openingId }, point: hit.point.clone(), seg: null, px: 0, depth: hit.distance };
+      }
+      return null;
     };
     /** For a finger that hit no face: rings of rays around the touch, nearest first, so a 44 px target finds a thin face. */
     const castRings = (clientX: number, clientY: number, walls: THREE.Mesh[]): Pick | null => {
@@ -258,8 +326,11 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
         for (let k = 0; k < 8; k++) {
           const a = (k / 8) * Math.PI * 2;
           const h = castAt(clientX + Math.cos(a) * radius, clientY + Math.sin(a) * radius, walls);
-          // prefer a face that can be pulled (the thing the user is most likely reaching for)
-          if (h && (!best || (!faceBlock(p, h.face, moving) && faceBlock(p, best.face, moving)))) best = { ...h, px: radius };
+          // prefer a face that can be pulled (the thing the user is most likely reaching for), then the one nearest the
+          // camera: since 4.7c every wall side can be pulled, and the first ray's hit could be a wall behind the one the
+          // finger is next to
+          const pullable = (f: Pick) => !faceBlock(p, f.face, moving);
+          if (h && (!best || (pullable(h) && !pullable(best)) || (pullable(h) === pullable(best) && h.depth < best.depth))) best = { ...h, px: radius };
         }
         if (best) return best;
       }
@@ -273,7 +344,7 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
      * wall's top is a few px from that wall's top). With no face under the pointer, the nearer to the finger of the
      * edge and the ring face wins, the edge on a tie.
      */
-    const pick = (clientX: number, clientY: number, touch: boolean): Pick | null => {
+    const pick = (clientX: number, clientY: number, touch: boolean): Pick | CornerPick | null => {
       const walls = meshes("wallId");
       if (moving) {
         const frame = pickOpeningMesh(clientX, clientY, walls); // the door or window itself, under the pointer
@@ -281,11 +352,20 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
       }
       const edge = pickEdge(clientX, clientY, touch, walls);
       const inFront = (f: Pick, e: Pick) => !wallRun(livePlan(), e.face.wallId).includes(f.face.wallId) && f.depth < e.depth - OCCLUDE_EPS;
-      const direct = castAt(clientX, clientY, walls); // in Move, a bare wall's face: the store says why it can't move
-      if (direct) return edge && !inFront(direct, edge) ? edge : direct;
-      const ring = touch ? castRings(clientX, clientY, walls) : null;
-      if (!edge || !ring) return edge ?? ring;
-      return inFront(ring, edge) || ring.px < edge.px ? ring : edge;
+      const direct = castAt(clientX, clientY, walls); // in Move, a wall top or end: the store says why it can't move
+      let hit: Pick | null;
+      if (direct) hit = edge && !inFront(direct, edge) ? edge : direct;
+      else {
+        const ring = touch ? castRings(clientX, clientY, walls) : null;
+        hit = !edge || !ring ? (edge ?? ring) : inFront(ring, edge) || ring.px < edge.px ? ring : edge;
+      }
+      // Priority is opening edge > corner > wall face within the precise (mouse) 14 px. A finger's extra reach, 14 to
+      // 44 px, goes to whichever is nearer: at phone scale the 44 px bands would otherwise cover most of the model, so a
+      // finger aimed right at a corner would get a window 40 px away, and one right ON a wall face would get a corner.
+      const corner = moving ? pickCorner(clientX, clientY, touch, walls) : null;
+      if (hit && hit === edge) return corner && edge.px > EDGE_TOL_MOUSE_PX && corner.px < edge.px ? corner : edge;
+      if (corner && direct && hit === direct && corner.px > EDGE_TOL_MOUSE_PX) return direct; // a finger on a face keeps it
+      return corner ?? hit;
     };
 
     // ---- the pointer as a distance
@@ -298,8 +378,26 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
       const d = pullDistance(g, { origin: ray.origin, direction: ray.direction } as Ray, { x: clientX, y: clientY }, cameraInfo(), r.height);
       return d === null ? null : d * g.sign;
     };
-    /** Move the pull to the pointer, and keep the drawn edge on the face as it moves. */
+    /** The dragged corner's new place: the joint plus how far the pointer moved on its horizontal plane (the last valid place when the ray misses it). */
+    const cornerTo = (clientX: number, clientY: number): Vec2 | null => {
+      const g = cornerGrab.current;
+      if (!g) return null;
+      const ray = rayAt(clientX, clientY);
+      const at = rayPlanePoint({ origin: ray.origin, direction: ray.direction }, { x: 0, y: g.height, z: 0 }, UP);
+      if (at) g.last = { x: g.joint.x + at.x - g.at.x, y: g.joint.y + at.z - g.at.z };
+      return g.last;
+    };
+    /** Move the pull to the pointer, and keep the drawn edge (or corner line) on it as it moves. */
     const follow = (clientX: number, clientY: number) => {
+      if (cornerGrab.current) {
+        const to = cornerTo(clientX, clientY);
+        if (to) store.getState().moveCorner(to);
+        const now = store.getState().pull;
+        const at = now?.cornerResult?.point ?? cornerGrab.current.joint;
+        const height = Math.max(...planCorners(livePlan()).filter((c) => Math.hypot(c.point.x - at.x, c.point.y - at.y) < 0.01).map((c) => c.height), cornerGrab.current.height);
+        store.getState().setEdge(segOf(cornerLine(at, height)), footOf(at));
+        return;
+      }
       const d = distanceAt(clientX, clientY);
       if (d !== null) store.getState().move(d);
       const now = store.getState().pull;
@@ -329,6 +427,7 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
     const cancelAll = () => {
       endPress();
       grab.current = null;
+      cornerGrab.current = null;
       store.getState().cancel();
     };
 
@@ -336,6 +435,7 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
     const onDown = (e: PointerEvent) => {
       fingers.add(e.pointerId);
       store.getState().setAlt(e.altKey);
+      store.getState().setShift(e.shiftKey);
       if (fingers.size > 1) {
         // a second finger: the pull is abandoned and the two fingers orbit
         cancelAll();
@@ -350,15 +450,34 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
         // the second click: finish at the pointer
         e.stopPropagation();
         press.current = { id: e.pointerId, down: { x: e.clientX, y: e.clientY, t: e.timeStamp }, started: true, restore: suppressOrbit() };
-        const d = distanceAt(e.clientX, e.clientY);
-        if (d !== null) state.move(d);
+        follow(e.clientX, e.clientY);
         store.getState().commit();
         grab.current = null;
+        cornerGrab.current = null;
         return;
       }
 
       const hit = pick(e.clientX, e.clientY, touch);
       if (!hit) return; // empty space and anything that is not a wall or opening: orbit as usual
+      const r = canvas.getBoundingClientRect();
+      if (isCorner(hit)) {
+        // a corner (Move): dragged on the horizontal plane through the grab point
+        const height = hit.t * hit.height;
+        const at = rayPlanePoint(rayAt(e.clientX, e.clientY) as unknown as Ray, { x: 0, y: height, z: 0 }, UP);
+        const joint = { x: hit.corner.point.x, y: height, z: hit.corner.point.y };
+        const radius = Math.min(SNAP_MAX_M, Math.max(SNAP_MIN_M, SNAP_TOL_PX * metresPerPixel(cameraInfo(), joint, r.height))); // 12 px at the joint
+        store.getState().setCorner(hit.corner, hit.seg, hit.marker);
+        if (!at || !store.getState().beginCorner(hit.corner, { radius })) return;
+        cornerGrab.current = { at: { x: at.x, z: at.z }, joint: hit.corner.point, height, last: hit.corner.point };
+        press.current = { id: e.pointerId, down: { x: e.clientX, y: e.clientY, t: e.timeStamp }, started: false, restore: suppressOrbit() };
+        try {
+          canvas.setPointerCapture(e.pointerId);
+        } catch {
+          /* a pointer that is already gone */
+        }
+        store.getState().setPointer(hostPoint(e.clientX, e.clientY));
+        return;
+      }
       const plan = livePlan();
       const axis = faceAxis(plan, hit.face, moving, hit.point ?? new THREE.Vector3());
       if (faceBlock(plan, hit.face, moving) || !axis) {
@@ -366,10 +485,9 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
         store.getState().begin(hit.face, { mode: "drag" });
         return;
       }
-      const r = canvas.getBoundingClientRect();
       const radius = Math.min(SNAP_MAX_M, Math.max(SNAP_MIN_M, SNAP_TOL_PX * metresPerPixel(cameraInfo(), axis.anchor, r.height))); // Move's midpoint snap, 12 px at the opening
       store.getState().setHover(hit.face, hit.seg);
-      if (!store.getState().begin(hit.face, { mode: "drag", onlyPiece: e.altKey, radius })) return;
+      if (!store.getState().begin(hit.face, { mode: "drag", onlyPiece: e.altKey, shift: e.shiftKey, radius })) return;
       grab.current = { ...startPull(rayAt(e.clientX, e.clientY) as unknown as Ray, axis.anchor, axis.axis, { x: e.clientX, y: e.clientY }), sign: axis.sign };
       press.current = { id: e.pointerId, down: { x: e.clientX, y: e.clientY, t: e.timeStamp }, started: false, restore: suppressOrbit() };
       try {
@@ -382,6 +500,7 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
 
     const onMove = (e: PointerEvent) => {
       store.getState().setAlt(e.altKey);
+      store.getState().setShift(e.shiftKey);
       store.getState().setPointer(hostPoint(e.clientX, e.clientY));
       const p = press.current;
       const state = store.getState();
@@ -400,7 +519,8 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
         return;
       }
       const hit = pick(e.clientX, e.clientY, false);
-      state.setHover(hit ? hit.face : null, hit?.seg ?? null);
+      if (isCorner(hit)) state.setCorner(hit.corner, hit.seg, hit.marker);
+      else state.setHover(hit ? hit.face : null, hit?.seg ?? null);
     };
 
     const onUp = (e: PointerEvent) => {
@@ -413,6 +533,7 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
       if (p.started) {
         state.commit(); // a drag ends on release
         grab.current = null;
+        cornerGrab.current = null;
       } else if (isClick(p.down, { x: e.clientX, y: e.clientY, t: e.timeStamp })) {
         state.armClick(); // a click: move the pointer, click again to finish
       } else {
@@ -428,6 +549,7 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
     const onLeave = () => {
       if (!store.getState().pull) {
         store.getState().setHover(null);
+        store.getState().setCorner(null);
         store.getState().setPointer(null);
       }
     };
@@ -436,6 +558,10 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Alt") {
         store.getState().setAlt(e.type === "keydown");
+        return;
+      }
+      if (e.key === "Shift") {
+        if (store.getState().typed === "") store.getState().setShift(e.type === "keydown"); // latched while typing: an inch mark needs Shift
         return;
       }
       if (e.type !== "keydown" || isTypingTarget(e.target) || e.metaKey || e.ctrlKey) return;
@@ -448,7 +574,7 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
         }
         return;
       }
-      if (!state.pull && !state.hover) return; // nothing to type a distance for
+      if (!state.pull && !state.hover && !state.corner) return; // nothing to type a distance for
       if (e.key === "Enter") {
         if (state.typed !== "") {
           e.preventDefault();
@@ -461,6 +587,7 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
           state.commit();
           endPress();
           grab.current = null;
+          cornerGrab.current = null;
         }
         return;
       }
@@ -502,7 +629,7 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
   }, [active, moving, host, gl, scene, camera, get]);
 
   // ---- the highlight: the face's triangles, rebuilt from the plan so it follows a live pull
-  const target = active ? (pull?.face ?? hover) : null;
+  const target = active && !pull?.corner ? (pull?.face ?? hover) : null; // a corner has no face to tint: the overlay draws its line
   const alt = usePushPullStore((s) => s.alt);
   const onlyPiece = pull ? pull.onlyPiece : alt;
   const highlight = useMemo(() => buildHighlight(plan, target, moving, onlyPiece), [plan, target, moving, onlyPiece]);
@@ -517,16 +644,17 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
 }
 
 /**
- * The triangles to tint. A wall face: its triangles of that role (a wall top's whole
- * straight run unless Alt). An opening's face: the reveal itself, built from the
- * opening (edges.openingFaceQuad), not the mesh's triangles of that role: those also
- * include caps hidden inside the wall (the sill and lintel slices' caps share the
- * jamb roles), whose edges the polygon offset would let show through as thin lines.
- * In Move every face of the opening; nothing over a bare wall (it can't be moved
- * yet), and nothing for a door's bottom (it has no face: it stays on the floor).
+ * The triangles to tint, only ever EXPOSED ones. A wall face: its triangles of that
+ * role (a wall top's whole straight run unless Alt; a side across the whole run, the
+ * same side of every piece, since thickening or moving acts on all of them). An
+ * opening's face: the reveal itself, built from the opening (edges.openingFaceQuad),
+ * kept from 4.7b: it is exactly the visible face, edge to edge. In Move every face of
+ * the opening, or for a wall side every exposed face of the whole run; nothing over a
+ * wall top or end (Move does not take them), and nothing for a door's bottom (it has no
+ * face: it stays on the floor).
  */
 function buildHighlight(plan: Plan, target: Face | null, moving: boolean, onlyPiece: boolean): THREE.BufferGeometry | null {
-  if (!target || (moving && !target.openingId)) return null;
+  if (!target || (moving && !target.openingId && !isSideRole(target.role))) return null;
   const positions: number[] = [];
   const o = target.openingId ? plan.openings.find((x) => x.id === target.openingId) : undefined;
   const wall = o && plan.walls.find((w) => w.id === o.wallId);
@@ -538,14 +666,19 @@ function buildHighlight(plan: Plan, target: Face | null, moving: boolean, onlyPi
       for (const c of [p, q, s, p, s, t]) positions.push(c.x, c.y, c.z);
     }
   } else {
-    const ids = target.role === "top" && !onlyPiece ? wallRun(plan, target.wallId) : [target.wallId];
+    const picked = plan.walls.find((x) => x.id === target.wallId);
+    const ids = (target.role === "top" && !onlyPiece) || isSideRole(target.role) ? wallRun(plan, target.wallId) : [target.wallId];
     for (const id of ids) {
       const w = plan.walls.find((x) => x.id === id);
-      if (!w) continue;
+      if (!w || !picked) continue;
+      // a piece of the run drawn the other way round has the picked side as its other side
+      const flip = isSideRole(target.role) && wallDirection(w).x * wallDirection(picked).x + wallDirection(w).y * wallDirection(picked).y < 0;
+      const role: FaceRole = flip ? (target.role === "sideLeft" ? "sideRight" : "sideLeft") : target.role;
       const { geometry, faces } = buildWallMeshData(w, plan.walls, plan.openings);
       const pos = geometry.getAttribute("position");
       for (let tri = 0; tri < faces.roles.length; tri++) {
-        if (faces.roles[tri] !== target.role || faces.openingIds[tri] !== target.openingId) continue;
+        if (!faces.exposed[tri]) continue;
+        if (!(moving && isSideRole(target.role)) && (faces.roles[tri] !== role || faces.openingIds[tri] !== target.openingId)) continue; // Move tints the whole wall
         for (let k = 0; k < 3; k++) positions.push(pos.getX(tri * 3 + k), pos.getY(tri * 3 + k), pos.getZ(tri * 3 + k));
       }
       geometry.dispose();

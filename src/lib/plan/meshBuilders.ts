@@ -24,10 +24,27 @@
  * A box's inside faces (the caps where a sill or lintel slice meets the solid
  * slice beside it) are never visible; they are named by the way they face, so
  * every role still means one outward normal.
+ *
+ * Exposed faces (step 4.7c): every triangle is also marked `exposed` or not, where
+ * the wall is built, and the 3D tools never hover or pick a triangle that is not
+ * (pickableFaceAt). NOT exposed:
+ *   - faces between slices of the same wall: the sill and lintel slices' own end
+ *     caps, and the bands of the solid slice's cap beside an opening that the sill
+ *     and lintel slices cover. That cap is cut at the sill and the head, so its
+ *     exposed band is exactly the jamb the user sees;
+ *   - a wall end (endA, endB) at a joint another wall also ends at: where collinear
+ *     pieces meet at a split, a T stem butting into the bar's side, a mitred corner,
+ *     a crossing. Those caps lie inside or against the other wall's body (a wall-wall
+ *     overlap). Only a FREE end is exposed. The rule reads only the walls at the
+ *     wall's own two ends, which wallSignature already includes, so the per-wall
+ *     geometry cache can never hold stale flags.
+ * Not handled: walls that overlap without sharing a joint (drawn parallel and too
+ * close, a known limitation): their buried side faces stay exposed. A wall end at a
+ * joint is hidden even where it stands taller than the wall it meets.
  */
 import * as THREE from "three";
 import type { Opening, Vec2, Wall } from "@/types/plan";
-import { dist, JOINT_EPS, wallDirection, wallLength, wallOutline } from "./geometry";
+import { dist, isFreeEnd, JOINT_EPS, wallDirection, wallLength, wallOutline } from "./geometry";
 
 export type FaceRole = "top" | "endA" | "endB" | "sideLeft" | "sideRight" | "jambA" | "jambB" | "head" | "sill";
 
@@ -38,12 +55,19 @@ export interface WallFaceData {
   roles: FaceRole[];
   /** openingIds[i] is the opening a jamb, head or sill triangle belongs to, else null. */
   openingIds: (string | null)[];
+  /** exposed[i] is false for a triangle no one can see (inside the wall, or against another wall): never a tool's target. */
+  exposed: boolean[];
 }
 
 /** What a raycast hit on a wall mesh is: its role and, for opening faces, the opening. Null for an unknown triangle. */
 export function faceRoleAt(data: WallFaceData, faceIndex: number): { role: FaceRole; openingId: string | null } | null {
   const role = data.roles[faceIndex];
   return role === undefined ? null : { role, openingId: data.openingIds[faceIndex] ?? null };
+}
+
+/** What a tool may treat as hit: faceRoleAt, but null for a triangle that is not exposed. */
+export function pickableFaceAt(data: WallFaceData, faceIndex: number): { role: FaceRole; openingId: string | null } | null {
+  return data.exposed[faceIndex] ? faceRoleAt(data, faceIndex) : null;
 }
 
 const touches = (w: Wall, p: Vec2) => dist(w.a, p) < JOINT_EPS || dist(w.b, p) < JOINT_EPS;
@@ -64,13 +88,20 @@ interface Section {
 /** A role and the opening it belongs to (null for the wall's own faces). */
 type Tag = [FaceRole, string | null];
 
-/** What each end of a box is: a wall end, or a jamb beside an opening. */
+/** The heights [lo, hi] of a box end cap that can be seen; the rest of the cap is hidden. Omitted: all of it. */
+type Band = readonly [number, number];
+/** A cap no one can see. */
+const HIDDEN: Band = [0, 0];
+
+/** What each end of a box is: a wall end, or a jamb beside an opening, and which band of it is exposed. */
 interface BoxTags {
   top: Tag;
   /** The underside, which only exists above floor level (a lintel's: the head). */
   bottom?: Tag;
   start: Tag;
   end: Tag;
+  startOpen?: Band;
+  endOpen?: Band;
 }
 
 /** Collects flat-shaded faces, each wound to face away from its box's centre, and a role per triangle. */
@@ -79,6 +110,7 @@ class Faces {
   normals: number[] = [];
   roles: FaceRole[] = [];
   openingIds: (string | null)[] = [];
+  exposed: boolean[] = [];
   /** The wall's left-hand normal in world space, to tell its two long sides apart. */
   private left: THREE.Vector3;
 
@@ -96,12 +128,23 @@ class Faces {
     if (y0 > 0) this.face(centre, [ar0, al0, bl0, br0], tags.bottom ?? ["head", null]); // bottom; at floor level it's hidden
     this.face(centre, [ar0, br0, br1, ar1], null); // right side
     this.face(centre, [al0, bl0, bl1, al1], null); // left side
-    this.face(centre, [ar0, al0, al1, ar1], tags.start); // start cap
-    this.face(centre, [br0, bl0, bl1, br1], tags.end); // end cap
+    this.cap(centre, a, y0, y1, tags.start, tags.startOpen); // start cap
+    this.cap(centre, b, y0, y1, tags.end, tags.endOpen); // end cap
+  }
+
+  /** An end cap, cut at the edges of its exposed band: below and above it hidden, the band itself exposed. */
+  private cap(centre: THREE.Vector3, s: Section, y0: number, y1: number, tag: Tag, open: Band = [y0, y1]) {
+    const v = (p: Vec2, y: number) => new THREE.Vector3(p.x, y, p.y);
+    const lo = Math.min(y1, Math.max(y0, open[0]));
+    const hi = Math.min(y1, Math.max(lo, open[1]));
+    const quad = (p: number, q: number) => [v(s.r, p), v(s.l, p), v(s.l, q), v(s.r, q)];
+    this.face(centre, quad(y0, lo), tag, false); // zero-height bands are skipped by face()
+    this.face(centre, quad(lo, hi), tag, true);
+    this.face(centre, quad(hi, y1), tag, false);
   }
 
   /** `tag` null means one of the long sides: left or right is decided from the face's outward normal. */
-  private face(centre: THREE.Vector3, q: THREE.Vector3[], tag: Tag | null) {
+  private face(centre: THREE.Vector3, q: THREE.Vector3[], tag: Tag | null, exposed = true) {
     const n = new THREE.Vector3().crossVectors(q[1].clone().sub(q[0]), q[2].clone().sub(q[0]));
     if (n.lengthSq() < 1e-12) return; // zero-area slice
     const mid = q.reduce((s, c) => s.add(c), new THREE.Vector3()).multiplyScalar(0.25);
@@ -114,13 +157,14 @@ class Faces {
     const [role, openingId] = tag ?? [n.dot(this.left) > 0 ? "sideLeft" : "sideRight", null];
     this.roles.push(role, role); // a quad is two triangles
     this.openingIds.push(openingId, openingId);
+    this.exposed.push(exposed, exposed);
   }
 }
 
 /** A wall as one BufferGeometry, with holes left for its openings, and the role of every triangle. */
 export function buildWallMeshData(wall: Wall, allWalls: Wall[], openings: Opening[]): { geometry: THREE.BufferGeometry; faces: WallFaceData } {
   const geometry = new THREE.BufferGeometry();
-  const faces: WallFaceData = { wallId: wall.id, roles: [], openingIds: [] };
+  const faces: WallFaceData = { wallId: wall.id, roles: [], openingIds: [], exposed: [] };
   const len = wallLength(wall);
   if (len < JOINT_EPS) {
     geometry.userData.faces = faces;
@@ -144,32 +188,55 @@ export function buildWallMeshData(wall: Wall, allWalls: Wall[], openings: Openin
 
   const out = new Faces(wall);
   const H = wall.height;
+  // A wall end is exposed only when it is free: any other wall ending at that joint covers it (a split, a T stem, a corner).
+  const freeEnd = (p: Vec2) => isFreeEnd(allWalls, wall.id, p);
+  const openA: Band | undefined = freeEnd(wall.a) ? undefined : HIDDEN;
+  const openB: Band | undefined = freeEnd(wall.b) ? undefined : HIDDEN;
   let x = 0;
-  let before: string | null = null; // the opening just before the slice being cut, if any
+  let before: { id: string; band: Band } | null = null; // the opening just before the slice being cut, and the band of its hole
   const own = openings.filter((o) => o.wallId === wall.id).sort((p, q) => p.offset - q.offset);
   for (const o of own) {
     const x0 = Math.max(x, o.offset - o.width / 2);
     const x1 = Math.min(len, o.offset + o.width / 2);
     if (x1 <= x0) continue; // outside the wall or swallowed by an earlier opening
-    // A solid slice runs up to this opening: its start is the wall's a end or the previous opening's jamb, its end this opening's jamb A.
-    if (x0 > x) out.box(section(x), section(x0), 0, H, { top: ["top", null], start: before ? ["jambB", before] : ["endA", null], end: ["jambA", o.id] });
     const sill = Math.min(H, Math.max(0, o.sillHeight));
     const head = Math.min(H, sill + o.height);
+    const band: Band = [sill, head]; // the hole: the only part of a solid slice's cap beside it that can be seen
+    // A solid slice runs up to this opening: its start is the wall's a end or the previous opening's jamb, its end this opening's jamb A.
+    if (x0 > x) {
+      out.box(section(x), section(x0), 0, H, {
+        top: ["top", null],
+        start: before ? ["jambB", before.id] : ["endA", null],
+        startOpen: before ? before.band : openA,
+        end: ["jambA", o.id],
+        endOpen: band,
+      });
+    }
     // The slices under and over the opening. Their caps are the wall's own end when the opening reaches it,
-    // else faces inside the wall, named by the way they face (the start cap faces back towards a: jambB).
+    // else faces inside the wall against the solid slice beside them (hidden), named by the way they face.
     const startCap: Tag = x0 <= 0 ? ["endA", null] : ["jambB", o.id];
     const endCap: Tag = x1 >= len ? ["endB", null] : ["jambA", o.id];
-    if (sill > 0) out.box(section(x0), section(x1), 0, sill, { top: sill >= H ? ["top", null] : ["sill", o.id], start: startCap, end: endCap }); // under a window
-    if (head < H) out.box(section(x0), section(x1), head, H, { top: ["top", null], bottom: ["head", o.id], start: startCap, end: endCap }); // lintel
+    const caps = { start: startCap, startOpen: x0 <= 0 ? openA : HIDDEN, end: endCap, endOpen: x1 >= len ? openB : HIDDEN };
+    if (sill > 0) out.box(section(x0), section(x1), 0, sill, { top: sill >= H ? ["top", null] : ["sill", o.id], ...caps }); // under a window
+    if (head < H) out.box(section(x0), section(x1), head, H, { top: ["top", null], bottom: ["head", o.id], ...caps }); // lintel
     x = x1;
-    before = o.id;
+    before = { id: o.id, band };
   }
-  if (x < len) out.box(section(x), section(len), 0, H, { top: ["top", null], start: before ? ["jambB", before] : ["endA", null], end: ["endB", null] });
+  if (x < len) {
+    out.box(section(x), section(len), 0, H, {
+      top: ["top", null],
+      start: before ? ["jambB", before.id] : ["endA", null],
+      startOpen: before ? before.band : openA,
+      end: ["endB", null],
+      endOpen: openB,
+    });
+  }
 
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(out.positions, 3));
   geometry.setAttribute("normal", new THREE.Float32BufferAttribute(out.normals, 3));
   faces.roles = out.roles;
   faces.openingIds = out.openingIds;
+  faces.exposed = out.exposed;
   geometry.userData.faces = faces; // rides along with the geometry through PlanModel's per-wall cache
   return { geometry, faces };
 }

@@ -8,6 +8,8 @@
  *   startPull / pullDistance  the three above, wired together: the method is chosen
  *                           ONCE when the face is grabbed, so a pull can never jump
  *                           between the two while it is under way.
+ *   rayPlanePoint           where a ray meets a plane (the Move tool drags a corner on
+ *                           a horizontal plane), or null when it never does.
  * Points and directions are plain {x, y, z} objects in world metres (world up is +Y).
  * Connects to: src/types/plan.ts (Vec3); used by src/store/pushPullStore.ts and
  * src/components/three/PushPullTool.tsx; tested by scripts/test-handles3d.ts.
@@ -113,4 +115,17 @@ export function pullDistance(grab: PullGrab, ray: Ray, px: { x: number; y: numbe
   }
   const t = rayAxisParam(ray, grab.anchor, grab.axis);
   return t === null ? null : t - grab.startT;
+}
+
+/**
+ * Where `ray` meets the plane through `planePoint` with normal `planeNormal`, or null
+ * when it never does: the ray runs parallel to the plane (within 1e-9), or the plane is
+ * behind the ray's origin. The caller holds its last valid point on null.
+ */
+export function rayPlanePoint(ray: Ray, planePoint: Vec3, planeNormal: Vec3): Vec3 | null {
+  const denom = dot(ray.direction, planeNormal);
+  if (Math.abs(denom) < 1e-9) return null;
+  const t = dot(sub(planePoint, ray.origin), planeNormal) / denom;
+  if (t < 0) return null;
+  return { x: ray.origin.x + ray.direction.x * t, y: ray.origin.y + ray.direction.y * t, z: ray.origin.z + ray.direction.z * t };
 }

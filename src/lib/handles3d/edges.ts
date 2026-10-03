@@ -10,6 +10,8 @@
  *                       almost edge-on from the front, so the tools test a band round
  *                       each edge's on-screen line instead of the thin face itself.
  *   pickAlongRay        the Select tool's 3D rule: an opening beats the wall it sits in.
+ *   resolveCorner       which projected corner (a joint drawn as a vertical line from the
+ *                       floor to the wall top) the Move tool's pointer is on (step 4.7c).
  * World space as everywhere in 3D: plan (x, y) → (x, height, y), metres.
  * Connects to: src/types/plan.ts, src/lib/plan/geometry.ts; used by
  * src/components/three/{PushPullTool,PlanModel}.tsx; tested by scripts/test-pushpull-openings.ts.
@@ -114,6 +116,28 @@ export function resolveOpeningEdge(pointerPx: Vec2, edges: ScreenEdge[], toleran
     if (d > tolerancePx) continue;
     const tie = best !== null && Math.abs(d - best.distancePx) <= TIE_PX;
     if (!best || (tie ? RANK[e.role] < RANK[best.role] : d < best.distancePx)) best = { ...e, distancePx: d, t };
+  }
+  return best;
+}
+
+/** A plan joint drawn on screen: the vertical line from its foot (`a`, on the floor) to the wall top (`b`), CSS pixels. */
+export interface ScreenCorner {
+  id: string;
+  a: Vec2;
+  b: Vec2;
+}
+
+/**
+ * The corner the pointer is grabbing: the nearest projected corner line within
+ * `tolerancePx` (EDGE_TOL_MOUSE_PX or EDGE_TOL_TOUCH_PX), or null. `t` is where along
+ * the line (0 at the floor, 1 at the top) the pointer is nearest. The caller ranks it
+ * below an opening edge and above a wall face, and drops a corner a wall hides.
+ */
+export function resolveCorner(pointerPx: Vec2, corners: ScreenCorner[], tolerancePx: number): (ScreenCorner & { distancePx: number; t: number }) | null {
+  let best: (ScreenCorner & { distancePx: number; t: number }) | null = null;
+  for (const c of corners) {
+    const { d, t } = toSegment(pointerPx, c.a, c.b);
+    if (d <= tolerancePx && (!best || d < best.distancePx)) best = { ...c, distancePx: d, t };
   }
   return best;
 }

@@ -33,6 +33,10 @@ export function wallNormal(w: Segment): Vec2 {
   return { x: -d.y, y: d.x };
 }
 
+/** True when no OTHER wall ends at `p`: a free wall end, whose end face can be seen (a split, a T stem or a corner covers it). */
+export const isFreeEnd = (walls: Wall[], wallId: string, p: Vec2) =>
+  !walls.some((o) => o.id !== wallId && wallLength(o) >= JOINT_EPS && (dist(o.a, p) < JOINT_EPS || dist(o.b, p) < JOINT_EPS));
+
 /** Shortest distance from p to the wall's centre line (a segment, not an infinite line). */
 export function pointToWallDistance(p: Vec2, w: Segment): number {
   const dx = w.b.x - w.a.x;

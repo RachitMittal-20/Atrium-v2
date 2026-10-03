@@ -1,6 +1,6 @@
 /**
- * pushpull.ts — pure rules for the 3D Push/Pull and Move tools (steps 4.7a and
- * 4.7b; no React, no store). Given a plan, a grabbed face and a signed distance,
+ * pushpull.ts — pure rules for the 3D Push/Pull and Move tools (steps 4.7a, 4.7b
+ * and 4.7c; no React, no store). Given a plan, a grabbed face and a signed distance,
  * it says what the plan should become; the store (src/store/pushPullStore.ts)
  * applies the answer in one transaction.
  *   pullWallTop   a wall's top (4.7a): the new height of the wall, and of the rest of
@@ -12,6 +12,18 @@
  *                 pulled down is positive), and the opposite edge stays where it is.
  *                 The rules are edit.ts's (resizeOpeningEdge, resizeOpeningHead,
  *                 resizeOpeningSill, moveOpening), the same as the OpeningPanel's.
+ *   pullWallSide  a wall's side face (4.7c). Sign: + pulls the face OUTWARD, away from
+ *                 the centre line. By default the wall gets THICKER towards that side
+ *                 with the OPPOSITE face fixed: every piece of the straight run gets +d
+ *                 and the run's centre line moves d/2 towards the pulled side
+ *                 (edit.dragWallBody, so the walls at its ends and standing on it
+ *                 stretch by the existing rules). With `move` (Shift, or the Move tool)
+ *                 the whole run slides d sideways with its thickness unchanged.
+ *   pullWallEnd   a FREE wall end (4.7c): the end moves along the wall's own line, the
+ *                 other end fixed, never shorter than MIN_WALL_LENGTH. An end at a joint
+ *                 is hidden (meshBuilders) and refused here too: drag the corner.
+ *   dragCorner    the Move tool's corner (4.7c): edit.snapDrag then edit.dragEndpoint,
+ *                 exactly the 2D handle drag, so every wall joined there follows.
  *   faceAxis      the line a grabbed face moves along, for the pointer maths.
  * Also the face vocabulary (which roles are wired, their names, why a face can't
  * be pulled) and the typed-distance parser (the wall panel's parser plus a sign).
@@ -29,23 +41,45 @@
  */
 import { parseTypedLength } from "@/app/studio/import/importFile";
 import type { EdgeRole } from "@/lib/handles3d/edges";
-import type { Opening, Plan, Vec3, Wall } from "@/types/plan";
-import { clampField, DOOR_HEIGHT_MIN, HEIGHT_RANGE, moveOpening, resizeOpeningEdge, resizeOpeningHead, resizeOpeningSill, roundTo, WINDOW_HEIGHT_MIN, wallRun } from "./edit";
-import { wallDirection } from "./geometry";
+import type { Opening, Plan, Vec2, Vec3, Wall } from "@/types/plan";
+import {
+  clampField,
+  DOOR_HEIGHT_MIN,
+  dragEndpoint,
+  dragWallBody,
+  HEIGHT_RANGE,
+  MIN_WALL_LENGTH,
+  moveOpening,
+  resizeOpeningEdge,
+  resizeOpeningHead,
+  resizeOpeningSill,
+  roundTo,
+  snapDrag,
+  THICKNESS_RANGE,
+  WINDOW_HEIGHT_MIN,
+  wallRun,
+  type JointMove,
+  type Snap,
+} from "./edit";
+import { clampOpening, dist, isFreeEnd, JOINT_EPS, wallDirection, wallLength, wallNormal } from "./geometry";
 import type { FaceRole } from "./meshBuilders";
+import { deriveRooms } from "./rooms";
 
 /** A pull snaps to this many metres; Alt turns it off (distances are then rounded to 1 cm). */
 export const PULL_STEP = 0.05;
 
-export const NOT_YET = "Not yet";
-/** What the Move tool says over a wall: walls move in 4.7c. */
-export const MOVE_WALL = "Wall moves arrive with the side faces";
+/** Why a wall end at a joint can't be pulled. Such ends are hidden (meshBuilders) and never hovered; this is the store's guard. */
+export const HIDDEN_END = "Wall ends at a joint can't be pulled. Drag the corner with Move.";
+/** What the Move tool says over a wall top, and over a free wall end. */
+export const MOVE_TOP = "Pull the top with Push/Pull";
+export const MOVE_END = "Drag the corner to move a wall end";
 
 /** The faces of an opening's hole. */
 export const isOpeningRole = (role: FaceRole): role is EdgeRole => role === "jambA" || role === "jambB" || role === "head" || role === "sill";
-
-/** Which face roles do something: the wall top and an opening's faces. Wall ends and sides highlight and say "Not yet". */
-export const isWired = (role: FaceRole): boolean => role === "top" || isOpeningRole(role);
+export type SideRole = "sideLeft" | "sideRight";
+export type EndRole = "endA" | "endB";
+export const isSideRole = (role: FaceRole): role is SideRole => role === "sideLeft" || role === "sideRight";
+export const isEndRole = (role: FaceRole): role is EndRole => role === "endA" || role === "endB";
 
 const ROLE_NAMES: Record<FaceRole, string> = {
   top: "Wall top",
@@ -247,13 +281,24 @@ export interface FaceRef {
   openingId: string | null;
 }
 
+/** Is this face one anyone can see? Only a wall end can be hidden at the plan level: one at a joint (meshBuilders' rule). */
+export function faceExposed(plan: Pick<Plan, "walls">, face: FaceRef): boolean {
+  if (!isEndRole(face.role)) return true;
+  const wall = plan.walls.find((w) => w.id === face.wallId);
+  return !!wall && isFreeEnd(plan.walls, wall.id, face.role === "endA" ? wall.a : wall.b);
+}
+
 /** Why this face can't be pulled (or, with `move`, moved), in words; null when it can. */
 export function faceBlock(plan: Plan, face: FaceRef, move = false): string | null {
-  if (move) return face.openingId && plan.openings.some((o) => o.id === face.openingId) ? null : MOVE_WALL;
-  if (!isWired(face.role)) return NOT_YET;
-  if (!isOpeningRole(face.role)) return null;
-  const probe = face.openingId ? pullOpening(plan, face.openingId, face.role, 0) : null;
-  return probe ? probe.refused : "That opening is no longer in the plan.";
+  if (face.openingId) {
+    if (move) return plan.openings.some((o) => o.id === face.openingId) ? null : "That opening is no longer in the plan.";
+    const probe = isOpeningRole(face.role) ? pullOpening(plan, face.openingId, face.role, 0) : null;
+    return probe ? probe.refused : "That opening is no longer in the plan.";
+  }
+  if (!plan.walls.some((w) => w.id === face.wallId)) return "That wall is no longer in the plan.";
+  if (!faceExposed(plan, face)) return HIDDEN_END;
+  if (move) return face.role === "top" ? MOVE_TOP : isEndRole(face.role) ? MOVE_END : null;
+  return null;
 }
 
 // ---------------------------------------------------------------- the line a face moves along
@@ -267,6 +312,7 @@ export interface FaceAxis {
 }
 
 const UP: Vec3 = { x: 0, y: 1, z: 0 };
+const scale = (v: Vec2, k: number): Vec2 => ({ x: v.x * k, y: v.y * k });
 
 /**
  * Where a grabbed face moves: a wall top up through the grab point; an opening's
@@ -276,6 +322,13 @@ const UP: Vec3 = { x: 0, y: 1, z: 0 };
  */
 export function faceAxis(plan: Plan, face: FaceRef, move: boolean, grabPoint: Vec3): FaceAxis | null {
   if (!move && face.role === "top") return { anchor: grabPoint, axis: UP, sign: 1 };
+  if (!face.openingId && (isSideRole(face.role) || isEndRole(face.role))) {
+    // a wall side: its outward normal; a wall end: along the wall, out of that end. Both through the grab point, + = outward.
+    const w = plan.walls.find((x) => x.id === face.wallId);
+    if (!w) return null;
+    const v = face.role === "sideLeft" ? wallNormal(w) : face.role === "sideRight" ? scale(wallNormal(w), -1) : face.role === "endB" ? wallDirection(w) : scale(wallDirection(w), -1);
+    return { anchor: grabPoint, axis: { x: v.x, y: 0, z: v.y }, sign: 1 };
+  }
   const o = face.openingId ? plan.openings.find((x) => x.id === face.openingId) : undefined;
   const wall = o && plan.walls.find((w) => w.id === o.wallId);
   if (!o || !wall) return null;
@@ -296,4 +349,238 @@ export function faceAxis(plan: Plan, face: FaceRef, move: boolean, grabPoint: Ve
     default:
       return null;
   }
+}
+
+// ---------------------------------------------------------------- wall sides, wall ends, corners (4.7c)
+
+export interface WallPull {
+  kind: "wall";
+  /** "thickness": a side pulled with the opposite face fixed; "move": the run slid sideways; "end": a free end pulled along the wall. */
+  mode: "thickness" | "move" | "end";
+  wallId: string;
+  /** The pieces of the straight wall that changed (the run; for an end, the one piece). */
+  pieceIds: string[];
+  requested: number;
+  /** How far the face really went, + = outward. Differs from `requested` at a limit. */
+  distance: number;
+  /** The plan's walls afterwards, and the edits that make them: thickness per piece, then joint moves (planStore.moveWallEndpoint). */
+  walls: Wall[];
+  thickness: { id: string; thickness: number }[];
+  moves: JointMove[];
+  /** Openings that must change so they stay where they were (an a end pulled moves the offsets' origin). */
+  openings: { id: string; changes: Pick<Opening, "offset" | "width"> }[];
+  /** "Thickness 0.35 m (opposite face fixed)", "Wall moves 0.50 m", "Length 6.35 m (other end fixed)". */
+  value: string;
+  /** Rooms whose net area changes: "Bedroom 1 shrinks to 13.5 m²". Null when none does. */
+  rooms: string | null;
+  /** Plain words for why it stopped short, or null. */
+  note: string | null;
+  /** Set when this face can't be pulled at all; nothing changes. */
+  refused: string | null;
+}
+
+const fmt = (m: number) => `${m.toFixed(2)} m`;
+/** Round towards zero to 1 cm: a distance a limit cut short, kept on whole centimetres and still inside the limit. */
+const towardZero = (v: number) => roundTo(Math.trunc(roundTo(v, 1e-6) / 0.01) * 0.01, 0.01);
+
+/** Which rooms change area when the walls become `walls`: "Bedroom 1 shrinks to 13.5 m²; Bedroom 2 grows to 16.2 m²". */
+export function roomChanges(plan: Plan, walls: Wall[]): string | null {
+  const before = new Map(deriveRooms(plan).map((r) => [r.id, r]));
+  const out: string[] = [];
+  for (const r of deriveRooms({ ...plan, walls }, plan)) {
+    const old = before.get(r.id);
+    if (!old || Math.abs(r.area - old.area) < 0.005) continue;
+    out.push(`${r.name} ${r.area < old.area ? "shrinks" : "grows"} to ${r.area.toFixed(1)} m²`);
+  }
+  if (out.length > 2) return `${out.slice(0, 2).join("; ")}; ${out.length - 2} more room${out.length > 3 ? "s" : ""} change${out.length > 3 ? "" : "s"}`;
+  return out.length ? out.join("; ") : null;
+}
+
+/**
+ * Pull one side face of `wallId` by `distance` metres, + = outward (away from the
+ * centre line). Default: the whole straight run (wallRun) gets `distance` thicker
+ * with the OPPOSITE face fixed — each piece keeps its own thickness plus d, and the
+ * run's centre line slides d/2 towards the pulled side with edit.dragWallBody, so
+ * walls joined at its ends or standing on it stretch by the existing rules. d is held
+ * to every piece's THICKNESS_RANGE and to the 0.2 m minimum length of any wall that
+ * stretches; the reason is in `note`. With `move` the run slides `distance` sideways
+ * instead, thickness unchanged (Shift on a side, and the Move tool). There is no
+ * piece-only version: thickening one piece of a run would break its straight line
+ * (its centre would step off the others'), so Alt only turns snapping off here.
+ */
+export function pullWallSide(plan: Plan, wallId: string, side: SideRole, distance: number, opts: { move?: boolean } = {}): WallPull | null {
+  const wall = plan.walls.find((w) => w.id === wallId);
+  if (!wall) return null;
+  const out = side === "sideLeft" ? 1 : -1; // the pulled side, along the picked piece's left normal (dragWallBody's direction)
+  const run = wallRun(plan, wallId);
+  const base = { kind: "wall" as const, wallId, pieceIds: run, requested: distance, openings: [], refused: null };
+
+  /** Slide the run's centre line `shift` m towards the pulled side; a limit cuts it back to whole centimetres of d. */
+  const slideBy = (shift: number, perCm: number) => {
+    let body = dragWallBody(plan.walls, wallId, out * shift);
+    const limited = body.limited ?? null;
+    if (limited) {
+      // d on whole centimetres (thickness: d = 2 × shift). A wall left at exactly 0.2 m can read 0.19999999999999998 and
+      // still count as too short, so step one more centimetre back until the slide is clear.
+      let k = towardZero((out * body.offset) / perCm);
+      for (let i = 0; i < 3; i++) {
+        const next = dragWallBody(plan.walls, wallId, out * k * perCm);
+        body = next;
+        if (!next.limited || k === 0) break;
+        k = roundTo(k - Math.sign(k) * 0.01, 0.01);
+      }
+    }
+    return { body, limited };
+  };
+
+  if (opts.move) {
+    const { body, limited } = slideBy(distance, 1);
+    const moved = roundTo(out * body.offset, 1e-9);
+    return { ...base, mode: "move", distance: moved, walls: body.walls, thickness: [], moves: body.moves, value: `Wall moves ${fmt(Math.abs(moved))}`, rooms: roomChanges(plan, body.walls), note: limited };
+  }
+
+  // thickness: the run's thinnest and thickest pieces set the range of d
+  const pieces = run.map((id) => plan.walls.find((w) => w.id === id)!);
+  const [lo, hi] = THICKNESS_RANGE;
+  // the pieces that set the range; on a tie the picked piece, so the reason names it and not "another piece"
+  const picked = pieces.find((p) => p.id === wallId)!;
+  const thinnest = pieces.reduce((p, q) => (q.thickness < p.thickness ? q : p), picked);
+  const thickest = pieces.reduce((p, q) => (q.thickness > p.thickness ? q : p), picked);
+  let d = distance;
+  let note: string | null = null;
+  // Compare the same rounded value clampField sees, so a sum like 0.0499999999999 that rounds to 0.05 is not a limit
+  // in one place and fine in the other.
+  const after = (piece: Wall) => roundTo(piece.thickness + d, 1e-9);
+  const limitBy = (piece: Wall) => {
+    const why = clampField(after(piece), THICKNESS_RANGE, "Thickness").note ?? "";
+    note = piece.id === wallId ? why : `Another piece of the wall stopped it: ${why.charAt(0).toLowerCase()}${why.slice(1)}`;
+  };
+  if (after(thinnest) < lo) {
+    limitBy(thinnest);
+    d = lo - thinnest.thickness;
+  } else if (after(thickest) > hi) {
+    limitBy(thickest);
+    d = hi - thickest.thickness;
+  }
+  const { body, limited } = slideBy(d / 2, 0.5);
+  if (limited) {
+    d = roundTo((out * body.offset) * 2, 1e-9);
+    note = limited;
+  }
+  const thickness = pieces.map((p) => ({ id: p.id, thickness: roundTo(p.thickness + d, 1e-9) }));
+  const set = new Map(thickness.map((t) => [t.id, t.thickness]));
+  const walls = body.walls.map((w) => (set.has(w.id) ? { ...w, thickness: set.get(w.id)! } : w));
+  return {
+    ...base,
+    mode: "thickness",
+    distance: roundTo(d, 1e-9),
+    walls,
+    thickness: thickness.filter((t) => t.thickness !== plan.walls.find((w) => w.id === t.id)!.thickness),
+    moves: body.moves,
+    value: `Thickness ${fmt(set.get(wallId)!)} (opposite face fixed)`,
+    rooms: roomChanges(plan, walls),
+    note,
+  };
+}
+
+/**
+ * Pull a FREE end of `wallId` by `distance` metres along the wall's own line,
+ * + = outward (longer), the other end fixed (edit.dragEndpoint to a point on the
+ * line). Never shorter than MIN_WALL_LENGTH: it stops there with the reason. An end
+ * at a joint is refused (it is hidden in 3D; drag the corner instead). Pulling the
+ * a end moves the origin openings are measured from, so their offsets shift by the
+ * same amount and they stay where they were (then clampOpening).
+ */
+export function pullWallEnd(plan: Plan, wallId: string, end: EndRole, distance: number): WallPull | null {
+  const wall = plan.walls.find((w) => w.id === wallId);
+  if (!wall) return null;
+  const key = end === "endA" ? "a" : "b";
+  const base = { kind: "wall" as const, mode: "end" as const, wallId, pieceIds: [wallId], requested: distance, thickness: [], openings: [], rooms: null, note: null };
+  if (!isFreeEnd(plan.walls, wallId, wall[key])) return { ...base, distance: 0, walls: plan.walls, moves: [], value: "", refused: HIDDEN_END };
+
+  const len = wallLength(wall);
+  let length = len + distance;
+  let note: string | null = null;
+  if (length < MIN_WALL_LENGTH) {
+    length = MIN_WALL_LENGTH;
+    note = `Stopped here: walls can't be shorter than ${MIN_WALL_LENGTH.toFixed(2)} m.`;
+  }
+  const fixed = key === "a" ? wall.b : wall.a;
+  const u = { x: (wall[key].x - fixed.x) / len, y: (wall[key].y - fixed.y) / len }; // out of the pulled end
+  const to = { x: roundTo(fixed.x + u.x * length, 1e-9), y: roundTo(fixed.y + u.y * length, 1e-9) };
+  const drag = dragEndpoint(plan.walls, wallId, key, to);
+  const moved = drag.walls.find((w) => w.id === wallId)!;
+  const shift = wallLength(moved) - len;
+  const openings = key === "a"
+    ? plan.openings.filter((o) => o.wallId === wallId).map((o) => {
+        const c = clampOpening({ ...o, offset: o.offset + shift }, moved);
+        return { id: o.id, changes: { offset: roundTo(c.offset, 1e-9), width: c.width } };
+      })
+    : [];
+  const runLength = wallRun({ walls: drag.walls }, wallId).reduce((s, id) => s + wallLength(drag.walls.find((w) => w.id === id)!), 0);
+  return {
+    ...base,
+    distance: roundTo(shift, 1e-9),
+    walls: drag.walls,
+    moves: [{ wallId, end: key, from: wall[key], to: drag.point }],
+    openings,
+    value: `Length ${fmt(runLength)} (other end fixed)`,
+    note: note ?? drag.limited ?? null,
+    refused: null,
+  };
+}
+
+/** A joint of the plan: one wall end there (any will do; dragEndpoint moves every end at the joint), its walls and its height. */
+export interface Corner {
+  point: Vec2;
+  wallId: string;
+  end: "a" | "b";
+  /** Every wall with an end at this joint. */
+  wallIds: string[];
+  /** The tallest of them: the corner is drawn from the floor up to here. */
+  height: number;
+}
+
+/** Every distinct joint of the plan, once each. */
+export function planCorners(plan: Pick<Plan, "walls">): Corner[] {
+  const out: Corner[] = [];
+  for (const w of plan.walls) {
+    if (wallLength(w) < JOINT_EPS) continue;
+    for (const end of ["a", "b"] as const) {
+      const at = out.find((c) => dist(c.point, w[end]) < JOINT_EPS);
+      if (at) {
+        at.wallIds.push(w.id);
+        at.height = Math.max(at.height, w.height);
+      } else out.push({ point: w[end], wallId: w.id, end, wallIds: [w.id], height: w.height });
+    }
+  }
+  return out;
+}
+
+export interface CornerPull {
+  kind: "corner";
+  /** Where the joint landed and how it snapped (snapDrag's kind; null with Alt). */
+  point: Vec2;
+  snap: Snap["kind"];
+  walls: Wall[];
+  /** The walls joined there and their lengths afterwards (up to three, for the label). */
+  lengths: { id: string; length: number }[];
+  note: string | null;
+}
+
+/**
+ * Drag the joint at `wallId`'s `end` to `to` (plan metres): edit.snapDrag (wall ends,
+ * midpoints, 45°/90° from the wall's other end, the 5 cm grid; `free` = Alt: 1 cm)
+ * then edit.dragEndpoint, the 2D handle drag's own rule, so every wall joined there
+ * follows, walls at other angles tilt, and none gets shorter than 0.2 m.
+ */
+export function dragCorner(plan: Plan, wallId: string, end: "a" | "b", to: Vec2, opts: { radius: number; free?: boolean }): CornerPull | null {
+  const wall = plan.walls.find((w) => w.id === wallId);
+  if (!wall) return null;
+  const joint = wall[end];
+  const snap = snapDrag(to, plan.walls, { from: end === "a" ? wall.b : wall.a, radius: opts.radius, free: opts.free, exclude: joint });
+  const drag = dragEndpoint(plan.walls, wallId, end, snap.point);
+  const ids = plan.walls.filter((w) => dist(w.a, joint) < JOINT_EPS || dist(w.b, joint) < JOINT_EPS).map((w) => w.id);
+  const lengths = ids.slice(0, 3).map((id) => ({ id, length: wallLength(drag.walls.find((w) => w.id === id)!) }));
+  return { kind: "corner", point: drag.point, snap: snap.kind, walls: drag.walls, lengths, note: drag.limited ?? null };
 }
