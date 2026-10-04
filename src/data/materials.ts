@@ -27,6 +27,7 @@ export const SCENE_COLORS = {
   door: "#7d6446",
   glass: "#a9c8d8",
   toolHighlight: "#6cb6ff", // light blue: what a 3D tool (Push/Pull, Move) would act on
+  outline: "#a9823f", // = gilt: the selected imported model's (or part's) outline
   gridCell: "#cfc5b3", // = stone
   gridSection: "#6f675c", // = smoke
 };

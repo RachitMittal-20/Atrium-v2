@@ -7,12 +7,17 @@
  *                   Paths are how Item.import.nodeOverrides names a node, so they must
  *                   come out the same on every parse of the same file.
  *   nodeAt          the node at a path, or null.
- *   applyOverrides  hide (invisible) or delete (removed) nodes of a CLONE. Never call it
- *                   on the cached original: assetCache shares that between items.
+ *   applyOverrides  move parts (applyPartTransforms), hide (invisible) or delete (removed)
+ *                   nodes of a CLONE. Never call it on the cached original: assetCache
+ *                   shares that between items.
+ *   partBox, pickPart, applyPartTransforms  parts (step I.1b): a part's original box in
+ *                   the model frame (its pivot is the bottom centre), which part a click
+ *                   means, and its move / turn / scale put on a clone.
  *   countTriangles  triangles in every mesh (indexed or not).
  *   applyUpAxis     turns a Z-up model to the plan's Y-up.
  *   placeOnFloor    moves an object so its lowest point is at y = 0.
- *   guessUnit       which unit the file was drawn in, from its size.
+ *   guessUnit       which unit the file was drawn in: declared, else the last unit used,
+ *                   else metric nearest 1.5 m; and whether that is ambiguous.
  *   modelFrame      the base point (bottom centre of the bounding box, metres) and size
  *                   of a model under a unit and an up axis.
  *   visibleBox      the bounding box of the meshes an item still shows.
@@ -24,7 +29,8 @@
  * src/components/plan2d/PlanCanvas.tsx, src/components/studio/{ItemPanel,ImportModelDialog}.tsx.
  */
 import * as THREE from "three";
-import type { Item, NodeOverride, Vec2, Vec3 } from "@/types/plan";
+import type { Item, NodeOverride, PartTransform, Vec2, Vec3 } from "@/types/plan";
+import { isIdentityTransform } from "./transform";
 
 // ---------------------------------------------------------------- node paths
 
@@ -72,18 +78,172 @@ export function nodeAt(root: THREE.Object3D, path: string): THREE.Object3D | nul
 }
 
 /**
- * Apply hidden / deleted overrides to `clone` in place: a hidden node is made
- * invisible, a deleted one is removed from its parent. Paths are resolved before
- * anything is removed, so removing one node never shifts another's path. Unknown
- * paths (a file that changed) are ignored.
+ * Apply an item's overrides to `clone` in place: each part's transform first (see
+ * applyPartTransforms; pivots come from `pivotRoot`, the cached original, or the clone
+ * before anything is removed), then a hidden node is made invisible and a deleted one
+ * is removed from its parent. Paths are resolved before anything is removed, so removing
+ * one node never shifts another's path; every node of the clone is tagged with its path
+ * in the ORIGINAL (userData.importPath) and its matrix as the file made it
+ * (userData.importBase). Unknown paths (a file that changed) are ignored. A deleted
+ * parent takes its children with it, but their transforms stay in the plan, so Restore
+ * brings them back exactly. Never call it on the cached original.
  */
-export function applyOverrides(clone: THREE.Object3D, overrides: Record<string, NodeOverride>): void {
-  const found = Object.entries(overrides).map(([path, o]) => ({ node: nodeAt(clone, path), o }));
+export function applyOverrides(clone: THREE.Object3D, overrides: Record<string, NodeOverride>, frame: ModelFrameInfo = { unitToMetres: 1, upAxis: "y" }, pivotRoot?: THREE.Object3D): void {
+  tagNodes(clone);
+  applyPartTransforms(clone, overrides, frame, pivotRoot ?? clone);
+  const found = Object.entries(overrides).map(([path, o]) => ({ node: findNode(clone, path), o }));
   for (const { node, o } of found) {
     if (!node) continue;
     if (o.hidden) node.visible = false;
     if (o.deleted && node !== clone) node.removeFromParent();
   }
+}
+
+// ---------------------------------------------------------------- parts (step I.1b)
+
+export interface ModelFrameInfo {
+  unitToMetres: number;
+  upAxis: "y" | "z";
+}
+
+/**
+ * The model frame (metres, Y up) from the file's own: F = scale(unit) · tilt(up axis),
+ * the same nesting ImportedItems draws (a unit group around an up-axis group).
+ */
+export function frameMatrix(frame: ModelFrameInfo): THREE.Matrix4 {
+  const k = frame.unitToMetres;
+  return new THREE.Matrix4().makeScale(k, k, k).multiply(new THREE.Matrix4().makeRotationX(upTilt(frame.upAxis)));
+}
+
+/** A node's matrix as the file made it: the one recorded when the clone was tagged, else its own. */
+function baseMatrix(o: THREE.Object3D): THREE.Matrix4 {
+  const b = o.userData.importBase as number[] | undefined;
+  if (b) return new THREE.Matrix4().fromArray(b);
+  return o.matrixAutoUpdate ? new THREE.Matrix4().compose(o.position, o.quaternion, o.scale) : o.matrix.clone();
+}
+
+/** Tag every node of a clone with its path and original matrix (once: the tags are what later calls rely on). */
+function tagNodes(clone: THREE.Object3D): void {
+  if (typeof clone.userData.importPath === "string") return;
+  const tag = (o: THREE.Object3D, path: string) => {
+    o.userData.importBase = baseMatrix(o).toArray(); // a plain array: userData is copied as JSON by three's clone()
+    o.userData.importAuto = o.matrixAutoUpdate;
+    o.userData.importPath = path;
+  };
+  for (const n of nodePaths(clone)) tag(n.object, n.path);
+  tag(clone, "");
+}
+
+/** The node at `path`: by its tag in a tagged clone (deletions shift indices), else by child indices. */
+function findNode(root: THREE.Object3D, path: string): THREE.Object3D | null {
+  if (typeof root.userData.importPath !== "string") return nodeAt(root, path);
+  let found: THREE.Object3D | null = null;
+  root.traverse((o) => {
+    if (!found && o.userData.importPath === path) found = o;
+  });
+  return found;
+}
+
+/** The original matrix from `root` (its own transform included) down to `o` (included): where the file put `o`. */
+function chainTo(root: THREE.Object3D, o: THREE.Object3D): THREE.Matrix4 {
+  const list: THREE.Object3D[] = [];
+  for (let x: THREE.Object3D | null = o; x; x = x === root ? null : x.parent) list.push(x);
+  return list.reverse().reduce((m, x) => m.multiply(baseMatrix(x)), new THREE.Matrix4());
+}
+
+/** The bounding box (model frame, metres) of a part as the file made it, every mesh below it counted; null when there is none. */
+export function partBox(root: THREE.Object3D, path: string, frame: ModelFrameInfo): Box | null {
+  const node = findNode(root, path);
+  if (!node) return null;
+  const F = frameMatrix(frame);
+  const box = new THREE.Box3();
+  node.traverse((o) => {
+    const g = isMesh(o) ? o.geometry : null;
+    if (!g?.attributes?.position) return;
+    const local = g.boundingBox?.clone() ?? new THREE.Box3().setFromBufferAttribute(g.attributes.position as THREE.BufferAttribute); // never writes to a shared geometry
+    box.union(local.applyMatrix4(F.clone().multiply(chainTo(root, o))));
+  });
+  return box.isEmpty() ? null : { min: { x: box.min.x, y: box.min.y, z: box.min.z }, max: { x: box.max.x, y: box.max.y, z: box.max.z } };
+}
+
+/** A part's pivot: the centre of its original box, at its lowest point (model frame). */
+export const pivotOf = (b: Box): Vec3 => ({ x: (b.min.x + b.max.x) / 2, y: b.min.y, z: (b.min.z + b.max.z) / 2 });
+
+/** X: scale by s and turn by rotY about `pivot`, then move by t (model frame). */
+export function partMatrix(t: PartTransform, pivot: Vec3): THREE.Matrix4 {
+  return new THREE.Matrix4()
+    .makeTranslation(pivot.x + t.t[0], pivot.y + t.t[1], pivot.z + t.t[2])
+    .multiply(new THREE.Matrix4().makeRotationY(t.rotY))
+    .multiply(new THREE.Matrix4().makeScale(t.s, t.s, t.s))
+    .multiply(new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z));
+}
+
+/**
+ * Put every part transform in `overrides` on a tagged clone, undoing earlier ones first,
+ * so it can run again on every change without rebuilding the clone. For a node N whose
+ * parent's ORIGINAL model-frame matrix is P (F times the file's matrices from the root),
+ * its new local matrix is P⁻¹ · X · P · L (X = partMatrix, L = N's own original matrix):
+ * pre-multiplied in the model frame, converted into the parent's space. Its world
+ * matrix is then X · (where the file put it) whatever the parent does, so children
+ * follow their parent, a part inside a moved parent turns about its own carried pivot,
+ * and a parent with its own rotation and non-uniform scale still works (the matrix is
+ * set directly, never decomposed, so a shear is kept exactly).
+ */
+export function applyPartTransforms(clone: THREE.Object3D, overrides: Record<string, NodeOverride>, frame: ModelFrameInfo, pivotRoot: THREE.Object3D = clone): void {
+  tagNodes(clone);
+  const byPath = new Map<string, THREE.Object3D>();
+  clone.traverse((o) => void byPath.set(String(o.userData.importPath), o));
+  for (const o of byPath.values()) {
+    if (!o.userData.importMoved) continue;
+    o.matrix.fromArray(o.userData.importBase as number[]); // back to the file's own place
+    o.matrix.decompose(o.position, o.quaternion, o.scale);
+    o.matrixAutoUpdate = o.userData.importAuto !== false;
+    o.matrixWorldNeedsUpdate = true;
+    o.userData.importMoved = false;
+  }
+  const F = frameMatrix(frame);
+  for (const [path, o] of Object.entries(overrides)) {
+    const node = o.transform && path !== "" && !isIdentityTransform(o.transform) ? byPath.get(path) : undefined;
+    const box = node?.parent ? partBox(pivotRoot, path, frame) : null;
+    if (!node?.parent || !box) continue;
+    const P = F.clone().multiply(chainTo(clone, node.parent));
+    node.matrix.copy(P.clone().invert().multiply(partMatrix(o.transform!, pivotOf(box))).multiply(P).multiply(baseMatrix(node)));
+    node.matrixAutoUpdate = false;
+    node.matrixWorldNeedsUpdate = true;
+    node.userData.importMoved = true;
+  }
+}
+
+/** A node's path below `root`: its tag in a tagged clone, else its child indices. */
+function pathOf(root: THREE.Object3D, node: THREE.Object3D): string {
+  if (typeof node.userData.importPath === "string") return node.userData.importPath;
+  const idx: number[] = [];
+  for (let x = node; x !== root && x.parent; x = x.parent) idx.push(x.parent.children.indexOf(x));
+  return idx.reverse().join("/");
+}
+
+/**
+ * The part a click on `hit` (a mesh of an item's clone) means, as a node path. Normally
+ * the HIGHEST node between the root and the mesh that has a real name (not "Object N"),
+ * so a click on a chair leg picks the chair; with `deep` (Alt-click) the mesh's own node.
+ * A named group that only wraps the whole model (the root's only child, and so on down)
+ * is passed over: picking it would be picking the item. With no named node: the mesh's
+ * own. Null when `hit` is not below `root`.
+ */
+export function pickPart(root: THREE.Object3D, hit: THREE.Object3D, opts: { deep: boolean }): string | null {
+  const chain: THREE.Object3D[] = []; // from the mesh up to just below the root
+  let x: THREE.Object3D | null = hit;
+  while (x && x !== root) {
+    chain.push(x);
+    x = x.parent;
+  }
+  if (x !== root || chain.length === 0) return null;
+  if (opts.deep) return pathOf(root, chain[0]);
+  const top = chain.reverse(); // from just below the root down to the mesh
+  let first = 0;
+  while (first < top.length - 1 && top[first].parent!.children.length === 1) first++; // wrappers of the whole model
+  const named = top.slice(first).find((o) => o.name.trim() !== "");
+  return pathOf(root, named ?? top[top.length - 1]);
 }
 
 // ---------------------------------------------------------------- counting
@@ -149,16 +309,35 @@ export interface UnitGuess {
   chosen: UnitCandidate;
   /** Every unit, in the order m, cm, mm, in, ft (a file's own unit that is none of them comes first). */
   candidates: UnitCandidate[];
+  /** No unit stated, and two or more units give a plausible size, and those sizes differ by more than 2×:
+   *  the dialog says so and asks the user to compare with a 1.8 m figure. */
+  ambiguous: boolean;
 }
 
+/** The size a guess aims for (m): a piece of furniture. */
+export const TYPICAL_M = 1.5;
+/** Ties in the guess go in this order (the metric units first, then the imperial ones). */
+const TIE_ORDER: UnitId[] = ["m", "cm", "mm", "in", "ft"];
+const METRIC: UnitId[] = ["m", "cm", "mm"];
+/** Plausible sizes further apart than this make the guess ambiguous. */
+export const AMBIGUOUS_RATIO = 2;
+
 /**
- * The unit a model was drawn in. A unit the file states (`detected`, metres per
- * unit: COLLADA's <unit meter>, glTF's metres) wins. Otherwise the first of m,
- * cm, mm, in, ft under which the largest side is between 0.2 m and 60 m; metres
- * when none is. Every candidate comes back with its resulting size, so the
- * dialog can show them all.
+ * The unit a model was drawn in (rule from step I.1b-fix):
+ *   (a) a unit the file declares wins (`detected`, metres per unit: COLLADA's <unit meter>,
+ *       glTF's metres);
+ *   (b) otherwise the candidates are the units of m, cm, mm, in, ft under which the largest
+ *       side is 0.2–60 m;
+ *   (c) the unit the user chose on their LAST import (`lastUnit`, remembered by the browser,
+ *       never in the plan) wins when it is among them;
+ *   (d) otherwise the metric candidate (m, cm, mm) nearest 1.5 m on a log scale
+ *       (smallest |ln(size / 1.5 m)|);
+ *   (e) only when no metric unit fits, the imperial one nearest 1.5 m; metres when none fits.
+ * `ambiguous`: no declared unit, two or more candidates, and their sizes differ by more than
+ * 2× (a 120-unit table: 1.2 m in cm or 3.05 m in inches). Every candidate comes back with
+ * its resulting size, so the dialog can show them all.
  */
-export function guessUnit(size: Vec3, detected: number | null): UnitGuess {
+export function guessUnit(size: Vec3, detected: number | null, lastUnit: UnitId | null = null): UnitGuess {
   const at = (unit: UnitId, label: string, toMetres: number): UnitCandidate => {
     const s = { x: size.x * toMetres, y: size.y * toMetres, z: size.z * toMetres };
     const longest = Math.max(s.x, s.y, s.z);
@@ -167,11 +346,19 @@ export function guessUnit(size: Vec3, detected: number | null): UnitGuess {
   const candidates = UNITS.map((u) => at(u.id, u.label, u.toMetres));
   if (detected !== null && detected > 0) {
     const same = candidates.find((c) => Math.abs(c.toMetres - detected) <= detected * 1e-6);
-    if (same) return { chosen: same, candidates };
+    if (same) return { chosen: same, candidates, ambiguous: false };
     const own = at("file", `The file's unit (${Number(detected.toPrecision(4))} m)`, detected);
-    return { chosen: own, candidates: [own, ...candidates] };
+    return { chosen: own, candidates: [own, ...candidates], ambiguous: false };
   }
-  return { chosen: candidates.find((c) => c.plausible) ?? candidates[0], candidates };
+  const longest = (c: UnitCandidate) => Math.max(c.size.x, c.size.y, c.size.z);
+  const off = (c: UnitCandidate) => Math.abs(Math.log(longest(c) / TYPICAL_M));
+  const nearest = (list: UnitCandidate[]) => [...list].sort((p, q) => (Math.abs(off(p) - off(q)) > 1e-12 ? off(p) - off(q) : TIE_ORDER.indexOf(p.unit) - TIE_ORDER.indexOf(q.unit)))[0];
+  const fits = candidates.filter((c) => c.plausible);
+  if (fits.length === 0) return { chosen: candidates[0], candidates, ambiguous: false };
+  const metric = fits.filter((c) => METRIC.includes(c.unit));
+  const chosen = fits.find((c) => c.unit === lastUnit) ?? (metric.length > 0 ? nearest(metric) : nearest(fits));
+  const sizes = fits.map(longest);
+  return { chosen, candidates, ambiguous: fits.length >= 2 && Math.max(...sizes) > AMBIGUOUS_RATIO * Math.min(...sizes) };
 }
 
 /** "3.2 × 2.1 × 0.8 m": width × depth × height, in the plan's Y-up frame. */

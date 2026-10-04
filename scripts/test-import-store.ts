@@ -65,6 +65,23 @@ async function main() {
   assert.ok(!raw.includes(Buffer.from(glb).toString("base64").slice(0, 40)), "not even base64-encoded");
   assert.ok(raw.length < serializePlan(samplePlan).length + 600, `and grows only by the item's settings (${raw.length} bytes)`);
 
+  // step I.1b: part transforms. An old plan whose nodeOverrides have no transform loads unchanged; one with part
+  // transforms round-trips; a bad transform makes the stored plan untrusted (ignored, like any other bad shape)
+  {
+    const withFlags = { ...structuredClone(samplePlan), items: [{ id: "i-flags", catalogId: `import:${id}`, position: { x: 1, y: 0, z: 1 }, rotationY: 0, scale: 1, colorOverrides: {}, import: { ...info, nodeOverrides: { "0": { hidden: true }, "1/2": { deleted: true } } } }] };
+    assert.deepEqual(parseStoredPlan(JSON.stringify({ schema: 1, savedAt: "2026-01-01T00:00:00.000Z", plan: withFlags })), withFlags, "I.1a nodeOverrides (no transform) load unchanged");
+    const moved = structuredClone(withFlags);
+    moved.items[0].import.nodeOverrides = { "0": { hidden: true, transform: { t: [0.25, -0.1, 0.5], rotY: 0.7853981633974483, s: 1.5 } }, "1/0": { transform: { t: [0, 0, 0.2], rotY: 0, s: 1 } } } as never;
+    const back = parseStoredPlan(serializePlan(moved as Plan));
+    assert.deepEqual(back, moved, "part transforms round-trip through planStorage");
+    for (const bad of [{ t: [0, 0], rotY: 0, s: 1 }, { t: [0, 0, 0], rotY: 0, s: 0 }, { t: [0, "1", 0], rotY: 0, s: 1 }, { t: [0, 0, 0], s: 1 }]) {
+      const broken = structuredClone(moved);
+      (broken.items[0].import.nodeOverrides as Record<string, unknown>)["1/0"] = { transform: bad };
+      assert.equal(parseStoredPlan(serializePlan(broken as Plan)), null, `a malformed transform is refused: ${JSON.stringify(bad)}`);
+    }
+    assert.ok(!serializePlan(moved as Plan).includes(MARK), "still no file bytes in the autosave");
+  }
+
   // imported models are meshes only: the validator, rooms and collision ignore them
   const withModel = s().plan;
   const without = { ...withModel, items: [] };

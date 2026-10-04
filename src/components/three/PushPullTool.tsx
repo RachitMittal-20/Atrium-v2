@@ -8,8 +8,11 @@
  * src/lib/plan/pushpull.ts, the pointer maths in src/lib/handles3d/{math,edges}.ts;
  * this file turns pointer events into those calls.
  *
- * - An imported 3D model (step I.1) nearest under the pointer is never a target: the tools
- *   hover nothing, say "Imported objects are edited in the panel", and a press there orbits.
+ * - An imported 3D model (step I.1) nearest under the pointer: Push/Pull hovers nothing, says
+ *   "Imported objects are edited with Move, Rotate and Scale", and a press there orbits. Move
+ *   (step I.1b) compares the model's distance (ItemTool's probe, through itemToolStore.bridge)
+ *   with the depth of what it would pick below (an opening's mesh or edge, a corner, a wall
+ *   face): the nearer wins, and a model that wins is hovered and dragged by ItemTool.
  * - What the pointer is over:
  *   1. Move only, first: a door's or window's frame, leaf or glass under the pointer (an
  *      opening within one wall thickness behind the nearest wall wins, edges.pickAlongRay).
@@ -89,7 +92,8 @@ import { buildWallMeshData, pickableFaceAt, type FaceRole, type WallFaceData } f
 import { faceAxis, faceBlock, isOpeningRole, isSideRole, planCorners } from "@/lib/plan/pushpull";
 import { usePlanStore } from "@/store/planStore";
 import { usePushPullStore, type CornerRef, type EdgeSeg, type Face } from "@/store/pushPullStore";
-import { is3dTool, useToolStore } from "@/store/toolStore";
+import { useItemToolStore } from "@/store/itemToolStore";
+import { isPushPullTool, useToolStore } from "@/store/toolStore";
 import { useViewStore } from "@/store/viewStore";
 import type { Plan, Vec2 } from "@/types/plan";
 
@@ -117,12 +121,14 @@ interface CornerPick {
   seg: EdgeSeg | null;
   marker: { x: number; y: number } | null;
   px: number;
+  /** How far from the camera the grabbed point of the corner's line is (m), to weigh it against an imported model. */
+  depth: number;
 }
 const isCorner = (h: Pick | CornerPick | null): h is CornerPick => !!h && "corner" in h;
 
 const NO_ORBIT = -1; // an action OrbitControls does not know: the gesture does nothing
-/** What both 3D tools say over an imported model (step I.1): they leave it alone. */
-export const IMPORTED_MESSAGE = "Imported objects are edited in the panel";
+/** What Push/Pull says over an imported model (steps I.1, I.1b): it leaves it alone. */
+export const IMPORTED_MESSAGE = "Imported objects are edited with Move, Rotate and Scale";
 const UP = { x: 0, y: 1, z: 0 };
 const v3 = (p: { x: number; y: number; z: number }) => new THREE.Vector3(p.x, p.y, p.z);
 
@@ -133,7 +139,7 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
   const get = useThree((s) => s.get);
   const tool = useToolStore((s) => s.tool);
   const walking = useViewStore((s) => s.mode === "walk");
-  const active = is3dTool(tool) && !walking;
+  const active = isPushPullTool(tool) && !walking;
   const moving = tool === "move";
   const plan = usePlanStore((s) => s.plan);
   const hover = usePushPullStore((s) => s.hover);
@@ -292,7 +298,8 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
         // The joint's line runs inside the walls' corner, so the walls there may stand in front of it by up to about their thickness.
         const slack = Math.max(...c.wallIds.map((id) => p.walls.find((w) => w.id === id)?.thickness ?? 0)) + OCCLUDE_EPS;
         if (!hiddenAt(new THREE.Vector3(c.point.x, r.t * c.height, c.point.y), walls, slack)) {
-          return { corner: { wallId: c.wallId, end: c.end, point: c.point }, height: c.height, t: r.t, seg: segOf(cornerLine(c.point, c.height)), marker: footOf(c.point), px: r.distancePx };
+          const depth = new THREE.Vector3(c.point.x, r.t * c.height, c.point.y).distanceTo(camera.position);
+          return { corner: { wallId: c.wallId, end: c.end, point: c.point }, height: c.height, t: r.t, seg: segOf(cornerLine(c.point, c.height)), marker: footOf(c.point), px: r.distancePx, depth };
         }
         screen.splice(screen.findIndex((s) => s.id === r.id), 1);
       }
@@ -310,6 +317,17 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
     const blockModel = (clientX: number, clientY: number) => {
       store.setState({ hover: null, corner: null, edge: null, marker: null, message: IMPORTED_MESSAGE });
       store.getState().setPointer(hostPoint(clientX, clientY));
+    };
+    /** Move: the imported model under the pointer when it is nearer than what `hit` found (ItemTool's probe), else null. */
+    const modelWins = (clientX: number, clientY: number, touch: boolean, hit: Pick | CornerPick | null) => {
+      const bridge = useItemToolStore.getState().bridge;
+      const model = bridge?.probe(clientX, clientY, touch) ?? null;
+      return model && (!hit || model.distance <= hit.depth) ? model : null;
+    };
+    /** Move over a model: ItemTool's hover, and nothing of Push/Pull's. */
+    const yieldToModel = (target: { itemId: string; path: string | null } | null) => {
+      useItemToolStore.getState().setHover(target);
+      if (target) store.setState({ hover: null, corner: null, edge: null, marker: null, message: null });
     };
 
     // ---- 1: a door's or window's own meshes (Move)
@@ -474,11 +492,16 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
         return;
       }
 
-      if (modelInFront(e.clientX, e.clientY)) {
+      if (!moving && modelInFront(e.clientX, e.clientY)) {
         blockModel(e.clientX, e.clientY); // an imported model: say where it is edited, and the press orbits
         return;
       }
       const hit = pick(e.clientX, e.clientY, touch);
+      if (moving && modelWins(e.clientX, e.clientY, touch, hit)) {
+        yieldToModel(null);
+        useItemToolStore.getState().bridge?.press(e); // the model is nearest: ItemTool drags it
+        return;
+      }
       if (!hit) return; // empty space and anything that is not a wall or opening: orbit as usual
       const r = canvas.getBoundingClientRect();
       if (isCorner(hit)) {
@@ -539,8 +562,13 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
         state.setHover(null); // orbiting: what was under the pointer has moved
         return;
       }
-      if (modelInFront(e.clientX, e.clientY)) return blockModel(e.clientX, e.clientY);
+      if (!moving && modelInFront(e.clientX, e.clientY)) return blockModel(e.clientX, e.clientY);
       const hit = pick(e.clientX, e.clientY, false);
+      if (moving) {
+        const model = modelWins(e.clientX, e.clientY, false, hit);
+        yieldToModel(model?.target ?? null);
+        if (model) return;
+      }
       if (isCorner(hit)) state.setCorner(hit.corner, hit.seg, hit.marker);
       else state.setHover(hit ? hit.face : null, hit?.seg ?? null);
     };
@@ -569,6 +597,7 @@ export function PushPullTool({ host }: { host: RefObject<HTMLDivElement | null> 
     };
 
     const onLeave = () => {
+      if (moving && !useItemToolStore.getState().drag) useItemToolStore.getState().setHover(null);
       if (!store.getState().pull) {
         store.getState().setHover(null);
         store.getState().setCorner(null);

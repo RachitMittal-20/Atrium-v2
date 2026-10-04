@@ -9,7 +9,8 @@
  * src/components/three/WalkControls.tsx watches `mode`: on entering it saves the
  * orbit camera into `savedOrbit`, on exiting it puts that camera back exactly.
  * `walkPose` is published by WalkControls at most 15 times a second; the live
- * pose lives in its refs.
+ * pose lives in its refs. `frame` asks the orbit camera to frame an imported model
+ * (Show in view, step I.1b); it is ignored while walking.
  *
  * Connects to: src/lib/walk/collision.ts, src/store/planStore.ts; read by
  * src/components/three/WalkControls.tsx, src/components/studio/{Scene3D,WalkOverlay}.tsx,
@@ -46,6 +47,11 @@ interface ViewState {
   eyeHeight: number;
   /** One line for the 3D pane, cleared by itself. */
   notice: string | null;
+  /** A request to frame an imported model with the orbit camera (step I.1b: Show in view, or right after an import,
+   *  `auto`: only when it isn't already fully in view). Carried out and cleared by src/components/three/ImportedItems.tsx. */
+  frame: { itemId: string; auto: boolean; n: number } | null;
+  requestFrame: (itemId: string, auto: boolean) => void;
+  clearFrame: () => void;
   /** True when walking started; false (with a notice) when the plan has no closed room. */
   enterWalk: () => boolean;
   exitWalk: () => void;
@@ -65,6 +71,7 @@ export const useViewStore = create<ViewState>((set, get) => ({
   savedOrbit: null,
   eyeHeight: 1.6,
   notice: null,
+  frame: null,
 
   enterWalk: () => {
     if (get().mode === "walk") return true;
@@ -85,6 +92,11 @@ export const useViewStore = create<ViewState>((set, get) => ({
     if (get().mode === "walk") set({ mode: "orbit" });
   },
   setPose: (walkPose) => set({ walkPose }),
+  requestFrame: (itemId, auto) => {
+    if (get().mode === "walk") return; // the walk camera is not the orbit camera's to move
+    set({ frame: { itemId, auto, n: (get().frame?.n ?? 0) + 1 } });
+  },
+  clearFrame: () => set({ frame: null }),
   setNotice: (notice, ms = NOTICE_MS) => {
     clearTimeout(noticeTimer);
     set({ notice });

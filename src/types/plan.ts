@@ -68,10 +68,26 @@ export interface Room {
 /** Model formats that can be imported in the browser (step I.1). */
 export type ImportFormat = "glb" | "gltf" | "obj" | "fbx" | "dae" | "stl" | "3ds";
 
+/**
+ * A part of an imported model moved, turned or scaled (step I.1b), in the MODEL frame:
+ * metres, Y up, after the file's unit and up axis and before the item's own position,
+ * rotationY and scale (so turning or scaling the item carries its parts). About the
+ * part's pivot: the centre of its ORIGINAL bounding box, at its lowest point.
+ */
+export interface PartTransform {
+  /** Where the pivot moves to, from where it was (m). */
+  t: [number, number, number];
+  /** Radians about the vertical through the pivot. */
+  rotY: number;
+  /** Uniform scale about the pivot. */
+  s: number;
+}
+
 /** Per-node changes to an imported model, keyed by the node's child-index path from the model root ("0/3/1"). */
 export interface NodeOverride {
   hidden?: boolean;
   deleted?: boolean;
+  transform?: PartTransform;
 }
 
 /**

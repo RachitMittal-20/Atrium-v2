@@ -8,11 +8,14 @@
  * While reading: the file name and Cancel. A refusal (.skp / .max, an unknown type,
  * over 50 MB, a damaged file…): the plain message and OK. After parsing, the review:
  *   - the name (editable);
- *   - a small 3D preview you can orbit, scaled to fit, which turns with the up axis;
+ *   - a small 3D preview you can orbit, at the chosen unit's size beside a 1.8 m standing
+ *     figure (scaled together to fit), which turns with the up axis;
  *   - Unit: metres, centimetres, millimetres, inches, feet (and the file's own unit
  *     when it states one that is none of these), the guess (model.guessUnit)
  *     pre-selected and the resulting size "3.2 × 2.1 × 0.8 m" (width × depth × height)
- *     under each;
+ *     under each, the plan's own size ("Your plan is 10.0 × 8.0 m") and, when the guess is
+ *     ambiguous (model.guessUnit), "Several sizes are possible. Compare with the 1.8 m
+ *     figure." with the guess still pre-selected;
  *   - Up axis: Y up or Z up, pre-selected from the file (glTF and COLLADA say; STL and
  *     3DS are usually Z up; anything else starts at Y);
  *   - "Show both sides of faces" (off) and "Place on the floor" (on);
@@ -29,6 +32,7 @@ import { SCENE_COLORS } from "@/data/materials";
 import { FORMAT_LABEL, type LoadedModel } from "@/lib/import/loadModel";
 import { formatSize, modelFrame, upTilt, type UnitCandidate } from "@/lib/import/model";
 import { useImportStore, type Review } from "@/store/importStore";
+import { usePlanStore } from "@/store/planStore";
 
 const BUTTON = "min-h-10 rounded border border-stone bg-vellum px-4 text-sm text-iron hover:bg-limestone disabled:opacity-50";
 const PRIMARY = "min-h-10 rounded bg-cyanotype px-4 text-sm text-vellum hover:opacity-90 disabled:opacity-50";
@@ -36,26 +40,56 @@ const PRIMARY = "min-h-10 rounded bg-cyanotype px-4 text-sm text-vellum hover:op
 /** A candidate's size as width × depth × height once the up axis is applied. */
 const sizeText = (c: UnitCandidate, up: "y" | "z") => (up === "z" ? formatSize(c.size.x, c.size.y, c.size.z) : formatSize(c.size.x, c.size.z, c.size.y));
 
-/** The model, scaled to a 2 m box and stood on its base, in its own little canvas. Shares the cached geometry: never disposes it. */
-function Preview({ model, up }: { model: LoadedModel; up: "y" | "z" }) {
-  const object = useMemo(() => cloneScene(model.root), [model]);
-  const f = modelFrame(model.box, 1, up);
-  const k = 2 / Math.max(f.width, f.depth, f.height, 1e-9);
+/** A person 1.8 m tall: a capsule body and a sphere head, standing at the origin. Not a character, a yardstick. */
+export const FIGURE_HEIGHT = 1.8;
+function Figure() {
   return (
-    <div className="h-44 w-full overflow-hidden rounded border border-stone" data-testid="import-preview">
+    <group name="figure-1.8m">
+      <mesh position={[0, 0.2 + 0.475, 0]}>
+        <capsuleGeometry args={[0.2, 0.95, 4, 12]} />
+        <meshStandardMaterial color={SCENE_COLORS.frame} />
+      </mesh>
+      <mesh position={[0, FIGURE_HEIGHT - 0.13, 0]}>
+        <sphereGeometry args={[0.13, 16, 12]} />
+        <meshStandardMaterial color={SCENE_COLORS.frame} />
+      </mesh>
+    </group>
+  );
+}
+
+/**
+ * The model at the chosen unit's size, stood on its base, with the 1.8 m figure beside it
+ * (0.3 m to its left), the pair scaled together to fit a 2.4 m box in its own little canvas.
+ * A wrong unit shows at once: a house the size of a shoe, or a chair as tall as a tower.
+ * Shares the cached geometry: never disposes it.
+ */
+function Preview({ model, up, toMetres }: { model: LoadedModel; up: "y" | "z"; toMetres: number }) {
+  const object = useMemo(() => cloneScene(model.root), [model]);
+  const f = modelFrame(model.box, toMetres, up); // metres
+  const figureX = -f.width / 2 - 0.3 - 0.2; // beside the model's left side
+  const span = { x0: figureX - 0.2, x1: f.width / 2, depth: Math.max(f.depth, 0.4), height: Math.max(f.height, FIGURE_HEIGHT) };
+  const k = 2.4 / Math.max(span.x1 - span.x0, span.depth, span.height, 1e-9);
+  const cx = (span.x0 + span.x1) / 2;
+  return (
+    <div className="h-44 w-full overflow-hidden rounded border border-stone" data-testid="import-preview" data-figure-m={FIGURE_HEIGHT}>
       <Canvas dpr={[1, 2]} camera={{ position: [2.6, 2, 2.6], fov: 40 }} aria-label="Preview of the model. Drag to turn it.">
         <color attach="background" args={[SCENE_COLORS.background]} />
         <hemisphereLight args={["#ffffff", "#b8ad98", 1.1]} />
         <directionalLight position={[3, 5, 2]} intensity={1.4} />
-        <group scale={k}>
+        <group scale={k} position={[-cx * k, 0, 0]}>
           <group position={[-f.base.x, -f.base.y, -f.base.z]}>
-            <group rotation={[upTilt(up), 0, 0]}>
-              <primitive object={object} dispose={null} />
+            <group scale={toMetres}>
+              <group rotation={[upTilt(up), 0, 0]}>
+                <primitive object={object} dispose={null} />
+              </group>
             </group>
+          </group>
+          <group position={[figureX, 0, 0]}>
+            <Figure />
           </group>
         </group>
         <gridHelper args={[3, 6, SCENE_COLORS.gridSection, SCENE_COLORS.gridCell]} />
-        <OrbitControls makeDefault target={[0, (f.height * k) / 2, 0]} />
+        <OrbitControls makeDefault target={[0, (span.height * k) / 2, 0]} />
       </Canvas>
     </div>
   );
@@ -69,6 +103,13 @@ function ReviewForm({ review, busy, error }: { review: Review; busy: boolean; er
   const [doubleSided, setDoubleSided] = useState(false);
   const [onFloor, setOnFloor] = useState(true);
   const chosen = guess.candidates.find((c) => c.unit === unit) ?? guess.chosen;
+  const walls = usePlanStore((s) => s.plan.walls);
+  const planSize = useMemo(() => {
+    if (walls.length === 0) return null;
+    const xs = walls.flatMap((w) => [w.a.x, w.b.x]);
+    const ys = walls.flatMap((w) => [w.a.y, w.b.y]);
+    return `${(Math.max(...xs) - Math.min(...xs)).toFixed(1)} × ${(Math.max(...ys) - Math.min(...ys)).toFixed(1)} m`;
+  }, [walls]);
   const { close, confirm } = useImportStore.getState();
   const stats: [string, string][] = [
     ["Format", FORMAT_LABEL[model.format]],
@@ -83,7 +124,7 @@ function ReviewForm({ review, busy, error }: { review: Review; busy: boolean; er
       className="flex max-h-[inherit] min-h-0 flex-col"
       onSubmit={(e) => {
         e.preventDefault();
-        void confirm({ name, unitToMetres: chosen.toMetres, upAxis: up, doubleSided, onFloor });
+        void confirm({ name, unit: chosen.unit, unitToMetres: chosen.toMetres, upAxis: up, doubleSided, onFloor });
       }}
     >
       <h2 id="import-h" className="font-display shrink-0 px-4 pt-4 text-lg">
@@ -95,7 +136,8 @@ function ReviewForm({ review, busy, error }: { review: Review; busy: boolean; er
           <input data-testid="import-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} maxLength={80} className="rounded border border-stone bg-vellum px-2 py-1.5 focus:bg-white/70" />
         </label>
 
-        <Preview model={model} up={up} />
+        <Preview model={model} up={up} toMetres={chosen.toMetres} />
+        <p className="-mt-2 text-xs text-smoke">The figure beside it is 1.8 m tall.</p>
 
         <fieldset>
           <legend className="mb-1 text-smoke">Unit the file was drawn in</legend>
@@ -119,6 +161,16 @@ function ReviewForm({ review, busy, error }: { review: Review; busy: boolean; er
           <p className="mt-1" data-testid="import-chosen-size" aria-live="polite">
             It will be {sizeText(chosen, up)}
           </p>
+          {planSize && (
+            <p className="mt-1 text-xs text-smoke" data-testid="import-plan-size">
+              Your plan is {planSize}
+            </p>
+          )}
+          {guess.ambiguous && (
+            <p className="mt-1 text-gilt" role="note" data-testid="import-ambiguous">
+              Several sizes are possible. Compare with the 1.8 m figure.
+            </p>
+          )}
         </fieldset>
 
         <fieldset>

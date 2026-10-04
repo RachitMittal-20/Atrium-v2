@@ -10,7 +10,11 @@
  * confirm: stores the original bytes in the asset store (IndexedDB) FIRST, so a
  * browser that can't store them adds nothing, caches the parsed scene under the
  * new asset id, then adds the item at the centre of the plan's bounding box (the
- * origin when there are no walls) as one undo step and selects it.
+ * origin when there are no walls) as one undo step, selects it, and asks the 3D view
+ * to bring it into view if it is not already (viewStore.requestFrame, step I.1b).
+ * openFiles times the read and parse (`parseMs`, for the dev-only debug hook). The unit chosen
+ * on each import is remembered in localStorage ("atrium.lastImportUnit", never in the plan)
+ * and handed to the next guess.
  * Files never leave the browser.
  *
  * Connects to: src/lib/import/{loadModel,assetStore,assetCache,model}.ts,
@@ -20,10 +24,11 @@ import { create } from "zustand";
 import { AssetStoreError } from "@/lib/import/assetStore";
 import { assetStore, putLoaded } from "@/lib/import/assetCache";
 import { disposeScene, ImportError, loadModel, MAX_FILE_BYTES, unsupportedMessage, type InputFile, type LoadedModel } from "@/lib/import/loadModel";
-import { guessUnit, modelFrame, type UnitGuess } from "@/lib/import/model";
+import { guessUnit, modelFrame, UNITS, type UnitGuess, type UnitId } from "@/lib/import/model";
 import type { Plan } from "@/types/plan";
 import { usePlanStore } from "./planStore";
 import { useSelectionStore } from "./selectionStore";
+import { useViewStore } from "./viewStore";
 
 export interface Review {
   files: InputFile[];
@@ -39,6 +44,8 @@ export type ImportDialog =
 
 export interface ImportChoice {
   name: string;
+  /** Which of the dialog's units was chosen ("file" for the file's own): remembered for the next guess. */
+  unit: UnitId;
   unitToMetres: number;
   upAxis: "y" | "z";
   doubleSided: boolean;
@@ -49,6 +56,8 @@ interface ImportState {
   dialog: ImportDialog;
   /** An object-list row the user clicked: that node is tinted in 3D for a moment. Never stored. */
   highlight: { itemId: string; path: string } | null;
+  /** How long the last file took to read and parse (ms), for the dev-only __importDebug and scripts/import-report.ts. */
+  parseMs: number | null;
   openFiles: (files: File[]) => Promise<void>;
   confirm: (choice: ImportChoice) => Promise<void>;
   close: () => void;
@@ -58,6 +67,26 @@ interface ImportState {
 const HIGHLIGHT_MS = 2500;
 let reading = 0; // which openFiles call is current: closing the dialog mid-read drops the result
 let flashTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Where the browser remembers the unit chosen on the last import (step I.1b-fix). Never in the plan or the autosave. */
+export const LAST_UNIT_KEY = "atrium.lastImportUnit";
+/** The unit chosen on the last import, or null (none yet, storage blocked, or something unexpected stored). */
+export function readLastUnit(): UnitId | null {
+  try {
+    const v = typeof window === "undefined" ? null : window.localStorage.getItem(LAST_UNIT_KEY);
+    return UNITS.some((u) => u.id === v) ? (v as UnitId) : null;
+  } catch {
+    return null; // private mode or blocked storage: no memory, the size rule decides
+  }
+}
+function rememberUnit(unit: UnitId) {
+  if (unit === "file") return; // a file's own odd unit means nothing for the next file
+  try {
+    window.localStorage.setItem(LAST_UNIT_KEY, unit);
+  } catch {
+    /* storage blocked: the next guess just has no memory */
+  }
+}
 
 /** Centre of the walls' bounding box, as world (x, z); the origin with no walls. */
 export function planCentre(plan: Plan): { x: number; z: number } {
@@ -70,6 +99,7 @@ export function planCentre(plan: Plan): { x: number; z: number } {
 export const useImportStore = create<ImportState>((set, get) => ({
   dialog: { kind: "closed" },
   highlight: null,
+  parseMs: null,
 
   openFiles: async (files) => {
     if (files.length === 0) return;
@@ -83,15 +113,18 @@ export const useImportStore = create<ImportState>((set, get) => ({
     set({ dialog: { kind: "reading", name: files.map((f) => f.name).join(", ") } });
     let model: LoadedModel;
     let input: InputFile[];
+    const t0 = performance.now();
     try {
       input = await Promise.all(files.map(async (f) => ({ name: f.webkitRelativePath || f.name, bytes: new Uint8Array(await f.arrayBuffer()) })));
       model = await loadModel(input);
     } catch (e) {
       if (token === reading) say(e instanceof ImportError ? e.message : "This file couldn't be read.");
+      set({ parseMs: performance.now() - t0 });
       return;
     }
+    set({ parseMs: performance.now() - t0 });
     if (token !== reading) return disposeScene(model.root); // closed while reading
-    set({ dialog: { kind: "review", review: { files: input, model, guess: guessUnit(model.size, model.detectedUnit) }, busy: false, error: null } });
+    set({ dialog: { kind: "review", review: { files: input, model, guess: guessUnit(model.size, model.detectedUnit, readLastUnit()) }, busy: false, error: null } });
   },
 
   confirm: async (choice) => {
@@ -113,7 +146,9 @@ export const useImportStore = create<ImportState>((set, get) => ({
       { assetId, name: choice.name.trim() || model.name, format: model.format, unitToMetres: choice.unitToMetres, upAxis: choice.upAxis, doubleSided: choice.doubleSided, nodeOverrides: {} },
       { x: centre.x, y: choice.onFloor ? 0 : frame.base.y, z: centre.z }, // off the floor: the model keeps its own height
     );
+    rememberUnit(choice.unit); // the next guess prefers it when it fits (model.guessUnit)
     useSelectionStore.getState().selectItem(id);
+    useViewStore.getState().requestFrame(id, true); // brought into view if it lands outside it (ImportedItems)
     set({ dialog: { kind: "closed" } });
   },
 

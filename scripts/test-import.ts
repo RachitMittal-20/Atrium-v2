@@ -129,12 +129,11 @@ async function main() {
   const pick = (s: number, detected: number | null = null) => guessUnit(chair(s), detected);
   assert.equal(pick(3.2).chosen.unit, "m", "3.2 → metres");
   assert.equal(pick(320).chosen.unit, "cm", "320 → centimetres (3.2 m)");
-  // The rule is "the first of m, cm, mm, in, ft whose size is 0.2–60 m": 3200 is 32 m in cm, and 126 is 1.26 m in
-  // cm, so cm comes first for both. mm and in are offered with their sizes; the rule, not the test, would have to change.
-  assert.equal(pick(3200).chosen.unit, "cm", "3200 → centimetres by the stated rule (32 m), not millimetres");
-  assert.ok(near(pick(3200).candidates.find((c) => c.unit === "mm")!.size.x, 3.2), "…and millimetres is offered as 3.2 m");
-  assert.equal(pick(126).chosen.unit, "cm", "126 → centimetres by the stated rule (1.26 m), not inches");
-  assert.ok(near(pick(126).candidates.find((c) => c.unit === "in")!.size.x, 3.2004), "…and inches is offered as 3.20 m");
+  // Step I.1b's rule: of the units giving 0.2–60 m, the one nearest 3 m on a log scale (ties m, mm, cm, in, ft).
+  assert.equal(pick(3200).chosen.unit, "mm", "3200 → millimetres (3.2 m), not centimetres (32 m)");
+  assert.ok(near(pick(3200).candidates.find((c) => c.unit === "mm")!.size.x, 3.2), "…offered as 3.2 m");
+  assert.equal(pick(126).chosen.unit, "in", "126 → inches (3.20 m), not centimetres (1.26 m)");
+  assert.ok(near(pick(126).candidates.find((c) => c.unit === "in")!.size.x, 3.2004), "…offered as 3.20 m");
   assert.equal(pick(320, 0.01).chosen.unit, "cm", "a COLLADA unit is used as is");
   assert.equal(pick(3.2, 0.01).chosen.unit, "cm", "a COLLADA unit overrides the guess (metres would have fitted)");
   assert.equal(pick(320, 0.0254).chosen.unit, "in", "a COLLADA unit that is inches");
@@ -248,7 +247,9 @@ async function main() {
     assert.equal(mat.name, "wood", "the MTL's material is used");
     const size = withMtl.size;
     assert.ok(near(size.x, 120) && near(size.y, 75) && near(size.z, 80), "source units: centimetres");
-    assert.equal(guessUnit(size, withMtl.detectedUnit).chosen.unit, "cm", "and guessed as centimetres");
+    // a 120 cm table that states no unit: 1.2 m in cm, 3.05 m in inches, 36.6 m in feet all fit, and inches is nearest 3 m
+    assert.equal(guessUnit(size, withMtl.detectedUnit).chosen.unit, "in", "and guessed as inches by the nearest-to-3 m rule");
+    assert.equal(guessUnit(size, withMtl.detectedUnit).ambiguous, true, "…which is flagged ambiguous, so the dialog asks to compare");
     const noMtl = await loadModel([file("table.obj", obj)]);
     assert.deepEqual(noMtl.warnings, ["Missing file: table.mtl. The model shows grey without it."], "a missing .mtl is reported");
     assert.equal(((noMtl.root.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial).color.getHex(), 0x9a9a9a, "and the model is grey");

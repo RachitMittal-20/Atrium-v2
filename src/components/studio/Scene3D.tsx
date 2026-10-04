@@ -13,7 +13,9 @@
  * input. While walking, orbit controls are off, FitCamera never refits, nothing
  * is picked, and a soft fill light brightens the interior under the ceilings.
  * The 3D tools (Push/Pull and Move, src/components/three/PushPullTool.tsx) read
- * the same host; its cursor says what a press would do.
+ * the same host; its cursor says what a press would do. Move, Rotate and Scale on
+ * imported models (step I.1b) are src/components/three/ItemTool.tsx with
+ * ItemToolOverlay beside the canvas.
  *
  * Imported 3D models (step I.1) are drawn by ImportedItems; files dropped on this
  * pane go to the same import flow as the top bar's file picker
@@ -25,6 +27,7 @@ import { Canvas, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import * as THREE from "three";
 import { ImportedItems } from "@/components/three/ImportedItems";
+import { ItemTool } from "@/components/three/ItemTool";
 import { PlanModel } from "@/components/three/PlanModel";
 import { PushPullTool } from "@/components/three/PushPullTool";
 import { WalkControls } from "@/components/three/WalkControls";
@@ -34,8 +37,10 @@ import { useImportStore } from "@/store/importStore";
 import { usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
 import { usePushPullStore } from "@/store/pushPullStore";
-import { is3dTool, useToolStore } from "@/store/toolStore";
+import { useItemToolStore } from "@/store/itemToolStore";
+import { isItemTool, isPushPullTool, useToolStore } from "@/store/toolStore";
 import { useViewStore } from "@/store/viewStore";
+import { ItemToolOverlay } from "./ItemToolOverlay";
 import { PushPullOverlay } from "./PushPullOverlay";
 import { WalkOverlay } from "./WalkOverlay";
 
@@ -138,7 +143,10 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
     if (!s.pull && s.message) return "not-allowed";
     return s.kind === "move" ? "move" : face.role === "jambA" || face.role === "jambB" ? "ew-resize" : "ns-resize";
   });
-  const pushPull = is3dTool(useToolStore((s) => s.tool)) && !walking;
+  const tool = useToolStore((s) => s.tool);
+  const pushPull = isPushPullTool(tool) && !walking;
+  // over an imported model, Move, Rotate and Scale say they would grab it
+  const itemCursor = useItemToolStore((s) => (isItemTool(tool) && !walking && (s.drag || s.hover) ? (s.drag ? "grabbing" : "grab") : undefined));
   const loading = useAssetsLoading();
   const [dropping, setDropping] = useState(false);
   const hasFiles = (e: ReactDragEvent) => e.dataTransfer.types.includes("Files");
@@ -149,10 +157,10 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
         ref={host}
         tabIndex={0}
         role="group"
-        aria-label="3D view. Drag to orbit. Click a wall, door or window to select it. With the Push/Pull tool, drag a wall top, or a door's or window's side, top or sill, to resize it; with the Move tool, drag a door or window along its wall; or type a distance and press Enter. In Walk: W A S D move, arrows turn, drag to look, Shift runs, Escape exits."
+        aria-label="3D view. Drag to orbit. Click a wall, door, window or imported model to select it. With the Push/Pull tool, drag a wall top, or a door's or window's side, top or sill, to resize it; with the Move tool, drag a door or window along its wall, or an imported model on the floor (Shift: up and down); or type a distance and press Enter. With Rotate or Scale, drag an imported model, or type degrees or a percentage and press Enter. In Walk: W A S D move, arrows turn, drag to look, Shift runs, Escape exits."
         data-testid="scene-3d"
         className="absolute inset-0 focus-visible:outline-offset-[-3px]"
-        style={{ touchAction: walking ? "none" : undefined, cursor: pushPull ? cursor : undefined }} // a walking drag looks; it never scrolls the page
+        style={{ touchAction: walking ? "none" : undefined, cursor: itemCursor ?? (pushPull ? cursor : undefined) }} // a walking drag looks; it never scrolls the page
         onDragOver={(e) => {
           if (!hasFiles(e)) return;
           e.preventDefault(); // allows the drop
@@ -209,6 +217,7 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
           <OrbitControls makeDefault enabled={!walking} target={[cx, 0, cz]} maxPolarAngle={Math.PI / 2 - 0.02} />
           <WalkControls host={host} />
           <PushPullTool host={host} />
+          <ItemTool host={host} />
         </Canvas>
         {dropping && (
           <div className="pointer-events-none absolute inset-2 grid place-items-center rounded border-2 border-dashed border-cyanotype bg-vellum/60 text-sm text-cyanotype" data-testid="drop-hint">
@@ -221,6 +230,7 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
       )}
       <WalkOverlay host={host} />
       <PushPullOverlay />
+      <ItemToolOverlay />
     </>
   );
 }

@@ -14,7 +14,7 @@
  * and never come through here. Connects to: src/types/plan.ts; wired to the plan
  * store by src/store/persistence.ts; tested by scripts/test-persist.ts.
  */
-import type { ImportFormat, ImportInfo, Item, NodeOverride, Opening, OpeningKind, Plan, Room, Vec2, Wall } from "@/types/plan";
+import type { ImportFormat, ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Room, Vec2, Wall } from "@/types/plan";
 
 export const STORAGE_KEY = "atrium-v2:plan";
 /** Bump when the stored shape changes, and add a case to `migrate`. */
@@ -138,6 +138,14 @@ function item(v: unknown): Item | null {
 const FORMATS: readonly ImportFormat[] = ["glb", "gltf", "obj", "fbx", "dae", "stl", "3ds"];
 const NODE_PATH = /^(\d+(\/\d+)*)?$/; // "" is the model root, "0/3/1" a descendant
 
+/** A part's move, turn and scale: three finite numbers, a finite angle and a positive scale, or null. */
+function partTransform(v: unknown): PartTransform | null {
+  if (!isObject(v) || !isNum(v.rotY) || !isNum(v.s) || v.s <= 0) return null;
+  const t = list(v.t);
+  if (!t || t.length !== 3 || !t.every(isNum)) return null;
+  return { t: [t[0] as number, t[1] as number, t[2] as number], rotY: v.rotY, s: v.s };
+}
+
 function importInfo(v: unknown): ImportInfo | null {
   if (!isObject(v) || !isStr(v.assetId) || !/^[0-9a-f]{16}$/.test(v.assetId) || !isStr(v.name) || !FORMATS.includes(v.format as ImportFormat)) return null;
   if (!isNum(v.unitToMetres) || v.unitToMetres <= 0 || (v.upAxis !== "y" && v.upAxis !== "z") || typeof v.doubleSided !== "boolean" || !isObject(v.nodeOverrides)) return null;
@@ -145,7 +153,9 @@ function importInfo(v: unknown): ImportInfo | null {
   for (const [path, o] of Object.entries(v.nodeOverrides)) {
     if (!NODE_PATH.test(path) || !isObject(o)) return null;
     if ((o.hidden !== undefined && typeof o.hidden !== "boolean") || (o.deleted !== undefined && typeof o.deleted !== "boolean")) return null;
-    nodeOverrides[path] = { ...(o.hidden !== undefined && { hidden: o.hidden }), ...(o.deleted !== undefined && { deleted: o.deleted }) };
+    const transform = o.transform === undefined ? undefined : partTransform(o.transform); // a moved part (step I.1b)
+    if (transform === null) return null;
+    nodeOverrides[path] = { ...(o.hidden !== undefined && { hidden: o.hidden }), ...(o.deleted !== undefined && { deleted: o.deleted }), ...(transform && { transform }) };
   }
   return { assetId: v.assetId, name: v.name, format: v.format as ImportFormat, unitToMetres: v.unitToMetres, upAxis: v.upAxis, doubleSided: v.doubleSided, nodeOverrides };
 }

@@ -9,8 +9,9 @@
  * `flipDoor` add a door or window and flip a door's swing side, one undo step
  * each; plans made before swing sides were stored are migrated on load
  * (edit.withSwingSides). `addImportedItem` and `setNodeOverride` add an imported
- * 3D model and hide, delete or restore its parts (step I.1), one undo step each;
- * imported models never touch walls or rooms. Connects to:
+ * 3D model and hide, delete or restore its parts (step I.1), and `setNodeTransform`
+ * moves, turns or scales one part (step I.1b), one undo step each; imported models
+ * never touch walls or rooms. Connects to:
  * src/types/plan.ts, src/lib/plan/{validate,geometry,rooms,edit}.ts,
  * src/lib/keyboard.ts; the 3D scene, 2D plan and exports read `plan` from here.
  */
@@ -23,7 +24,8 @@ import { drawProblem, flipSide, hostAt, placeOpening as planOpening, splitWallAt
 import { clampOpening, JOINT_EPS, wallLength } from "@/lib/plan/geometry";
 import { deriveRooms, toStoredRoom, type DerivedRoom } from "@/lib/plan/rooms";
 import { validatePlan } from "@/lib/plan/validate";
-import type { ImportInfo, Item, NodeOverride, Opening, OpeningKind, Plan, Vec2, Vec3, Wall } from "@/types/plan";
+import { isIdentityTransform } from "@/lib/import/transform";
+import type { ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Vec2, Vec3, Wall } from "@/types/plan";
 
 enablePatches();
 
@@ -69,8 +71,12 @@ interface PlanState {
   /** An imported 3D model (step I.1) with its base point at `position` (world: plan x, height, plan y). One undo step. */
   addImportedItem: (info: ImportInfo, position: Vec3) => string;
   updateItem: (id: string, changes: Partial<Omit<Item, "id">>) => void;
-  /** Hide, show, delete or restore one node of an imported model by its index path. `null` clears the override. One undo step. */
+  /** Hide, show, delete or restore one node of an imported model by its index path. `null` clears the flags. A part's
+   *  transform is kept whatever the flags say (only setNodeTransform changes it), so Restore brings a part back where it was. One undo step. */
   setNodeOverride: (itemId: string, path: string, override: NodeOverride | null) => void;
+  /** Move, turn or scale one part of an imported model (step I.1b, model frame, see PartTransform). `null` or the identity
+   *  puts it back (Reset part). One undo step. */
+  setNodeTransform: (itemId: string, path: string, transform: PartTransform | null) => void;
   deleteItem: (id: string) => void;
   renameRoom: (id: string, name: string) => void;
   /** Trims, caps at PLAN_NAME_MAX; an empty name is ignored. Undoable. */
@@ -252,8 +258,20 @@ export const usePlanStore = create<PlanState>((set, get) => {
       edit((d) => {
         const overrides = d.items.find((i) => i.id === itemId)?.import?.nodeOverrides;
         if (!overrides) return;
-        const clean = override && { ...(override.hidden && { hidden: true }), ...(override.deleted && { deleted: true }) }; // false flags are just absent
-        if (clean && Object.keys(clean).length > 0) overrides[path] = clean;
+        const transform = overrides[path]?.transform; // not the flags' business: kept as it is
+        const clean = { ...(override?.hidden && { hidden: true }), ...(override?.deleted && { deleted: true }), ...(transform && { transform }) }; // false flags are just absent
+        if (Object.keys(clean).length > 0) overrides[path] = clean;
+        else delete overrides[path];
+      }),
+    setNodeTransform: (itemId, path, transform) =>
+      edit((d) => {
+        const overrides = d.items.find((i) => i.id === itemId)?.import?.nodeOverrides;
+        if (!overrides || path === "") return; // the root is the item itself: it moves with Item.position
+        const flags: NodeOverride = { ...overrides[path] };
+        delete flags.transform;
+        const keep = transform && !isIdentityTransform(transform) ? { transform: { t: [...transform.t] as [number, number, number], rotY: transform.rotY, s: transform.s } } : {};
+        const next = { ...flags, ...keep };
+        if (Object.keys(next).length > 0) overrides[path] = next;
         else delete overrides[path];
       }),
     deleteItem: (id) =>

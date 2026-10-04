@@ -13,3 +13,6 @@ test-plans/
 
 # tesseract.js language data, cached here when OCR runs under Node (scripts/scale-report.ts)
 *.traineddata
+
+# real 3D model files for scripts/import-report.ts (often large or licensed: never committed)
+test-models/

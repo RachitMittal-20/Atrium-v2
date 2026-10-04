@@ -1,6 +1,7 @@
 /**
  * selectionStore.ts — which wall OR which door/window OR which imported model is
- * selected (only one at a time: choosing one clears the others), which wall is hovered, the run of pieces the
+ * selected (only one at a time: choosing one clears the others), and for a model
+ * whether Edit parts is on and which part is active (step I.1b), which wall is hovered, the run of pieces the
  * selected wall belongs to, plus the warnings the last edit raised. `selectedId`
  * is always a wall id and `openingId` an opening id, so code written for walls
  * keeps working unchanged. Deliberately NOT part of the plan store:
@@ -27,6 +28,10 @@ interface SelectionState {
   openingId: string | null;
   /** The selected imported model (an Item id, step I.1). */
   itemId: string | null;
+  /** "Edit parts" is on for the selected model (step I.1b): a 3D click picks a part, and the tools act on it. */
+  editParts: boolean;
+  /** The active part of the selected model, by node path (only while editParts is on). */
+  partPath: string | null;
   hoveredId: string | null;
   /** Plain-words problems the last edit introduced, shown in the right panel. */
   warnings: string[];
@@ -34,8 +39,12 @@ interface SelectionState {
   select: (id: string | null) => void;
   /** Select a door or window (clears any wall). */
   selectOpening: (id: string | null) => void;
-  /** Select an imported model (clears any wall or opening). */
+  /** Select an imported model (clears any wall or opening). Choosing another model leaves Edit parts. */
   selectItem: (id: string | null) => void;
+  /** Turn Edit parts on or off for the selected model; off returns to the whole model. */
+  setEditParts: (on: boolean) => void;
+  /** Make a part of the selected model the active one (null: back to the whole model). Turns Edit parts on. */
+  selectPart: (path: string | null) => void;
   hover: (id: string | null) => void;
   setWarnings: (warnings: string[]) => void;
 }
@@ -44,12 +53,17 @@ export const useSelectionStore = create<SelectionState>((set) => ({
   selectedId: null,
   openingId: null,
   itemId: null,
+  editParts: false,
+  partPath: null,
   hoveredId: null,
   warnings: [],
   // A new selection starts with a clean slate: old warnings belonged to the old wall.
-  select: (selectedId) => set({ selectedId, openingId: null, itemId: null, warnings: [] }),
-  selectOpening: (openingId) => set({ openingId, selectedId: null, itemId: null, warnings: [] }),
-  selectItem: (itemId) => set({ itemId, selectedId: null, openingId: null, warnings: [] }),
+  select: (selectedId) => set({ selectedId, openingId: null, itemId: null, editParts: false, partPath: null, warnings: [] }),
+  selectOpening: (openingId) => set({ openingId, selectedId: null, itemId: null, editParts: false, partPath: null, warnings: [] }),
+  selectItem: (itemId) =>
+    set((s) => ({ itemId, selectedId: null, openingId: null, warnings: [], ...(itemId !== s.itemId && { editParts: false, partPath: null }) })), // the same model again keeps its parts mode
+  setEditParts: (editParts) => set((s) => (s.itemId ? { editParts, partPath: editParts ? s.partPath : null } : s)),
+  selectPart: (partPath) => set((s) => (s.itemId ? { partPath, editParts: s.editParts || partPath !== null } : s)),
   hover: (hoveredId) => set({ hoveredId }),
   setWarnings: (warnings) => set({ warnings }),
 }));
@@ -73,19 +87,25 @@ usePlanStore.subscribe((state) => {
   if (gone(selectedId)) useSelectionStore.setState({ selectedId: null, warnings: [] });
   if (gone(hoveredId)) useSelectionStore.setState({ hoveredId: null });
   if (openingId !== null && !state.plan.openings.some((o) => o.id === openingId)) useSelectionStore.setState({ openingId: null, warnings: [] });
-  if (itemId !== null && !state.plan.items.some((i) => i.id === itemId)) useSelectionStore.setState({ itemId: null });
+  if (itemId !== null && !state.plan.items.some((i) => i.id === itemId)) useSelectionStore.setState({ itemId: null, editParts: false, partPath: null });
+  // a part that was deleted (or sits inside a deleted part) is no longer there to edit
+  const { partPath } = useSelectionStore.getState();
+  const overrides = partPath !== null ? state.plan.items.find((i) => i.id === itemId)?.import?.nodeOverrides : undefined;
+  if (overrides && Object.entries(overrides).some(([p, o]) => o.deleted && (partPath === p || partPath!.startsWith(`${p}/`)))) useSelectionStore.setState({ partPath: null });
 });
 
 /**
  * Escape clears the selection from anywhere on the page (the 2D canvas handles
- * its own Escape first, so cancelling a drag wins). Returns a cleanup; call it
+ * its own Escape first, so cancelling a drag wins). With a part of a model active,
+ * the first Escape goes back to the whole model. Returns a cleanup; call it
  * from an effect.
  */
 export function installSelectionShortcuts(): () => void {
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== "Escape" || isTypingTarget(e.target)) return;
-    const { selectedId, openingId, itemId } = useSelectionStore.getState();
-    if (selectedId || openingId || itemId) useSelectionStore.getState().select(null);
+    const { selectedId, openingId, itemId, partPath } = useSelectionStore.getState();
+    if (partPath !== null) useSelectionStore.getState().selectPart(null);
+    else if (selectedId || openingId || itemId) useSelectionStore.getState().select(null);
   };
   window.addEventListener("keydown", onKeyDown);
   return () => window.removeEventListener("keydown", onKeyDown);

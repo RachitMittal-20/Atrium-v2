@@ -30,8 +30,32 @@
  *   - delete the IndexedDB database and reload: a grey "Missing file: …" box, the
  *     panel says "Import it again to see it", and nothing crashes;
  *   - no console errors at any point.
+ * Step I.1b (checkTools, a fresh browser per size; E2E_TOOLS_ONLY=1 runs only this part):
+ *   - a 3000-unit STL: millimetres pre-selected, the ambiguous message, "Your plan is 10.0 × 8.0 m",
+ *     the preview's 1.8 m figure;
+ *   - Show in view: the cube placed at (30, 30) is out of view; the button frames it (every
+ *     corner inside the 3D pane with 8 px to spare) and the camera stays above the ground;
+ *   - the selection outline: the cube's crop differs between selected and not by more than
+ *     OUTLINE_DIFF_MIN (mean per channel, outline and tint together) — 1440 only;
+ *   - Move: hover says "Move this model" (mouse); a drag moves the world box by the stored
+ *     offset, on the 5 cm grid, and (mouse) by exactly the label's value; one undo; Shift
+ *     (mouse) or the Lift toggle (touch) raises it; Escape / a second finger leave plan and
+ *     history unchanged;
+ *   - Rotate: a drag round the base point turns it in 15° steps, one undo step; typed 30 +
+ *     Enter (keys at 1440, the field at 390) turns it by exactly 30°;
+ *   - Scale: typed 150 gives 150% and a box ×1.5 within 1 mm, base fixed; a drag outwards scales up;
+ *   - room.dae, Edit parts: a click on the Table selects the part (its row active); Move, typed
+ *     30° and typed 150% change ONLY the Table's world box (Sofa, Lamp and the cube within 1 mm);
+ *     one Undo takes the scale back; after a reload the part's transform is back and drawn;
+ *   - Walk disables Move, Rotate and Scale with "Exit Walk to use …".
+ * Lines of piece A changed in I.1b: Push/Pull's message (IMPORTED); the "ignore it" loop covers
+ * Push/Pull only (Move moves models now); table.zip is guessed as inches and flagged ambiguous,
+ * then centimetres is chosen; the selection is cleared (Escape) before the GPU-count baseline, so
+ * the selected room's outline lines are not counted.
  * Screenshots in /tmp/studio/: import-dialog-{1440,390}.png, import-placed-1440.png,
- * import-object-list-1440.png (and import-placed-390.png, import-missing-{1440,390}.png).
+ * import-object-list-1440.png (and import-placed-390.png, import-missing-{1440,390}.png), and for
+ * I.1b import-move-mid-drag-1440.png, import-rotate-mid-drag-1440.png, import-part-selected-1440.png,
+ * import-scale-mid-drag-390.png, import-dialog-ambiguous-1440.png.
  * NOT covered: FBX and 3DS success paths, big real-world files, a real phone,
  * Safari and Firefox.
  * Run: npx tsx scripts/e2e-import3d.ts
@@ -40,7 +64,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright";
-import { writeFixtures } from "./make-import-fixtures";
+import sharp from "sharp";
+import { makeStlBinary, writeFixtures } from "./make-import-fixtures";
 
 const BASE = process.env.E2E_URL ?? "http://localhost:3000";
 const OUT = "/tmp/studio";
@@ -48,7 +73,7 @@ const TMP = "/tmp/atrium-import"; // made on demand, never committed
 const FIX = join(process.cwd(), "tests/fixtures/models");
 const EXECUTABLE = process.env.E2E_CHROMIUM || undefined;
 const NATIVE = ".skp and .max files can't be opened directly yet. In SketchUp use File > Export > 3D Model and choose DAE, OBJ or FBX. In 3ds Max use Export and choose FBX or OBJ. Keep your objects separate and named before exporting.";
-const IMPORTED = "Imported objects are edited in the panel";
+const IMPORTED = "Imported objects are edited with Move, Rotate and Scale"; // Push/Pull's words since I.1b (were "…in the panel")
 
 type Pt = { x: number; y: number };
 type V3 = [number, number, number];
@@ -249,8 +274,8 @@ async function run(width: number, height: number) {
   await at(top);
   assert.equal(await itemSel(page), cube, `${tag}: a click on the model in 3D selects it`);
 
-  // ---- Push/Pull and Move ignore it
-  for (const tool of ["pushpull", "move"]) {
+  // ---- Push/Pull ignores it (Move, since I.1b, moves it: checked in checkTools)
+  for (const tool of ["pushpull"]) {
     await press(`tool-${tool}`);
     top = await project({ x: 2, y: 3.75, z: 2 }); // the previous drag orbited the camera (a press on a model orbits)
     const before = JSON.stringify(await plan(page));
@@ -399,11 +424,15 @@ async function run(width: number, height: number) {
   assert.deepEqual((await names()).visible.sort(), ["Lamp", "Sofa"], `${tag}: Redo hides Table again`);
 
   // ---- table.zip: the texture travels in the zip; deleting the item frees its GPU memory
+  await page.keyboard.press("Escape"); // I.1b: nothing selected, so no selection outline (its line geometries) in the count
   await page.waitForTimeout(500);
   const gBefore = await debug(page, (d) => d.renderer());
   await tid(page, "import-model-input").setInputFiles(join(FIX, "table.zip"));
   await reviewOpen();
-  assert.equal(await tid(page, "import-unit-cm").isChecked(), true, `${tag}: a 120 cm table guessed as centimetres`);
+  // I.1b's rule (nearest 3 m) reads a 120-unit table with no stated unit as inches (3.05 m), and flags it ambiguous
+  assert.equal(await tid(page, "import-unit-in").isChecked(), true, `${tag}: a 120-unit table guessed as inches (nearest 3 m)`);
+  assert.equal(await tid(page, "import-ambiguous").isVisible(), true, `${tag}: and the dialog says several sizes are possible`);
+  await (touch ? tid(page, "import-unit-cm").tap() : tid(page, "import-unit-cm").check()); // the user picks centimetres
   assert.equal(await tid(page, "import-warnings").count(), 0, `${tag}: nothing missing from the zip`);
   const table = await confirmImport();
   await page.waitForTimeout(800);
@@ -462,6 +491,449 @@ async function run(width: number, height: number) {
   await browser.close();
 }
 
+// ================================================================= step I.1b: Move, Rotate, Scale, parts, Show in view
+
+type Box = { min: V3; max: V3 };
+type Cam = { position: V3; target: V3 | null; fov: number; aspect: number; gliding: boolean };
+type ItemLike = { id: string; position: { x: number; y: number; z: number }; rotationY: number; scale: number; import?: { nodeOverrides: Record<string, { transform?: { t: V3; rotY: number; s: number } }> } };
+const centreOf = (b: Box): V3 => [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2];
+const sizeOf = (b: Box): V3 => [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]];
+const sameBox = (a: Box | null, b: Box | null, eps: number, msg: string) => {
+  assert.ok(a && b, `${msg}: both boxes exist`);
+  for (const k of ["min", "max"] as const) for (let i = 0; i < 3; i++) near(a![k][i], b![k][i], eps, `${msg} (${k}[${i}])`);
+};
+/** "+0.35 m, -0.10 m" → [0.35, -0.1]; "+15°" → [15]; "Scale 150%" → [150]. */
+const numbers = (text: string) => [...text.matchAll(/[+-]?\d+(?:\.\d+)?/g)].map((m) => Number(m[0]));
+
+/** Mean absolute difference per channel (0–255) between two PNG crops of the same size. */
+async function meanDiff(a: Buffer, b: Buffer): Promise<number> {
+  const [x, y] = await Promise.all([sharp(a).raw().toBuffer(), sharp(b).raw().toBuffer()]);
+  let sum = 0;
+  for (let i = 0; i < x.length; i++) sum += Math.abs(x[i] - y[i]);
+  return sum / x.length;
+}
+/** The selection outline must change the item's crop by more than this (mean per channel, 0–255). */
+const OUTLINE_DIFF_MIN = 4;
+
+async function checkTools(width: number, height: number) {
+  const touch = width < 640;
+  const tag = `${width} tools`;
+  const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
+  const context = await browser.newContext({ viewport: { width, height }, hasTouch: touch });
+  const page = await context.newPage();
+  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
+  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  const cdp = touch ? await context.newCDPSession(page) : null;
+  const touchAt = (type: "touchStart" | "touchMove" | "touchEnd", p?: Pt) => cdp!.send("Input.dispatchTouchEvent", { type, touchPoints: p ? [{ x: p.x, y: p.y }] : [] });
+
+  const open = async () => {
+    await page.goto(`${BASE}/studio`);
+    await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
+    await tid(page, "plan-name").waitFor();
+    await page.waitForSelector("canvas");
+    await page.waitForTimeout(1500);
+  };
+  const press = async (id: string) => {
+    if (touch) await tid(page, id).tap();
+    else await tid(page, id).click();
+    await page.waitForTimeout(250);
+  };
+  const sheet = async (want: boolean) => {
+    // the phone's details sheet covers part of the 3D pane: open it for the panel, close it for the 3D
+    const toggle = page.locator('[aria-controls="plan-details"]');
+    if (touch && (await toggle.getAttribute("aria-expanded")) !== String(want)) {
+      await toggle.tap();
+      await page.waitForTimeout(400);
+    }
+  };
+  const type = async (id: string, value: string) => {
+    await sheet(true);
+    const f = tid(page, id);
+    if (touch) await f.tap();
+    else await f.click();
+    await f.fill(value);
+    await f.press("Enter");
+    await page.waitForTimeout(300);
+  };
+  const undo = async () => {
+    if (touch) {
+      await tid(page, "undo").tap();
+    } else {
+      await page.locator("body").click({ position: { x: 2, y: 2 } }); // out of any field
+      await page.keyboard.press("Control+z");
+    }
+    await page.waitForTimeout(300);
+  };
+  const cam = () => page.evaluate(() => (window as unknown as { __importDebug: { camera(): Cam } }).__importDebug.camera());
+  const settle = async () => {
+    await until(async () => !(await cam()).gliding, 5000);
+    await page.waitForTimeout(250);
+  };
+  const box = (id: string) => debug(page, (d, a) => d.worldBox(a), id) as Promise<Box | null>;
+  const partBox = (id: string, path: string) => page.evaluate(([i, p]) => (window as unknown as { __importDebug: { partWorldBox(i: string, p: string): Box | null } }).__importDebug.partWorldBox(i, p), [id, path] as const);
+  const project = (p: V3) => page.evaluate((q) => (window as Win).__studio3d!.project({ x: q[0], y: q[1], z: q[2] }), p);
+  const itemOf = async (id: string) => (await page.evaluate(() => (window as Win).__planStore!.getState().plan.items)).find((i) => i.id === id) as unknown as ItemLike;
+  const label = async (k: string) => ((await tid(page, `item-label-${k}`).innerText().catch(() => "")) ?? "").trim();
+  /** A drag from `a` to `b` in `steps`, mouse or one real finger; `mid` runs halfway (a screenshot, a label read). */
+  const drag = async (a: Pt, b: Pt, opts: { steps?: number; mid?: () => Promise<void>; shift?: boolean } = {}) => {
+    const steps = opts.steps ?? 8;
+    const at = (k: number) => ({ x: a.x + ((b.x - a.x) * k) / steps, y: a.y + ((b.y - a.y) * k) / steps });
+    if (touch) {
+      await touchAt("touchStart", a);
+      for (let k = 1; k <= steps; k++) {
+        await touchAt("touchMove", at(k));
+        if (k === Math.ceil(steps / 2) && opts.mid) await opts.mid();
+      }
+      await touchAt("touchEnd");
+    } else {
+      await page.mouse.move(a.x, a.y);
+      if (opts.shift) await page.keyboard.down("Shift");
+      await page.mouse.down();
+      for (let k = 1; k <= steps; k++) {
+        await page.mouse.move(at(k).x, at(k).y);
+        if (k === Math.ceil(steps / 2) && opts.mid) await opts.mid();
+      }
+      await page.mouse.up();
+      if (opts.shift) await page.keyboard.up("Shift");
+    }
+    await page.waitForTimeout(300);
+  };
+  const confirmImport = async () => {
+    await press("import-confirm");
+    await page.waitForSelector('[data-testid="import-dialog"][data-kind="closed"]', { state: "attached", timeout: 15000 });
+    await page.waitForTimeout(800);
+    const items = (await plan(page)).items;
+    return items[items.length - 1].id;
+  };
+  const pane = async () => (await tid(page, "pane-3d").boundingBox())!;
+  /** Every corner of `b` projects inside the 3D pane with `margin` px to spare. */
+  const inPane = async (b: Box, margin: number) => {
+    const r = await pane();
+    for (const x of [b.min[0], b.max[0]])
+      for (const y of [b.min[1], b.max[1]])
+        for (const z of [b.min[2], b.max[2]]) {
+          const p = await project([x, y, z]);
+          if (p.x < r.x + margin || p.x > r.x + r.width - margin || p.y < r.y + margin || p.y > r.y + r.height - margin) return false;
+        }
+    return true;
+  };
+
+  await open();
+
+  // ---- the unit dialog for a 3000-unit model: the figure, the plan's size, and the ambiguous message
+  mkdirSync(TMP, { recursive: true });
+  const bigStl = join(TMP, "slab-3000.stl");
+  writeFileSync(bigStl, makeStlBinary({ name: "Slab", min: [0, 0, 0], max: [3000, 1500, 1000] }));
+  await tid(page, "import-model-input").setInputFiles(bigStl);
+  await page.waitForSelector('[data-testid="import-dialog"][data-kind="review"]', { timeout: 20000 });
+  assert.equal(await tid(page, "import-unit-mm").isChecked(), true, `${tag}: 3000 units → millimetres (3 m) pre-selected`);
+  assert.equal((await tid(page, "import-ambiguous").innerText()).trim(), "Several sizes are possible. Compare with the 1.8 m figure.", `${tag}: the ambiguous message`);
+  assert.equal((await tid(page, "import-plan-size").innerText()).trim(), "Your plan is 10.0 × 8.0 m", `${tag}: the plan's size`);
+  assert.equal(await tid(page, "import-preview").getAttribute("data-figure-m"), "1.8", `${tag}: the preview draws the 1.8 m figure`);
+  if (!touch) {
+    await page.waitForTimeout(600);
+    await page.screenshot({ path: `${OUT}/import-dialog-ambiguous-1440.png` });
+  }
+  await press("import-cancel");
+
+  // ---- cube.glb: imported, then put at x 2, y 2, 3 m up (clear of every wall), and Show in view
+  await tid(page, "import-model-input").setInputFiles(join(FIX, "cube.glb"));
+  await page.waitForSelector('[data-testid="import-dialog"][data-kind="review"]', { timeout: 20000 });
+  const cube = await confirmImport();
+  await settle();
+  await type("item-x", "30"); // far outside the view
+  await type("item-y", "30");
+  await type("item-height", "3");
+  await sheet(false);
+  assert.equal(await inPane((await box(cube))!, 0), false, `${tag}: at (30, 30) the cube is out of view`);
+  await sheet(true);
+  await press("item-show");
+  await sheet(false);
+  await settle();
+  assert.ok(await inPane((await box(cube))!, 8), `${tag}: Show in view frames it (every corner inside the 3D pane, 8 px margin)`);
+  await type("item-x", "2");
+  await type("item-y", "2");
+  await press("item-show");
+  await sheet(false);
+  await settle();
+  const framed = (await box(cube))!;
+  assert.ok(await inPane(framed, 8), `${tag}: and again at (2, 2)`);
+  const c0 = await cam();
+  assert.ok(c0.position[1] > 0, `${tag}: the camera stays above the ground (${c0.position[1].toFixed(2)} m)`);
+  const top = (b: Box, fx = 0.5, fz = 0.5): V3 => [b.min[0] + (b.max[0] - b.min[0]) * fx, b.max[1], b.min[2] + (b.max[2] - b.min[2]) * fz];
+
+  // ---- the selection outline changes the item's pixels (selected vs not)
+  if (!touch) {
+    const r = await pane();
+    const corners = await Promise.all([0, 1].flatMap((i) => [0, 1].flatMap((j) => [0, 1].map((k) => project([i ? framed.max[0] : framed.min[0], j ? framed.max[1] : framed.min[1], k ? framed.max[2] : framed.min[2]])))));
+    const clip = { x: Math.max(r.x, Math.min(...corners.map((c) => c.x)) - 6), y: Math.max(r.y, Math.min(...corners.map((c) => c.y)) - 6), width: 0, height: 0 };
+    clip.width = Math.min(r.x + r.width, Math.max(...corners.map((c) => c.x)) + 6) - clip.x;
+    clip.height = Math.min(r.y + r.height, Math.max(...corners.map((c) => c.y)) + 6) - clip.y;
+    await page.mouse.move(r.x + 5, r.y + r.height - 5); // no hover tint
+    await page.waitForTimeout(300);
+    const selected = await page.screenshot({ clip });
+    await tid(page, "scene-3d").focus();
+    await page.keyboard.press("Escape"); // clears the selection
+    await page.waitForTimeout(400);
+    assert.equal(await itemSel(page), null, `${tag}: unselected`);
+    const plain = await page.screenshot({ clip });
+    const diff = await meanDiff(selected, plain);
+    console.log(`${tag}: outline + tint change the cube's ${Math.round(clip.width)}×${Math.round(clip.height)} px crop by ${diff.toFixed(1)} per channel (threshold ${OUTLINE_DIFF_MIN})`);
+    assert.ok(diff > OUTLINE_DIFF_MIN, `${tag}: the selection outline is visible in pixels (${diff.toFixed(2)} > ${OUTLINE_DIFF_MIN})`);
+  }
+
+  // ---- Move: drag it on the floor; the world box moves by the label's value; one undo restores it
+  await press("tool-move");
+  let b0 = (await box(cube))!;
+  const grabAt = await project(top(b0));
+  if (!touch) {
+    await page.mouse.move(grabAt.x, grabAt.y);
+    await page.waitForTimeout(250);
+    assert.equal(await label("value"), "Move this model", `${tag}: Move hovers the model (nearest hit) and says so`);
+  }
+  let past = await pastLength(page);
+  let said = [0, 0];
+  await drag(grabAt, { x: grabAt.x + (touch ? 50 : 90), y: grabAt.y + 20 }, {
+    mid: async () => {
+      if (!touch) await page.screenshot({ path: `${OUT}/import-move-mid-drag-1440.png` });
+    },
+  });
+  // the label is read again at the end of the drag from the store's last value: the plan holds it
+  let it = await itemOf(cube);
+  said = [it.position.x - 2, it.position.z - 2];
+  let b1 = (await box(cube))!;
+  near(centreOf(b1)[0] - centreOf(b0)[0], said[0], 0.001, `${tag}: Move: x moved by what the drag set`);
+  near(centreOf(b1)[2] - centreOf(b0)[2], said[1], 0.001, `${tag}: Move: y (world z) too`);
+  near(b1.min[1], b0.min[1], 1e-6, `${tag}: Move on the floor keeps the height`);
+  assert.ok(Math.hypot(said[0], said[1]) >= 0.05, `${tag}: and it did move (${said.map((v) => v.toFixed(2))})`);
+  assert.ok(Math.abs(said[0] / 0.05 - Math.round(said[0] / 0.05)) < 1e-6, `${tag}: on the 5 cm grid (${said[0]})`);
+  assert.equal(await pastLength(page), past + 1, `${tag}: one drag, one undo step`);
+  assert.equal(await itemSel(page), cube, `${tag}: and the moved model is selected`);
+  await undo();
+  sameBox(await box(cube), b0, 1e-6, `${tag}: one undo restores the box`);
+
+  // the label during a drag says exactly how far: drag, read the label at the end before releasing (mouse only)
+  if (!touch) {
+    await page.mouse.move(grabAt.x, grabAt.y);
+    await page.mouse.down();
+    for (let k = 1; k <= 6; k++) await page.mouse.move(grabAt.x + 12 * k, grabAt.y + 4 * k);
+    await page.waitForTimeout(150);
+    const text = await label("distance");
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+    const [dx, dy] = numbers(text);
+    b1 = (await box(cube))!;
+    near(centreOf(b1)[0] - centreOf(b0)[0], dx, 0.001, `${tag}: the box moves by the label's x ("${text}")`);
+    near(centreOf(b1)[2] - centreOf(b0)[2], dy, 0.001, `${tag}: and by its y`);
+    await undo();
+  }
+
+  // ---- Lift: Shift (mouse) or the Lift toggle (touch) raises it straight up
+  b0 = (await box(cube))!;
+  past = await pastLength(page);
+  if (touch) await press("item-mode-lift");
+  const liftAt = await project(top(b0));
+  await drag(liftAt, { x: liftAt.x, y: liftAt.y - 60 }, { shift: !touch });
+  b1 = (await box(cube))!;
+  it = await itemOf(cube);
+  assert.ok(b1.min[1] > b0.min[1] + 0.04, `${tag}: Lift raises it (${b0.min[1].toFixed(2)} → ${b1.min[1].toFixed(2)} m)`);
+  near(b1.min[1], it.position.y, 1e-6, `${tag}: to the stored height`);
+  near(centreOf(b1)[0], centreOf(b0)[0], 1e-6, `${tag}: straight up (x unchanged)`);
+  assert.equal(await pastLength(page), past + 1, `${tag}: one undo step`);
+  await undo();
+  sameBox(await box(cube), b0, 1e-6, `${tag}: one undo puts it back down`);
+  if (touch) await press("item-mode-floor");
+
+  // ---- Escape (mouse) or a second finger (touch) mid-drag: nothing changes, history as it was
+  past = await pastLength(page);
+  const before = JSON.stringify((await plan(page)).items);
+  if (touch) {
+    await touchAt("touchStart", liftAt);
+    for (let k = 1; k <= 4; k++) await touchAt("touchMove", { x: liftAt.x + 10 * k, y: liftAt.y });
+    await cdp!.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: liftAt.x + 40, y: liftAt.y }, { x: liftAt.x - 80, y: liftAt.y + 80 }] });
+    await cdp!.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  } else {
+    await page.mouse.move(liftAt.x, liftAt.y);
+    await page.mouse.down();
+    for (let k = 1; k <= 4; k++) await page.mouse.move(liftAt.x + 15 * k, liftAt.y);
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+  }
+  await page.waitForTimeout(400);
+  assert.equal(JSON.stringify((await plan(page)).items), before, `${tag}: ${touch ? "a second finger" : "Escape"} mid-drag leaves the model where it was`);
+  assert.equal(await pastLength(page), past, `${tag}: and history unchanged`);
+
+  // ---- Rotate: a drag round the base point changes the rotation; typed 30 + Enter turns it by exactly 30°
+  await press("tool-rotate");
+  assert.equal(await itemSel(page), cube, `${tag}: choosing Rotate keeps the model selected`);
+  b0 = (await box(cube))!;
+  const pivot = await project([centreOf(b0)[0], b0.min[1], centreOf(b0)[2]]);
+  const from = await project(top(b0, 0.9, 0.9));
+  const ang = Math.atan2(from.y - pivot.y, from.x - pivot.x);
+  const rad = Math.hypot(from.x - pivot.x, from.y - pivot.y);
+  const to = { x: pivot.x + rad * Math.cos(ang + 1.2), y: pivot.y + rad * Math.sin(ang + 1.2) };
+  past = await pastLength(page);
+  await drag(from, to, {
+    steps: 10,
+    mid: async () => {
+      if (!touch) await page.screenshot({ path: `${OUT}/import-rotate-mid-drag-1440.png` });
+    },
+  });
+  it = await itemOf(cube);
+  assert.ok(Math.abs(it.rotationY) > 0.2, `${tag}: Rotate turned it (${((it.rotationY * 180) / Math.PI).toFixed(1)}°)`);
+  assert.ok(Math.abs(((it.rotationY * 180) / Math.PI / 15) % 1) < 1e-6 || Math.abs(Math.abs(((it.rotationY * 180) / Math.PI / 15) % 1) - 1) < 1e-6, `${tag}: in 15° steps`);
+  assert.equal(await pastLength(page), past + 1, `${tag}: one undo step`);
+  const r0 = it.rotationY;
+  if (touch) {
+    await sheet(false);
+    await tid(page, "item-typed-input").tap();
+    await tid(page, "item-typed-input").fill("30");
+    await tid(page, "item-typed-input").press("Enter");
+  } else {
+    await tid(page, "scene-3d").focus();
+    await page.keyboard.type("30");
+    await page.keyboard.press("Enter");
+  }
+  await page.waitForTimeout(300);
+  it = await itemOf(cube);
+  let turned = it.rotationY - r0;
+  if (turned > Math.PI) turned -= 2 * Math.PI;
+  if (turned <= -Math.PI) turned += 2 * Math.PI;
+  near(turned, Math.PI / 6, 1e-9, `${tag}: typed 30 + Enter turns it by 30°`);
+  await sheet(true);
+  near(numbers(await tid(page, "item-rotation").inputValue())[0], Math.round((it.rotationY * 1800) / Math.PI) / 10, 0.05, `${tag}: and the panel's rotation field agrees`);
+
+  // ---- Scale: typed 150 → 150%, the box grows ×1.5 (base point fixed); a drag scales too
+  await press("tool-scale");
+  b0 = (await box(cube))!;
+  await sheet(false);
+  if (touch) {
+    await tid(page, "item-typed-input").tap();
+  } else await tid(page, "item-typed-input").click();
+  await tid(page, "item-typed-input").fill("150");
+  await tid(page, "item-typed-input").press("Enter");
+  await page.waitForTimeout(300);
+  it = await itemOf(cube);
+  assert.equal(it.scale, 1.5, `${tag}: typed 150 gives 150%`);
+  b1 = (await box(cube))!;
+  for (let i = 0; i < 3; i++) near(sizeOf(b1)[i], sizeOf(b0)[i] * 1.5, 0.001, `${tag}: the box grows ×1.5 (axis ${i})`);
+  near(b1.min[1], b0.min[1], 0.001, `${tag}: about the base point (bottom stays)`);
+  await settle();
+  const sb = (await box(cube))!;
+  const sp = await project([centreOf(sb)[0], sb.min[1], centreOf(sb)[2]]);
+  const sFrom = await project(top(sb, 0.95, 0.95));
+  const out = { x: sp.x + (sFrom.x - sp.x) * 1.3, y: sp.y + (sFrom.y - sp.y) * 1.3 };
+  await drag(sFrom, out, {
+    mid: async () => {
+      if (touch) await page.screenshot({ path: `${OUT}/import-scale-mid-drag-390.png` });
+    },
+  });
+  it = await itemOf(cube);
+  assert.ok(it.scale > 1.55, `${tag}: dragging away from the base point scales it up (${it.scale})`);
+  await undo();
+  assert.equal((await itemOf(cube)).scale, 1.5, `${tag}: one undo`);
+
+  // ---- room.dae, Edit parts: only the Table moves, turns and scales
+  await press("tool-select");
+  await tid(page, "import-model-input").setInputFiles(join(FIX, "room.dae"));
+  await page.waitForSelector('[data-testid="import-dialog"][data-kind="review"]', { timeout: 20000 });
+  const room = await confirmImport();
+  await type("item-height", "3");
+  await press("item-show");
+  await sheet(false);
+  await settle();
+  await sheet(true);
+  const row = (name: string) => page.locator('[data-testid^="object-row-"]').filter({ has: page.getByRole("button", { name, exact: true }) });
+  const pathOf = async (name: string) => (await row(name).getAttribute("data-testid"))!.replace("object-row-", "");
+  const [tablePath, sofaPath, lampPath] = [await pathOf("Table"), await pathOf("Sofa"), await pathOf("Lamp")];
+  await press("item-edit-parts");
+  assert.equal(await tid(page, "item-edit-parts").getAttribute("aria-pressed"), "true", `${tag}: Edit parts is on`);
+  await sheet(false);
+  const others = async () => ({ sofa: await partBox(room, sofaPath), lamp: await partBox(room, lampPath), cube: await box(cube) });
+  const table0 = (await partBox(room, tablePath))!;
+  const tableTop = await project(top(table0));
+  if (touch) await page.touchscreen.tap(tableTop.x, tableTop.y);
+  else await page.mouse.click(tableTop.x, tableTop.y);
+  await page.waitForTimeout(400);
+  assert.equal(await page.evaluate(() => (window as unknown as { __selectionStore: { getState(): { partPath: string | null } } }).__selectionStore.getState().partPath), tablePath, `${tag}: a click on the Table selects the PART`);
+  await sheet(true);
+  assert.equal(await row("Table").getAttribute("data-active"), "true", `${tag}: and its row in the list is active`);
+  assert.equal((await tid(page, "part-name").innerText()).trim(), "Table", `${tag}: the part rows name it`);
+  await sheet(false);
+  if (!touch) {
+    await page.mouse.move(5, height - 5);
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${OUT}/import-part-selected-1440.png` });
+  }
+  const o0 = await others();
+  // Move the part
+  await press("tool-move");
+  await drag(tableTop, { x: tableTop.x + 40, y: tableTop.y + 25 });
+  const table1 = (await partBox(room, tablePath))!;
+  assert.ok(Math.hypot(centreOf(table1)[0] - centreOf(table0)[0], centreOf(table1)[2] - centreOf(table0)[2]) > 0.04, `${tag}: Move moved the Table`);
+  near(table1.min[1], table0.min[1], 1e-6, `${tag}: on the floor plane`);
+  const unchanged = async (what: string) => {
+    const o = await others();
+    sameBox(o.sofa, o0.sofa, 0.001, `${tag}: ${what}: the Sofa stays`);
+    sameBox(o.lamp, o0.lamp, 0.001, `${tag}: ${what}: the Lamp stays`);
+    sameBox(o.cube, o0.cube, 0.001, `${tag}: ${what}: the cube stays`);
+  };
+  await unchanged("part moved");
+  // Rotate it by typing 30
+  await press("tool-rotate");
+  if (touch) {
+    await tid(page, "item-typed-input").tap();
+    await tid(page, "item-typed-input").fill("30");
+    await tid(page, "item-typed-input").press("Enter");
+  } else {
+    await tid(page, "scene-3d").focus();
+    await page.keyboard.type("30");
+    await page.keyboard.press("Enter");
+  }
+  await page.waitForTimeout(300);
+  const roomItem = async () => itemOf(room);
+  near((await roomItem()).import!.nodeOverrides[tablePath].transform!.rotY, Math.PI / 6, 1e-9, `${tag}: typed 30 turns the Table by 30°`);
+  await unchanged("part turned");
+  // Scale it by typing 150
+  await press("tool-scale");
+  const table2 = (await partBox(room, tablePath))!;
+  await tid(page, "item-typed-input").fill("150");
+  await tid(page, "item-typed-input").press("Enter");
+  await page.waitForTimeout(300);
+  const table3 = (await partBox(room, tablePath))!;
+  for (let i = 0; i < 3; i++) near(sizeOf(table3)[i], sizeOf(table2)[i] * 1.5, 0.001, `${tag}: the Table scaled ×1.5 (axis ${i})`);
+  await unchanged("part scaled");
+  // Undo: the scale only
+  await undo();
+  sameBox(await partBox(room, tablePath), table2, 0.001, `${tag}: one Undo takes the scale back`);
+  const kept = (await roomItem()).import!.nodeOverrides[tablePath].transform!;
+  // reload: the part's transform is in the autosave
+  await until(async () => (await tid(page, "save-status").getAttribute("data-state")) === "saved");
+  await page.waitForTimeout(300);
+  await open();
+  await until(async () => (await debug(page, (d) => d.items())).includes(room), 15000);
+  await page.waitForTimeout(500);
+  assert.deepEqual((await roomItem()).import!.nodeOverrides[tablePath].transform, kept, `${tag}: after a reload the part's transform is back`);
+  sameBox(await partBox(room, tablePath), table2, 0.001, `${tag}: and the Table is drawn where it was`);
+  sameBox(await partBox(room, sofaPath), o0.sofa, 0.001, `${tag}: and the Sofa where it was`);
+
+  // ---- walk mode disables the three tools
+  await press("camera-walk");
+  await page.waitForTimeout(400);
+  for (const [t, name] of [["move", "Move"], ["rotate", "Rotate"], ["scale", "Scale"]]) {
+    assert.equal(await tid(page, `tool-${t}`).getAttribute("aria-disabled"), "true", `${tag}: ${name} is disabled while walking`);
+    assert.equal((await page.locator(`#tip-${t}`).textContent())?.trim(), `Exit Walk to use ${name}`, `${tag}: with a tooltip that says why`);
+  }
+  if (touch) await press("walk-exit");
+  else {
+    await tid(page, "scene-3d").focus();
+    await page.keyboard.press("Escape");
+  }
+  await page.waitForTimeout(300);
+  if (cdp) await cdp.detach();
+  await browser.close();
+}
+
 async function main() {
   mkdirSync(OUT, { recursive: true });
   await writeFixtures();
@@ -470,9 +942,10 @@ async function main() {
     [390, 844],
   ]) {
     if (process.env.E2E_WIDTH && process.env.E2E_WIDTH !== String(w)) continue; // E2E_WIDTH=390 runs one size while debugging
-    await run(w, h);
+    if (!process.env.E2E_TOOLS_ONLY) await run(w, h);
+    await checkTools(w, h);
     assert.deepEqual(errors, [], `console errors:\n${errors.join("\n")}`);
-    console.log(`${w}: import 3D models PASSED`);
+    console.log(`${w}: import 3D models PASSED (and Move, Rotate, Scale, parts, Show in view)`);
   }
   console.log("NOT covered: FBX and 3DS success paths, big real-world files, a real phone, Safari and Firefox.");
 }

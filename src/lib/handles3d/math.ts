@@ -10,6 +10,8 @@
  *                           between the two while it is under way.
  *   rayPlanePoint           where a ray meets a plane (the Move tool drags a corner on
  *                           a horizontal plane), or null when it never does.
+ *   frameBox                where the orbit camera goes to frame a box from the way it
+ *                           already looks (Show in view, step I.1b).
  * Points and directions are plain {x, y, z} objects in world metres (world up is +Y).
  * Connects to: src/types/plan.ts (Vec3); used by src/store/pushPullStore.ts and
  * src/components/three/PushPullTool.tsx; tested by scripts/test-handles3d.ts.
@@ -128,4 +130,46 @@ export function rayPlanePoint(ray: Ray, planePoint: Vec3, planeNormal: Vec3): Ve
   const t = dot(sub(planePoint, ray.origin), planeNormal) / denom;
   if (t < 0) return null;
   return { x: ray.origin.x + ray.direction.x * t, y: ray.origin.y + ray.direction.y * t, z: ray.origin.z + ray.direction.z * t };
+}
+
+/** A camera framing must keep at least this elevation (°) above the horizontal, and at most this (straight down has no "right"). */
+const FRAME_MIN_ELEVATION_DEG = 5;
+const FRAME_MAX_ELEVATION_DEG = 89;
+/** The lowest a framing camera may stand (m): never under the floor. */
+export const FRAME_MIN_HEIGHT = 0.1;
+const cross = (a: Vec3, b: Vec3): Vec3 => ({ x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x });
+
+/**
+ * Where to put a perspective camera so `box` fills the view with `padding` to spare
+ * (1.15: the box takes at most 1/1.15 of the width and of the height), looking at the
+ * box's centre from the camera's CURRENT direction (position − target, as OrbitControls
+ * holds it). For each of the box's 8 corners it finds how far back the camera must be for
+ * that corner to land inside the frame in both fields of view, and takes the farthest
+ * (Scene3D's FitCamera does the same for the plan). The camera stays above the ground:
+ * the direction is raised to at least 5° above the horizontal and the position kept at
+ * least 0.1 m up. `fovDeg` is vertical; `aspect` is width / height.
+ */
+export function frameBox(box: { min: Vec3; max: Vec3 }, camera: { position: Vec3; target: Vec3; fovDeg: number }, aspect: number, padding: number): { position: Vec3; target: Vec3 } {
+  const target = { x: (box.min.x + box.max.x) / 2, y: (box.min.y + box.max.y) / 2, z: (box.min.z + box.max.z) / 2 };
+  let back = unit(sub(camera.position, camera.target)); // from the target towards the camera
+  if (Math.hypot(back.x, back.y, back.z) === 0) back = unit({ x: 0.5, y: 0.65, z: 0.75 });
+  const elevation = Math.min(FRAME_MAX_ELEVATION_DEG, Math.max(FRAME_MIN_ELEVATION_DEG, (Math.asin(Math.max(-1, Math.min(1, back.y))) * 180) / Math.PI)) * (Math.PI / 180);
+  const flat = Math.hypot(back.x, back.z) > 1e-9 ? { x: back.x / Math.hypot(back.x, back.z), z: back.z / Math.hypot(back.x, back.z) } : { x: 0, z: 1 };
+  back = { x: flat.x * Math.cos(elevation), y: Math.sin(elevation), z: flat.z * Math.cos(elevation) };
+  const forward = { x: -back.x, y: -back.y, z: -back.z };
+  const right = unit(cross(forward, { x: 0, y: 1, z: 0 }));
+  const up = cross(right, forward);
+  const tanV = Math.tan((camera.fovDeg * Math.PI) / 360);
+  const tanH = tanV * aspect;
+  // A corner at depth (distance + f) fits when |x| <= depth * tan / padding; and every corner stays in front of the camera.
+  let distance = 0;
+  for (const x of [box.min.x, box.max.x])
+    for (const y of [box.min.y, box.max.y])
+      for (const z of [box.min.z, box.max.z]) {
+        const rel = sub({ x, y, z }, target);
+        const f = dot(rel, forward);
+        distance = Math.max(distance, (padding * Math.abs(dot(rel, right))) / tanH - f, (padding * Math.abs(dot(rel, up))) / tanV - f, 0.2 - f);
+      }
+  const position = { x: target.x + back.x * distance, y: Math.max(FRAME_MIN_HEIGHT, target.y + back.y * distance), z: target.z + back.z * distance };
+  return { position, target };
 }

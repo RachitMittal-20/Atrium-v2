@@ -19,19 +19,30 @@
  * restoring several is one transaction). Clicking a row's name tints that node in
  * 3D for a moment (importStore.flash), which is never stored.
  * A missing file says "Import it again to see it".
- * Connects to: src/store/{planStore,selectionStore,importStore}.ts,
- * src/lib/import/{assetCache,model}.ts.
+ *
+ * Step I.1b: "Show in view" asks the 3D view to frame the model (viewStore.requestFrame).
+ * "Edit parts" (aria-pressed) makes a 3D click pick a PART (model.pickPart) and Move,
+ * Rotate and Scale act on it; a row's name picks that part too. The active part's row
+ * is marked and scrolled into view (its groups opened), and its rows below the list edit
+ * it in the model's own frame: x, y and height of its pivot relative to the model's base
+ * point, its rotation and its scale, each one undo step (planStore.setNodeTransform), and
+ * "Reset part". Escape, or turning the toggle off, goes back to the whole model.
+ * Connects to: src/store/{planStore,selectionStore,importStore,viewStore}.ts,
+ * src/lib/import/{assetCache,model,transform}.ts.
  */
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { parseTypedLength } from "@/app/studio/import/importFile";
 import { useAsset } from "@/lib/import/assetCache";
 import { FORMAT_LABEL } from "@/lib/import/loadModel";
-import { formatSize, frameBox, itemLocalBox, nodePaths, type NodeEntry } from "@/lib/import/model";
+import { formatSize, frameBox, itemLocalBox, modelFrame, nodePaths, partBox, pivotOf, type NodeEntry } from "@/lib/import/model";
+import { parseDegrees, parsePercent, scaleToPercent, wrapAngle } from "@/lib/import/transform";
+import type { LoadedModel } from "@/lib/import/loadModel";
 import { roundTo } from "@/lib/plan/edit";
 import { useImportStore } from "@/store/importStore";
 import { usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
-import type { Item, NodeOverride } from "@/types/plan";
+import { useViewStore } from "@/store/viewStore";
+import type { Item, NodeOverride, PartTransform } from "@/types/plan";
 import { EditableText } from "./EditableText";
 import { formatLength, type Unit } from "./PlanPanel";
 import { NumberField } from "./WallPanel";
@@ -81,9 +92,19 @@ function visibleRows(nodes: NodeEntry[], overrides: Record<string, NodeOverride>
 
 function ObjectList({ item, nodes }: { item: Item; nodes: NodeEntry[] }) {
   const overrides = item.import!.nodeOverrides;
+  const editParts = useSelectionStore((s) => s.editParts);
+  const active = useSelectionStore((s) => (s.editParts ? s.partPath : null));
   // groups deeper than two levels start folded, so a big model opens short
   const [collapsed, setCollapsed] = useState(() => new Set(nodes.filter((n) => n.depth >= 2 && n.object.children.length > 0).map((n) => n.path)));
   const [open, setOpen] = useState(true);
+  // the active part's row: its groups opened, then scrolled into view
+  useEffect(() => {
+    if (active === null) return;
+    setOpen(true);
+    setCollapsed((c) => (([...c].some((p) => active.startsWith(`${p}/`)) ? new Set([...c].filter((p) => !active.startsWith(`${p}/`))) : c)));
+    const t = setTimeout(() => document.querySelector(`[data-testid="object-row-${active}"]`)?.scrollIntoView({ block: "nearest" }), 0);
+    return () => clearTimeout(t);
+  }, [active]);
   const rows = visibleRows(nodes, overrides, collapsed);
   const deleted = Object.entries(overrides).filter(([, o]) => o.deleted);
   const meshCount = nodes.filter((n) => n.depth === 0).reduce((sum, n) => sum + n.meshes, 0);
@@ -108,7 +129,15 @@ function ObjectList({ item, nodes }: { item: Item; nodes: NodeEntry[] }) {
               const group = n.object.children.length > 0;
               const folded = collapsed.has(n.path);
               return (
-                <li key={n.path} data-testid={`object-row-${n.path}`} data-hidden={hidden} className="flex min-h-9 items-center gap-1" style={{ paddingLeft: n.depth * 12 }}>
+                <li
+                  key={n.path}
+                  data-testid={`object-row-${n.path}`}
+                  data-hidden={hidden}
+                  data-active={n.path === active}
+                  aria-current={n.path === active ? "true" : undefined}
+                  className={`flex min-h-9 items-center gap-1 rounded ${n.path === active ? "bg-gilt/15 outline outline-1 outline-gilt" : ""}`}
+                  style={{ paddingLeft: n.depth * 12 }}
+                >
                   {group ? (
                     <button
                       type="button"
@@ -124,9 +153,12 @@ function ObjectList({ item, nodes }: { item: Item; nodes: NodeEntry[] }) {
                   )}
                   <button
                     type="button"
-                    onClick={() => useImportStore.getState().flash(item.id, n.path)}
+                    onClick={() => {
+                      if (editParts) useSelectionStore.getState().selectPart(n.path); // Edit parts: the row picks the part
+                      else useImportStore.getState().flash(item.id, n.path);
+                    }}
                     className={`min-w-0 flex-1 truncate rounded px-1 py-1 text-left hover:bg-limestone ${hidden ? "text-smoke line-through" : ""}`}
-                    title={`${n.label}: show it in 3D`}
+                    title={editParts ? `${n.label}: edit this part` : `${n.label}: show it in 3D`}
                     data-testid={`object-name-${n.path}`}
                   >
                     {n.label}
@@ -154,10 +186,69 @@ function ObjectList({ item, nodes }: { item: Item; nodes: NodeEntry[] }) {
   );
 }
 
+/** The active part's own rows: its pivot's place relative to the model's base point, its turn and scale (model frame). */
+function PartFields({ item, model, path, label, unit, setNote, length }: { item: Item; model: LoadedModel; path: string; label: string; unit: Unit; setNote: (n: string | null) => void; length: (raw: string, apply: (m: number) => void) => void }) {
+  const info = item.import!;
+  const frame = { unitToMetres: info.unitToMetres, upAxis: info.upAxis };
+  const box = partBox(model.root, path, frame);
+  if (!box) return null;
+  const p = pivotOf(box);
+  const base = modelFrame(model.box, info.unitToMetres, info.upAxis).base;
+  const tr: PartTransform = info.nodeOverrides[path]?.transform ?? { t: [0, 0, 0], rotY: 0, s: 1 };
+  const at = { x: p.x - base.x, y: p.y - base.y, z: p.z - base.z }; // where the pivot was, relative to the base point
+  const set = (next: PartTransform) => usePlanStore.getState().setNodeTransform(item.id, path, next);
+  const axis = (i: 0 | 1 | 2, from: number) => (m: number) => {
+    const t: [number, number, number] = [...tr.t];
+    t[i] = m - from;
+    set({ ...tr, t });
+  };
+  return (
+    <section aria-labelledby="part-h" className="mt-3 rounded border border-gilt/60 p-2" data-testid="part-panel">
+      <h3 id="part-h" className="mb-1 text-sm font-medium">
+        Part: <span data-testid="part-name">{label}</span>
+      </h3>
+      <div className="flex flex-col gap-1">
+        <NumberField label="Part x" value={formatLength(at.x + tr.t[0], unit)} testId="part-x" onCommit={(raw) => length(raw, axis(0, at.x))} />
+        <NumberField label="Part y" value={formatLength(at.z + tr.t[2], unit)} testId="part-y" onCommit={(raw) => length(raw, axis(2, at.z))} />
+        <NumberField label="Part height" value={formatLength(at.y + tr.t[1], unit)} testId="part-height" onCommit={(raw) => length(raw, axis(1, at.y))} />
+        <NumberField
+          label="Part rotation"
+          value={`${degrees(tr.rotY)}°`}
+          testId="part-rotation"
+          onCommit={(raw) => {
+            const d = parseDegrees(raw);
+            if (d === null) return setNote(`"${raw.trim()}" isn't an angle. Try 90 or -45.`);
+            set({ ...tr, rotY: wrapAngle((Math.round(d * 10) / 10) * (Math.PI / 180)) });
+            setNote(null);
+          }}
+        />
+        <NumberField
+          label="Part scale"
+          value={`${Math.round(tr.s * 1000) / 10}%`}
+          testId="part-scale"
+          onCommit={(raw) => {
+            const pc = parsePercent(raw);
+            if (pc === null) return setNote(`"${raw.trim()}" isn't a percentage. Try 50 or 200.`);
+            const r = scaleToPercent(pc);
+            set({ ...tr, s: r.value });
+            setNote(r.reason);
+          }}
+        />
+      </div>
+      <p className="mt-1 text-xs text-smoke">Relative to the model&apos;s base point, in the model&apos;s own directions.</p>
+      <button type="button" data-testid="part-reset" onClick={() => set({ t: [0, 0, 0], rotY: 0, s: 1 })} className="mt-2 min-h-10 w-full rounded border border-stone bg-vellum px-3 text-sm text-iron hover:bg-limestone">
+        Reset part
+      </button>
+    </section>
+  );
+}
+
 export function ItemPanel({ unit }: { unit: Unit }) {
   const itemId = useSelectionStore((s) => s.itemId);
   const item = usePlanStore((s) => s.plan.items.find((i) => i.id === itemId));
   const select = useSelectionStore((s) => s.select);
+  const editParts = useSelectionStore((s) => s.editParts);
+  const partPath = useSelectionStore((s) => (s.editParts ? s.partPath : null));
   const asset = useAsset(item?.import?.assetId ?? "");
   const [note, setNote] = useState<string | null>(null);
   const model = asset.status === "ready" ? asset.model : null;
@@ -217,6 +308,24 @@ export function ItemPanel({ unit }: { unit: Unit }) {
       </dl>
       {model && !shown && <p className="mb-2 text-xs text-smoke">Every part is hidden or deleted.</p>}
 
+      <div className="mb-2 flex gap-2">
+        <button type="button" data-testid="item-show" onClick={() => useViewStore.getState().requestFrame(id, false)} className="min-h-10 flex-1 rounded border border-stone bg-vellum px-3 text-sm text-iron hover:bg-limestone">
+          Show in view
+        </button>
+        {model && (
+          <button
+            type="button"
+            data-testid="item-edit-parts"
+            aria-pressed={editParts}
+            onClick={() => useSelectionStore.getState().setEditParts(!editParts)}
+            className={`min-h-10 flex-1 rounded border px-3 text-sm ${editParts ? "border-cyanotype bg-cyanotype text-vellum" : "border-stone bg-vellum text-iron hover:bg-limestone"}`}
+          >
+            Edit parts
+          </button>
+        )}
+      </div>
+      {editParts && partPath === null && <p className="mb-2 text-xs text-smoke">Click a part in 3D, or a name in the list. Alt-click picks the smallest piece.</p>}
+
       <div className="flex flex-col gap-1">
         <NumberField label="Position x" value={formatLength(item.position.x, unit)} testId="item-x" onCommit={(raw) => length(raw, (x) => update({ position: { ...item.position, x } }))} />
         <NumberField label="Position y" value={formatLength(item.position.z, unit)} testId="item-y" onCommit={(raw) => length(raw, (z) => update({ position: { ...item.position, z } }))} />
@@ -251,6 +360,10 @@ export function ItemPanel({ unit }: { unit: Unit }) {
         <p role="status" data-testid="item-note" className="mt-2 text-xs text-smoke">
           {note}
         </p>
+      )}
+
+      {model && partPath !== null && (
+        <PartFields item={item} model={model} path={partPath} label={nodes.find((n) => n.path === partPath)?.label ?? partPath} unit={unit} setNote={setNote} length={length} />
       )}
 
       {model && <ObjectList key={model.root.uuid} item={item} nodes={nodes} />}

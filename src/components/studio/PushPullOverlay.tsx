@@ -28,8 +28,9 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { SCENE_COLORS } from "@/data/materials";
 import { roleName, scopeLabel } from "@/lib/plan/pushpull";
 import { usePlanStore } from "@/store/planStore";
+import { useItemToolStore } from "@/store/itemToolStore";
 import { usePushPullStore } from "@/store/pushPullStore";
-import { is3dTool, useToolStore } from "@/store/toolStore";
+import { isPushPullTool, useToolStore } from "@/store/toolStore";
 import { useViewStore } from "@/store/viewStore";
 
 const COARSE = "(any-pointer: coarse)";
@@ -42,7 +43,7 @@ const signed = (m: number) => `${m < 0 ? "-" : "+"}${Math.abs(m).toFixed(2)} m`;
 const OFFSET = 18; // px between the pointer and the label
 
 export const STATUS_IDLE = "Click a face to push or pull it. Type a distance and press Enter.";
-export const STATUS_MOVE_IDLE = "Drag a door, a window, a wall's side or a corner. Type a distance and press Enter.";
+export const STATUS_MOVE_IDLE = "Drag a door, a window, a wall's side, a corner or an imported model. Type a distance and press Enter.";
 const STATUS_PULL = "Move and click to finish, or type a distance and press Enter. Escape cancels.";
 const STATUS_CORNER = "Drag the corner on the floor. Type exact lengths in the wall panel. Escape cancels.";
 const SNAP_WORDS: Record<string, string> = { endpoint: "Snap: a wall end", midpoint: "Snap: a wall's middle", angle: "Snap: 45° / 90°", grid: "Snap: 5 cm grid", wall: "Snap: on a wall" };
@@ -50,7 +51,7 @@ const SNAP_WORDS: Record<string, string> = { endpoint: "Snap: a wall end", midpo
 export function PushPullOverlay() {
   const tool = useToolStore((s) => s.tool);
   const walking = useViewStore((s) => s.mode === "walk");
-  const active = is3dTool(tool) && !walking;
+  const active = isPushPullTool(tool) && !walking;
   const moving = tool === "move";
   const hover = usePushPullStore((s) => s.hover);
   const corner = usePushPullStore((s) => s.corner);
@@ -62,6 +63,7 @@ export function PushPullOverlay() {
   const pointer = usePushPullStore((s) => s.pointer);
   const fieldOpen = usePushPullStore((s) => s.fieldOpen);
   const openings = usePlanStore((s) => s.plan.openings);
+  const itemBusy = useItemToolStore((s) => s.drag !== null || s.hover !== null);
   const coarse = useSyncExternalStore(watchCoarse, () => window.matchMedia(COARSE).matches || navigator.maxTouchPoints > 0, () => false);
 
   // the pane's size, to keep the label inside it
@@ -116,7 +118,7 @@ export function PushPullOverlay() {
   if (typed !== "") lines.push({ id: "typed", text: `Typing: ${typed}`, tone: "soft" });
   if (message) lines.push({ id: "message", text: message, tone: "note" });
 
-  const showLabel = (lines.length > 0 || (coarse && pull)) && pointer !== null;
+  const showLabel = (lines.length > 0 || (coarse && pull)) && pointer !== null && !itemBusy; // over a model, ItemToolOverlay labels it
   // beside the pointer on its right, unless the pane's right edge leaves less room there than on the left (a phone):
   // then on its left. The width is held to the room on that side, so the label wraps instead of being cut off.
   const roomRight = pointer !== null ? box.w - pointer.x - OFFSET - 8 : 0;
