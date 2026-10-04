@@ -7,7 +7,9 @@
  *                 a 120 × 75 × 80 cm table (top and legs as two objects), in
  *                 centimetres, its top textured with a 4 × 4 px PNG;
  *   table.zip     the same three files inside a table/ folder;
- *   room.dae      COLLADA, centimetres, Z up, three named objects: Sofa, Table, Lamp.
+ *   room.dae      COLLADA, centimetres, Z up, three named objects: Sofa, Table, Lamp;
+ *   nested.glb    a parent "Shelf" turned 30° and scaled 0.5 in the file, holding "Box A" and
+ *                 "Box B" (step I.1b-fix: dragging a part under a transformed parent).
  * The 60 MB dummy for the size limit, and the .skp / .max stand-ins, are made on
  * demand by scripts/e2e-import3d.ts in /tmp and never committed.
  * The builders are exported for scripts/test-import.ts and scripts/test-import-store.ts.
@@ -36,7 +38,7 @@ export function boxMesh(min: number[], max: number[]) {
  * Meshopt; `extraTriangles` repeats the first box's first triangle that many times
  * (a cheap way to reach the triangle limits).
  */
-export function makeGlb(boxes: BoxSpec[], opts: { group?: string; extensionsUsed?: string[]; extraTriangles?: number } = {}): Uint8Array {
+export function makeGlb(boxes: BoxSpec[], opts: { group?: string; groupRotation?: [number, number, number, number]; groupScale?: [number, number, number]; extensionsUsed?: string[]; extraTriangles?: number } = {}): Uint8Array {
   const bin: number[][] = []; // byte chunks
   let offset = 0;
   const bufferViews: object[] = [];
@@ -63,7 +65,8 @@ export function makeGlb(boxes: BoxSpec[], opts: { group?: string; extensionsUsed
     meshes.push({ name: b.name, primitives: [{ attributes: { POSITION: accessors.length - 2 }, indices: accessors.length - 1 }] });
   });
   const leaves = boxes.map((b, i) => ({ name: b.name, mesh: i }));
-  const nodes = opts.group ? [{ name: opts.group, children: leaves.map((_, i) => i + 1) }, ...leaves] : leaves;
+  const parent = { name: opts.group, children: leaves.map((_, i) => i + 1), ...(opts.groupRotation && { rotation: opts.groupRotation }), ...(opts.groupScale && { scale: opts.groupScale }) };
+  const nodes = opts.group ? [parent, ...leaves] : leaves;
   const json: Record<string, unknown> = {
     asset: { version: "2.0", generator: "atrium test fixtures" },
     scene: 0,
@@ -99,6 +102,13 @@ export function makeGlb(boxes: BoxSpec[], opts: { group?: string; extensionsUsed
   out.set(binChunk, b0 + 8);
   return out;
 }
+
+/** nested.glb (step I.1b-fix): "Shelf", turned 30° about Y and scaled 0.5 in the file, holding "Box A" and "Box B". */
+export const NESTED: BoxSpec[] = [
+  { name: "Box A", min: [-1.2, 0, -0.5], max: [-0.2, 0.8, 0.5] },
+  { name: "Box B", min: [0.4, 0, -0.5], max: [1.4, 1.2, 0.5] },
+];
+export const makeNestedGlb = () => makeGlb(NESTED, { group: "Shelf", groupRotation: [0, Math.sin(Math.PI / 12), 0, Math.cos(Math.PI / 12)], groupScale: [0.5, 0.5, 0.5] });
 
 export const CUBE: BoxSpec = { name: "Cube", min: [-0.6, 0.25, -0.4], max: [0.6, 1.0, 0.4] };
 
@@ -204,7 +214,8 @@ export async function writeFixtures() {
   writeFileSync(join(dir, "textures/wood.png"), png);
   writeFileSync(join(dir, "table.zip"), zipSync({ "table/table.obj": obj, "table/table.mtl": mtl, "table/textures/wood.png": png }));
   writeFileSync(join(dir, "room.dae"), makeDae(ROOM));
-  console.log(`wrote cube.glb, table.obj, table.mtl, textures/wood.png, table.zip and room.dae to ${dir}`);
+  writeFileSync(join(dir, "nested.glb"), makeNestedGlb());
+  console.log(`wrote cube.glb, table.obj, table.mtl, textures/wood.png, table.zip, room.dae and nested.glb to ${dir}`);
 }
 
 if (process.argv[1]?.endsWith("make-import-fixtures.ts")) void writeFixtures();

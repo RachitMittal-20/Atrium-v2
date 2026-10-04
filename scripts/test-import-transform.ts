@@ -10,6 +10,9 @@
  *      exactly the offset asked for, turns and scales about its pivot, its children follow,
  *      its siblings do not move, a transformed parent carries it, hidden and deleted rules,
  *      Restore, re-applying, and the cached original never touched;
+ *   2b. (I.1b-fix) a part under a parent with its own part transform, in an item turned 90° and
+ *      scaled ×2: a world move, a 45° turn and a 150% scale land exactly in the world (1e-6),
+ *      siblings stay; the I.1b sum is shown to be wrong there; and the same through the store;
  *   3. pickPart: the highest named node, Alt's deep pick, wrappers of the whole model;
  *   4. frameBox: the box is inside the frustum afterwards at 1440×900 and 390×844, from
  *      the current direction, and the camera stays above the ground;
@@ -27,7 +30,7 @@ import { frameBox } from "../src/lib/handles3d/math";
 import { putLoaded, setAssetStoreForTests } from "../src/lib/import/assetCache";
 import { memoryAssetStore } from "../src/lib/import/assetStore";
 import { loadModel } from "../src/lib/import/loadModel";
-import { applyOverrides, applyPartTransforms, footprint, guessUnit, modelFrame, nodePaths, partBox, pickPart, pivotOf } from "../src/lib/import/model";
+import { applyOverrides, applyPartTransforms, footprint, guessUnit, modelFrame, nodePaths, partBox, partPivotNow, partTransformAfter, pickPart, pivotOf } from "../src/lib/import/model";
 import {
   BELOW_FLOOR,
   GRAB_FARTHER,
@@ -49,7 +52,7 @@ import { useItemToolStore } from "../src/store/itemToolStore";
 import { usePlanStore } from "../src/store/planStore";
 import { useSelectionStore } from "../src/store/selectionStore";
 import { TOOL_SHORTCUTS } from "../src/store/toolStore";
-import type { ImportInfo, NodeOverride, Plan } from "../src/types/plan";
+import type { ImportInfo, NodeOverride, PartTransform, Plan } from "../src/types/plan";
 import { makeGlb } from "./make-import-fixtures";
 
 const near = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) <= eps;
@@ -261,6 +264,94 @@ const sameBox = (a: THREE.Box3 | null, b: THREE.Box3 | null, eps: number, msg: s
   assert.equal(original.userData.importPath, undefined, "and was never tagged");
 }
 
+// ================================================================= 2b. a part dragged under a transformed parent (I.1b-fix)
+/**
+ * The item is turned 90° and scaled ×2; the Table (0/0) sits under Furniture (0), which has its own part transform
+ * (turned 30°, scaled 0.5, moved) on top of the file's own turn and uneven scale. A world change to the Table goes into
+ * the model frame through the item's transform and Furniture's (model.partTransformAfter), so in the WORLD it is
+ * exactly the move, turn or scale asked for, and nothing else moves.
+ */
+const NEST_ITEM = { position: { x: 3, y: 0.5, z: 4 }, rotationY: Math.PI / 2, scale: 2 };
+const NEST_PARENT: Record<string, NodeOverride> = { "0": { transform: { t: [0.1, 0, -0.2], rotY: 30 * DEG, s: 0.5 } } };
+/** World positions of every vertex of the meshes below `path`, the clone drawn as ImportedItems draws an item. */
+function worldVertices(original: THREE.Object3D, overrides: Record<string, NodeOverride>, path: string): THREE.Vector3[] {
+  const clone = original.clone();
+  applyOverrides(clone, overrides, frame, original);
+  const base = modelFrame(new THREE.Box3().setFromObject(original) as unknown as { min: THREE.Vector3; max: THREE.Vector3 }, frame.unitToMetres, frame.upAxis).base;
+  const tilt = new THREE.Group().add(clone);
+  tilt.rotation.x = -Math.PI / 2;
+  const unit = new THREE.Group().add(tilt);
+  unit.scale.setScalar(frame.unitToMetres);
+  const off = new THREE.Group().add(unit);
+  off.position.set(-base.x, -base.y, -base.z);
+  const placed = new THREE.Group().add(off);
+  placed.position.set(NEST_ITEM.position.x, NEST_ITEM.position.y, NEST_ITEM.position.z);
+  placed.rotation.y = NEST_ITEM.rotationY;
+  placed.scale.setScalar(NEST_ITEM.scale);
+  placed.updateMatrixWorld(true);
+  const out: THREE.Vector3[] = [];
+  clone.traverse((o) => {
+    const p = String(o.userData.importPath);
+    if (!(o as THREE.Mesh).isMesh || !(p === path || p.startsWith(`${path}/`))) return;
+    const pos = (o as THREE.Mesh).geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) out.push(new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld));
+  });
+  return out;
+}
+/** The part's pivot now, in the world. */
+function worldPivot(original: THREE.Object3D, overrides: Record<string, NodeOverride>, path: string) {
+  const own = overrides[path]?.transform ?? { t: [0, 0, 0] as [number, number, number], rotY: 0, s: 1 };
+  const c = partPivotNow(original, path, overrides, frame, own)!;
+  const base = modelFrame(new THREE.Box3().setFromObject(original) as unknown as { min: THREE.Vector3; max: THREE.Vector3 }, frame.unitToMetres, frame.upAxis).base;
+  const w = itemPoint(NEST_ITEM, { x: c.x - base.x, y: c.y - base.y, z: c.z - base.z });
+  return new THREE.Vector3(w.x, w.y, w.z);
+}
+const allNear = (got: THREE.Vector3[], want: THREE.Vector3[], eps: number, msg: string) => {
+  assert.equal(got.length, want.length, `${msg}: the same vertices`);
+  const worst = Math.max(...got.map((g, i) => g.distanceTo(want[i])));
+  assert.ok(worst <= eps, `${msg}: within ${eps} (worst ${worst.toExponential(2)})`);
+};
+{
+  const original = nested();
+  const own0 = { t: [0.05, 0, 0.1] as [number, number, number], rotY: 10 * DEG, s: 1.2 }; // the Table already has its own transform too
+  const ov0: Record<string, NodeOverride> = { ...NEST_PARENT, "0/0": { transform: own0 } };
+  const before = worldVertices(original, ov0, "0/0");
+  const chair = worldVertices(original, ov0, "0/1");
+  const lamp = worldVertices(original, ov0, "1");
+  const after = (own: PartTransform) => ({ ...ov0, "0/0": { transform: own } });
+  const siblingsStay = (ov: Record<string, NodeOverride>, msg: string) => {
+    allNear(worldVertices(original, ov, "0/1"), chair, 1e-9, `${msg}: sibling Chair does not move`);
+    allNear(worldVertices(original, ov, "1"), lamp, 1e-9, `${msg}: Lamp does not move`);
+  };
+
+  // a world move of (0.4, 0, -0.3) m
+  const d = { x: 0.4, y: 0, z: -0.3 };
+  const moved = partTransformAfter(original, "0/0", ov0, frame, own0, { kind: "move", d: worldToModelDelta(NEST_ITEM, d) })!;
+  allNear(worldVertices(original, after(moved), "0/0"), before.map((v) => v.clone().add(new THREE.Vector3(d.x, d.y, d.z))), 1e-6, "nested: a world move of (0.4, 0, -0.3) moves the Table by exactly that");
+  siblingsStay(after(moved), "nested move");
+  // the old way (adding the model-frame delta to t, ignoring Furniture's turn and scale) does NOT: the failure this fixes
+  const naive = { ...own0, t: own0.t.map((v, i) => v + [worldToModelDelta(NEST_ITEM, d).x, 0, worldToModelDelta(NEST_ITEM, d).z][i]) as [number, number, number] };
+  const naiveErr = Math.max(...worldVertices(original, after(naive), "0/0").map((v, i) => v.distanceTo(before[i].clone().add(new THREE.Vector3(d.x, d.y, d.z)))));
+  assert.ok(naiveErr > 0.1, `the I.1b way was wrong under a transformed parent (off by ${naiveErr.toFixed(3)} m)`);
+
+  // a 45° turn about the pivot, in the world
+  const P = worldPivot(original, ov0, "0/0");
+  const turned = partTransformAfter(original, "0/0", ov0, frame, own0, { kind: "turn", angle: 45 * DEG, about: partPivotNow(original, "0/0", ov0, frame, own0)! })!;
+  const turn = (v: THREE.Vector3) => v.clone().sub(P).applyAxisAngle(new THREE.Vector3(0, 1, 0), 45 * DEG).add(P);
+  allNear(worldVertices(original, after(turned), "0/0"), before.map(turn), 1e-6, "nested: a 45° turn turns the Table about its pivot by exactly 45°");
+  assert.ok(near(turned.rotY, own0.rotY + 45 * DEG, 1e-12), "and its own rotY grows by 45° (the ancestors' turns cancel)");
+  siblingsStay(after(turned), "nested turn");
+
+  // a 150% scale about the pivot
+  const scaled = partTransformAfter(original, "0/0", ov0, frame, own0, { kind: "scale", factor: 1.5, about: partPivotNow(original, "0/0", ov0, frame, own0)! })!;
+  allNear(worldVertices(original, after(scaled), "0/0"), before.map((v) => v.clone().sub(P).multiplyScalar(1.5).add(P)), 1e-6, "nested: 150% grows the Table by exactly 1.5 about its pivot");
+  assert.ok(near(scaled.s, own0.s * 1.5, 1e-12), "and its own scale × 1.5");
+  siblingsStay(after(scaled), "nested scale");
+  // with no ancestor transform, partTransformAfter is the I.1b sum: t + d, rotY + Δ, s × k
+  const flat = partTransformAfter(original, "0/0", {}, frame, own0, { kind: "move", d: { x: 0.2, y: 0.1, z: -0.4 } })!;
+  assert.ok(near(flat.t[0], own0.t[0] + 0.2, 1e-12) && near(flat.t[1], 0.1, 1e-12) && near(flat.t[2], own0.t[2] - 0.4, 1e-12) && near(flat.rotY, own0.rotY, 1e-12) && near(flat.s, own0.s, 1e-12), "no ancestor transform: a plain sum");
+}
+
 // ================================================================= 3. pickPart
 {
   const root = new THREE.Group();
@@ -332,10 +423,27 @@ const sameBox = (a: THREE.Box3 | null, b: THREE.Box3 | null, eps: number, msg: s
 // ================================================================= 5. the unit rule
 {
   const s = (n: number) => ({ x: n, y: n * 0.6, z: n * 0.3 });
-  const g = (n: number, detected: number | null = null) => guessUnit(s(n), detected);
+  const g = (n: number, detected: number | null = null, last: "m" | "cm" | "mm" | "in" | "ft" | null = null) => guessUnit(s(n), detected, last);
+  assert.equal(g(120).chosen.unit, "cm", "120 → cm (1.2 m), the 120 cm table");
+  assert.equal(g(120).ambiguous, true, "…ambiguous, since inches (3.05 m) also fits");
   assert.equal(g(3200).chosen.unit, "mm", "3200 units → mm (3.2 m)");
   assert.equal(g(320).chosen.unit, "cm", "320 → cm (3.2 m)");
-  assert.equal(g(126).chosen.unit, "in", "126 → inches (3.20 m)");
+  assert.equal(g(126).chosen.unit, "cm", "126 → cm (1.26 m): metric first");
+  assert.equal(g(126).ambiguous, true, "…ambiguous: inches gives 3.20 m");
+  assert.equal(g(126, null, "in").chosen.unit, "in", "with the last import's unit set to inches, 126 → inches");
+  assert.equal(g(3200, null, "in").chosen.unit, "mm", "a last unit that doesn't fit (3200 in = 81 m) is passed over");
+  assert.equal(g(3.2, 0.01, "in").chosen.unit, "cm", "a declared unit beats the last unit");
+  assert.equal(g(400).chosen.unit, "cm", "400 → cm (4 m): ft (122 m) and m (400 m) don't fit, in (10 m) does but metric fits");
+  assert.equal(guessUnit({ x: 15, y: 10, z: 10 }, null).chosen.unit, "m", "15 → m (15 m): cm would be 0.15 m, too small; feet (4.6 m) also fits but metric comes first");
+  assert.equal(guessUnit({ x: 30, y: 10, z: 10 }, null).chosen.unit, "cm", "30 → cm (0.3 m) over m (30 m): nearer 1.5 m");
+  assert.equal(guessUnit({ x: 1000, y: 10, z: 10 }, null).chosen.unit, "mm", "1000 → mm (1 m) over cm (10 m): nearer 1.5 m");
+  // (e) imperial only when no metric fits: with these five units that never happens. m, cm and mm fit 0.2–60, 20–6000 and
+  // 200–60000 units, one unbroken range, and inches (7.9–2362) and feet (0.66–197) lie inside it. Shown over the whole range:
+  for (let n = 0.1; n < 100000; n *= 1.07) {
+    const r = guessUnit({ x: n, y: 0, z: 0 }, null);
+    if (r.candidates.some((c) => c.plausible)) assert.ok(["m", "cm", "mm"].includes(r.chosen.unit), `${n.toFixed(2)} units: a metric unit fits, and is chosen`);
+  }
+  assert.equal(guessUnit({ x: 100000, y: 1, z: 1 }, null).chosen.unit, "m", "nothing fits (100 km in mm): metres");
   assert.equal(g(3.2).chosen.unit, "m", "3.2 → m");
   assert.equal(g(3.2, 0.01).chosen.unit, "cm", "a COLLADA unit overrides the guess");
   assert.equal(g(3.2, 0.01).ambiguous, false, "and a stated unit is never ambiguous");
@@ -543,6 +651,44 @@ async function storeChecks() {
   const base = modelFrame(model.box, 1, "y").base;
   nearV(base, { x: 0, y: 0.4, z: 0 }, 1e-6, "(the model's base point, for comparison)");
   useSelectionStore.getState().select(null);
+
+  // ---- a nested part through the STORE (the drag path itself): typed 45° and 150% exact in the world, a move by the snapped delta
+  {
+    const original = nested();
+    original.updateMatrixWorld(true);
+    const b = new THREE.Box3().setFromObject(original);
+    const nestedModel = { root: original, format: "glb" as const, name: "nested", stats: { triangles: 48, objects: 4, materials: 1, textures: 0 }, box: { min: b.min, max: b.max }, size: b.getSize(new THREE.Vector3()), detectedUnit: null, detectedUp: null, warnings: [] };
+    const nestedAsset = "abcdefabcdef0001";
+    putLoaded(nestedAsset, nestedModel);
+    const nid = s().addImportedItem({ assetId: nestedAsset, name: "Nested", format: "glb", unitToMetres: frame.unitToMetres, upAxis: frame.upAxis, doubleSided: false, nodeOverrides: structuredClone(NEST_PARENT) }, NEST_ITEM.position);
+    s().updateItem(nid, { rotationY: NEST_ITEM.rotationY, scale: NEST_ITEM.scale });
+    const ov = () => structuredClone(s().plan.items.find((i) => i.id === nid)!.import!.nodeOverrides);
+    const table = { itemId: nid, path: "0/0" };
+    useSelectionStore.getState().selectItem(nid);
+    useSelectionStore.getState().selectPart("0/0");
+    const v0 = worldVertices(original, ov(), "0/0");
+    const P = worldPivot(original, ov(), "0/0");
+    const n = s().past.length;
+    t().setTyped("45");
+    assert.ok(t().applyTyped("rotate"));
+    assert.equal(s().past.length, n + 1, "store, nested: typed 45° is one undo step");
+    allNear(worldVertices(original, ov(), "0/0"), v0.map((v) => v.clone().sub(P).applyAxisAngle(new THREE.Vector3(0, 1, 0), 45 * DEG).add(P)), 1e-6, "store, nested: typed 45 turns the Table by exactly 45° in the world");
+    s().undo();
+    t().setTyped("150");
+    assert.ok(t().applyTyped("scale"));
+    allNear(worldVertices(original, ov(), "0/0"), v0.map((v) => v.clone().sub(P).multiplyScalar(1.5).add(P)), 1e-6, "store, nested: typed 150 grows it by exactly 1.5 about its pivot");
+    s().undo();
+    assert.ok(t().begin(table, "move"));
+    const start = t().drag!.start.position;
+    t().moveFloor({ x: 0, y: 0 }, { x: 0.4, y: -0.3 });
+    const r = moveItemFloor({ position: start }, { x: 0, y: 0 }, { x: 0.4, y: -0.3 }, { snap: true }).value;
+    const dw = new THREE.Vector3(r.x - start.x, 0, r.y - start.z);
+    t().commit();
+    allNear(worldVertices(original, ov(), "0/0"), v0.map((v) => v.clone().add(dw)), 1e-6, `store, nested: a floor drag moves the Table by the snapped world delta (${dw.x.toFixed(2)}, ${dw.z.toFixed(2)})`);
+    nearV(worldPivot(original, ov(), "0/0"), { x: r.x, y: start.y, z: r.y }, 1e-6, "its pivot lands on the 5 cm grid");
+    s().undo();
+    useSelectionStore.getState().select(null);
+  }
 }
 
 // ================================================================= 7. shortcuts

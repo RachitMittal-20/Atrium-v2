@@ -24,6 +24,7 @@ import {
   detectFormat,
   DRACO_MESSAGE,
   gatherFiles,
+  ensureNormals,
   GREY_PIXEL,
   ImportError,
   loadModel,
@@ -129,11 +130,11 @@ async function main() {
   const pick = (s: number, detected: number | null = null) => guessUnit(chair(s), detected);
   assert.equal(pick(3.2).chosen.unit, "m", "3.2 → metres");
   assert.equal(pick(320).chosen.unit, "cm", "320 → centimetres (3.2 m)");
-  // Step I.1b's rule: of the units giving 0.2–60 m, the one nearest 3 m on a log scale (ties m, mm, cm, in, ft).
+  // Step I.1b-fix's rule: of the units giving 0.2–60 m, the metric one nearest 1.5 m on a log scale (imperial only when no metric fits).
   assert.equal(pick(3200).chosen.unit, "mm", "3200 → millimetres (3.2 m), not centimetres (32 m)");
   assert.ok(near(pick(3200).candidates.find((c) => c.unit === "mm")!.size.x, 3.2), "…offered as 3.2 m");
-  assert.equal(pick(126).chosen.unit, "in", "126 → inches (3.20 m), not centimetres (1.26 m)");
-  assert.ok(near(pick(126).candidates.find((c) => c.unit === "in")!.size.x, 3.2004), "…offered as 3.20 m");
+  assert.equal(pick(126).chosen.unit, "cm", "126 → centimetres (1.26 m): metric first, although inches (3.20 m) also fits");
+  assert.ok(near(pick(126).candidates.find((c) => c.unit === "in")!.size.x, 3.2004), "…inches offered as 3.20 m");
   assert.equal(pick(320, 0.01).chosen.unit, "cm", "a COLLADA unit is used as is");
   assert.equal(pick(3.2, 0.01).chosen.unit, "cm", "a COLLADA unit overrides the guess (metres would have fitted)");
   assert.equal(pick(320, 0.0254).chosen.unit, "in", "a COLLADA unit that is inches");
@@ -247,8 +248,8 @@ async function main() {
     assert.equal(mat.name, "wood", "the MTL's material is used");
     const size = withMtl.size;
     assert.ok(near(size.x, 120) && near(size.y, 75) && near(size.z, 80), "source units: centimetres");
-    // a 120 cm table that states no unit: 1.2 m in cm, 3.05 m in inches, 36.6 m in feet all fit, and inches is nearest 3 m
-    assert.equal(guessUnit(size, withMtl.detectedUnit).chosen.unit, "in", "and guessed as inches by the nearest-to-3 m rule");
+    // a 120 cm table that states no unit: 1.2 m in cm, 3.05 m in inches, 36.6 m in feet all fit; cm is the only metric fit
+    assert.equal(guessUnit(size, withMtl.detectedUnit).chosen.unit, "cm", "and guessed as centimetres (metric first)");
     assert.equal(guessUnit(size, withMtl.detectedUnit).ambiguous, true, "…which is flagged ambiguous, so the dialog asks to compare");
     const noMtl = await loadModel([file("table.obj", obj)]);
     assert.deepEqual(noMtl.warnings, ["Missing file: table.mtl. The model shows grey without it."], "a missing .mtl is reported");
@@ -258,6 +259,28 @@ async function main() {
     for (const stl of [makeStlBinary(CUBE), enc(makeStlAscii(CUBE))]) {
       const m = await loadModel([file("cube.stl", stl)]);
       assert.equal(m.stats.triangles, 12, "STL: 12 triangles");
+    }
+    // normals (I.1b-fix): the hand-made STL writes 0 0 0 for every facet normal, which lit black
+    const stlBytes = makeStlBinary(CUBE);
+    assert.ok([0, 1, 2].every((c) => new DataView(stlBytes.buffer).getFloat32(84 + c * 4, true) === 0), "the fixture's facet normals are zero");
+    for (const stl of [stlBytes, enc(makeStlAscii(CUBE))]) {
+      const g = ((await loadModel([file("cube.stl", stl)])).root.children[0] as THREE.Mesh).geometry;
+      const n = g.attributes.normal;
+      let shortest = Infinity;
+      for (let i = 0; i < n.count; i++) shortest = Math.min(shortest, Math.hypot(n.getX(i), n.getY(i), n.getZ(i)));
+      assert.ok(shortest > 0.999, `STL: every normal computed, unit length (shortest ${shortest})`);
+      for (let f = 0; f < n.count; f += 3) assert.ok([1, 2].every((k) => n.getX(f) === n.getX(f + k) && n.getY(f) === n.getY(f + k) && n.getZ(f) === n.getZ(f + k)), "STL: flat, one normal per face");
+    }
+    {
+      const indexed = new THREE.BoxGeometry(1, 1, 1);
+      indexed.deleteAttribute("normal");
+      const root = new THREE.Group().add(new THREE.Mesh(indexed));
+      assert.equal(ensureNormals(root, false), 1, "a mesh with no normals is fixed");
+      const g = (root.children[0] as THREE.Mesh).geometry;
+      assert.ok(g.index !== null && g.attributes.normal.count === g.attributes.position.count, "smooth: still indexed, a normal per vertex");
+      assert.equal(ensureNormals(root, false), 0, "good normals are left alone");
+      const glb = await loadModel([file("cube.glb", makeGlb([CUBE]))]);
+      assert.ok(((glb.root.getObjectByProperty("isMesh", true) as THREE.Mesh).geometry.attributes.normal.count ?? 0) > 0, "a glTF without normals gets them too");
     }
   }
 

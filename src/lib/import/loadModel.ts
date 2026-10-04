@@ -18,7 +18,8 @@
  *   gltfCompression Draco and Meshopt need decoders this app does not ship.
  *   colladaAsset    a COLLADA file's <unit meter> and <up_axis>, read from the text.
  * loadModel runs them, parses with the right loader, removes cameras, lights and
- * helpers, and checks the triangle limits.
+ * helpers, computes missing or zero-length normals (ensureNormals: flat for STL, smooth
+ * otherwise), and checks the triangle limits.
  *
  * Nothing in a file is ever fetched or run: every URL a loader asks for goes
  * through a LoadingManager URL modifier that answers with a blob: URL of one of
@@ -368,6 +369,35 @@ export function cleanScene(root: THREE.Object3D): void {
   for (const o of drop) o.removeFromParent();
 }
 
+/**
+ * Give every mesh usable normals (step I.1b-fix): one with no normals, or with any of zero
+ * length (an STL that writes 0 0 0 for every facet, which lights as black), has them
+ * computed. `flat`: one normal per face (STL is a bag of facets with no shared edges to
+ * smooth over); otherwise smooth vertex normals, which three gives an indexed mesh.
+ * Returns how many meshes were fixed.
+ */
+export function ensureNormals(root: THREE.Object3D, flat: boolean): number {
+  let fixed = 0;
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    const g = mesh.isMesh ? (mesh.geometry as THREE.BufferGeometry) : null;
+    if (!g?.attributes.position) return;
+    const n = g.attributes.normal;
+    let ok = !!n && n.count === g.attributes.position.count;
+    for (let i = 0; ok && i < n.count; i++) ok = Math.hypot(n.getX(i), n.getY(i), n.getZ(i)) > 1e-6;
+    if (ok) return;
+    const target = flat && g.index ? g.toNonIndexed() : g; // a face's three corners share nothing: its normal is the face's
+    target.deleteAttribute("normal");
+    target.computeVertexNormals();
+    if (target !== g) {
+      mesh.geometry = target;
+      g.dispose();
+    }
+    fixed++;
+  });
+  return fixed;
+}
+
 /** Mesh, material and texture counts (triangles via model.countTriangles). */
 export function sceneStats(root: THREE.Object3D): ModelStats {
   let objects = 0;
@@ -482,6 +512,7 @@ export async function loadModel(input: InputFile[]): Promise<LoadedModel> {
   if (!root) throw new ImportError(NO_SHAPES);
 
   cleanScene(root);
+  ensureNormals(root, format === "stl");
   root.updateMatrixWorld(true);
   const stats = sceneStats(root);
   const box3 = new THREE.Box3().setFromObject(root);

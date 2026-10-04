@@ -28,8 +28,8 @@
  * (selectionStore.itemId); with Edit parts on for that model it selects the PART
  * (model.pickPart: the highest named node below the root; Alt-click: the mesh's own).
  * The selected item or part is tinted gilt AND outlined: its meshes' edges as 2 px gilt
- * lines drawn on top of everything (LineSegments2, depth test off), so it shows on a
- * pale model too. Hover is lighter; what Move, Rotate or Scale would act on is light
+ * lines (LineSegments2), the visible ones solid and depth-tested, the ones a surface hides
+ * at 20%, so it shows on a pale model too and back edges never read as solid lines. Hover is lighter; what Move, Rotate or Scale would act on is light
  * blue (src/store/itemToolStore.ts, driven by ItemTool.tsx); a row clicked in the
  * panel's object list tints that node light blue for a moment (importStore.highlight).
  * Walking picks nothing here.
@@ -58,7 +58,7 @@ import { acquire, assetStore, release, useAsset } from "@/lib/import/assetCache"
 import type { LoadedModel } from "@/lib/import/loadModel";
 import { applyOverrides, applyPartTransforms, modelFrame, pickPart, upTilt } from "@/lib/import/model";
 import { useImportStore } from "@/store/importStore";
-import { useItemToolStore } from "@/store/itemToolStore";
+import { targetPivot, useItemToolStore } from "@/store/itemToolStore";
 import { usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
 import { is3dTool, isItemTool, useToolStore } from "@/store/toolStore";
@@ -77,8 +77,14 @@ type Tint = "selected" | "hovered" | "tool" | null;
 const TINT: Record<Exclude<Tint, null>, THREE.Color> = { selected: new THREE.Color(SCENE_COLORS.wallSelected), hovered: new THREE.Color(SCENE_COLORS.wallHovered), tool: new THREE.Color(SCENE_COLORS.toolHighlight) };
 const HIGHLIGHT = new THREE.Color(SCENE_COLORS.toolHighlight);
 const TINT_STRENGTH = 0.6; // of the tint colour added as emissive light
-/** One shared material for every outline: 2 px gilt, drawn over everything (depth test off). */
-const OUTLINE_MATERIAL = new LineMaterial({ color: SCENE_COLORS.outline, linewidth: OUTLINE_PX, depthTest: false, depthWrite: false, transparent: true });
+/**
+ * The outline in two passes, shared by every selection (step I.1b-fix): the edges a surface hides at 20% (depth test off),
+ * then the visible ones solid, depth-tested, pulled a little towards the camera (polygon offset on the lines' own quads)
+ * so they win over the faces they lie on. A visible edge is drawn by both, which reads as solid gilt.
+ */
+export const OUTLINE_HIDDEN_OPACITY = 0.2;
+const OUTLINE_HIDDEN = new LineMaterial({ color: SCENE_COLORS.outline, linewidth: OUTLINE_PX, depthTest: false, depthWrite: false, transparent: true, opacity: OUTLINE_HIDDEN_OPACITY });
+const OUTLINE_VISIBLE = new LineMaterial({ color: SCENE_COLORS.outline, linewidth: OUTLINE_PX, depthTest: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -8 });
 
 type Lit = THREE.Material & { emissive?: THREE.Color; userData: { baseEmissive?: THREE.Color } };
 /** A subtree of the clone (by node path) tinted in its own colour, over the item's tint. */
@@ -157,7 +163,7 @@ function paint(clone: THREE.Object3D, tint: Tint, rules: PathTint[]) {
 
 /**
  * The selection's outline: each mesh's edges (EdgesGeometry, faces meeting at 30° or
- * more) as 2 px gilt lines. They live at the scene's root, not in the item (so they are
+ * more) as 2 px gilt lines, twice: hidden at 20%, visible solid (OUTLINE_HIDDEN / OUTLINE_VISIBLE). They live at the scene's root, not in the item (so they are
  * never counted as the model's meshes), and copy their mesh's world matrix every frame,
  * so they follow a drag. ponytail: edges are rebuilt when the selection changes, which is
  * slow for a model of millions of triangles; a cheaper silhouette pass if real models need it.
@@ -169,14 +175,20 @@ function Outline({ meshes }: { meshes: THREE.Mesh[] }) {
     g.name = "selection-outline";
     for (const m of meshes) {
       const edges = new THREE.EdgesGeometry(m.geometry, OUTLINE_ANGLE);
-      const line = new LineSegments2(new LineSegmentsGeometry().fromEdgesGeometry(edges), OUTLINE_MATERIAL);
+      const geometry = new LineSegmentsGeometry().fromEdgesGeometry(edges);
       edges.dispose();
-      line.matrixAutoUpdate = false;
-      line.renderOrder = 10; // after the model, which it is drawn over
-      line.frustumCulled = false;
-      line.raycast = () => {}; // never picked
-      line.userData.source = m;
-      g.add(line);
+      for (const [material, order] of [
+        [OUTLINE_HIDDEN, 10],
+        [OUTLINE_VISIBLE, 11],
+      ] as const) {
+        const line = new LineSegments2(geometry, material);
+        line.matrixAutoUpdate = false;
+        line.renderOrder = order; // after the model: the hidden pass, then the visible one
+        line.frustumCulled = false;
+        line.raycast = () => {}; // never picked
+        line.userData.source = m;
+        g.add(line);
+      }
     }
     return g;
   }, [meshes]);
@@ -184,7 +196,7 @@ function Outline({ meshes }: { meshes: THREE.Mesh[] }) {
     scene.add(group);
     return () => {
       scene.remove(group);
-      for (const l of group.children) (l as LineSegments2).geometry.dispose();
+      for (const l of group.children) (l as LineSegments2).geometry.dispose(); // the two passes share one; disposing twice is harmless
     };
   }, [scene, group]);
   useFrame(() => {
@@ -411,6 +423,8 @@ export function ImportedItems() {
       assets: () => assetStore().list(),
       /** The orbit camera: where it is, what it looks at, its vertical fov and aspect; and whether a Show-in-view glide is under way. */
       camera: () => ({ position: camera.position.toArray(), target: controls?.target.toArray() ?? null, fov: camera.fov, aspect: camera.aspect, gliding: glide.current !== null || useViewStore.getState().frame !== null }),
+      /** A part's pivot in the world right now (its own and its ancestors' transforms applied), or the item's base point for "". */
+      partPivot: (id: string, path: string) => targetPivot({ itemId: id, path: path === "" ? null : path }),
       /** How long the last import took to read and parse (ms), from the dialog's file to its review. */
       parseMs: () => useImportStore.getState().parseMs,
     };

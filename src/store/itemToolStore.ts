@@ -13,8 +13,10 @@
  * The target is a whole item (`path` null: Item.position, rotationY, scale) or one of
  * its parts (`path` set: NodeOverride.transform, in the MODEL frame, about the part's
  * pivot, see src/lib/import/model.ts). The rules are src/lib/import/transform.ts; a
- * part runs them as a stand-in item standing at the part's pivot, and the result is
- * turned back into the model frame (worldToModelDelta). Alt turns snapping off.
+ * part runs them as a stand-in item standing at the part's pivot (where it is now, its
+ * ancestors' transforms included), and the world change (a move, or a turn or scale about
+ * that pivot) is taken into the model frame (worldToModelDelta) and through the part's
+ * ancestors (model.partTransformAfter), so it is right under any parent chain. Alt turns snapping off.
  * Move: on the floor, or straight up with Shift or the Lift toggle (chosen at the press).
  * Typed values: Rotate turns BY the typed degrees, Scale sets the typed percentage
  * exactly; with no drag they act on the selection (the active part, else the item), else
@@ -27,8 +29,8 @@
  */
 import { create } from "zustand";
 import { useAssetCache } from "@/lib/import/assetCache";
-import { formatSize, modelFrame, partBox } from "@/lib/import/model";
-import { itemPoint, liftItem, moveItemFloor, parseDegrees, parsePercent, rotateItem, ROTATE_STEP_DEG, scaleItem, scaleToPercent, turnDegrees, worldToModelDelta, type Result } from "@/lib/import/transform";
+import { ancestorTransforms, formatSize, modelFrame, partBox, partPivotNow, partTransformAfter, type PartChange } from "@/lib/import/model";
+import { itemPoint, liftItem, moveItemFloor, parseDegrees, parsePercent, rotateItem, ROTATE_STEP_DEG, scaleItem, scaleToPercent, turnDegrees, worldToModelDelta, wrapAngle, type Result } from "@/lib/import/transform";
 import type { Item, PartTransform, Vec2, Vec3 } from "@/types/plan";
 import { usePlanStore } from "./planStore";
 import { useSelectionStore } from "./selectionStore";
@@ -59,6 +61,8 @@ export interface ItemDrag {
   start: Pick<Item, "position" | "rotationY" | "scale">;
   /** A part's transform at the start. */
   transform0: PartTransform | null;
+  /** A part's pivot at the start, in the model frame (its own transform and its ancestors' applied): what it turns and scales about. */
+  pivot0: Vec3 | null;
   input: Input | null;
   label: ItemLabel | null;
   /** True while a preview edit sits on top of history, ready to roll back. */
@@ -133,9 +137,9 @@ function modelOf(item: Item) {
 }
 
 /**
- * A part's pivot (model frame, original box), its current transform and the item's base point; null when the file isn't loaded.
- * ponytail: a part inside a parent that has its own part transform is dragged as if the parent had none (pivot and floor
- * direction ignore it); compose the ancestors' matrices here if nested part edits turn out to matter.
+ * What a part drag needs: the cached original and the model frame (for model.partTransformAfter), the part's own
+ * transform now, where its pivot is now in the model frame (moved by its own transform AND carried by its ancestors'),
+ * the item's base point, its original size and the scale its ancestors give it; null when the file isn't loaded.
  */
 function partInfo(item: Item, path: string) {
   const model = modelOf(item);
@@ -144,10 +148,19 @@ function partInfo(item: Item, path: string) {
   const frame = { unitToMetres: info.unitToMetres, upAxis: info.upAxis };
   const box = partBox(model.root, path, frame);
   if (!box) return null;
-  const pivot = { x: (box.min.x + box.max.x) / 2, y: box.min.y, z: (box.min.z + box.max.z) / 2 };
   const base = modelFrame(model.box, info.unitToMetres, info.upAxis).base;
   const transform = info.nodeOverrides[path]?.transform ?? { t: [0, 0, 0] as [number, number, number], rotY: 0, s: 1 };
-  return { pivot, base, transform, size: { x: box.max.x - box.min.x, y: box.max.y - box.min.y, z: box.max.z - box.min.z } };
+  const e = ancestorTransforms(model.root, path, info.nodeOverrides, frame).elements;
+  return {
+    root: model.root,
+    frame,
+    overrides: info.nodeOverrides,
+    base,
+    transform,
+    pivotNow: partPivotNow(model.root, path, info.nodeOverrides, frame, transform)!,
+    size: { x: box.max.x - box.min.x, y: box.max.y - box.min.y, z: box.max.z - box.min.z },
+    ancestorScale: Math.hypot(e[0], e[1], e[2]),
+  };
 }
 
 /** Width × depth × height (m) of what the target looks like at scale `k` (its own scale; a part also takes the item's). */
@@ -155,7 +168,8 @@ function sizeAt(item: Item, path: string | null, k: number): string {
   const model = modelOf(item);
   if (path !== null) {
     const p = partInfo(item, path);
-    return p ? formatSize(p.size.x * k * item.scale, p.size.z * k * item.scale, p.size.y * k * item.scale) : "–";
+    const m = p ? k * p.ancestorScale * item.scale : 0;
+    return p ? formatSize(p.size.x * m, p.size.z * m, p.size.y * m) : "–";
   }
   if (!model || !item.import) return formatSize(k, k, k); // the 1 m placeholder
   const f = modelFrame(model.box, item.import.unitToMetres, item.import.upAxis);
@@ -182,6 +196,10 @@ export const useItemToolStore = create<ItemToolState>((set, get) => {
     const { start, target, transform0 } = drag;
     const snap = !get().alt;
     const part = target.path !== null && transform0 !== null;
+    const info = part ? partInfo(item, target.path!) : null;
+    /** A part's new transform after a change in the model frame, right under any parent chain (model.partTransformAfter). */
+    const partAfter = (change: PartChange) => (info && transform0 ? partTransformAfter(info.root, target.path!, info.overrides, info.frame, transform0, change) : null);
+    const pivot0 = drag.pivot0;
     let label: ItemLabel | null = null;
     let item$: Partial<Pick<Item, "position" | "rotationY" | "scale">> | null = null; // the item's new fields
     let part$: PartTransform | null = null; // or the part's new transform
@@ -189,33 +207,31 @@ export const useItemToolStore = create<ItemToolState>((set, get) => {
     if (input.kind === "floor") {
       const r = moveItemFloor(start, input.grab, input.current, { snap });
       const d = { x: r.value.x - start.position.x, y: 0, z: r.value.y - start.position.z };
-      if (part) {
-        const m = worldToModelDelta(item, d);
-        part$ = { ...transform0, t: [transform0.t[0] + m.x, transform0.t[1], transform0.t[2] + m.z] };
-      } else item$ = { position: { x: r.value.x, y: start.position.y, z: r.value.y } };
+      if (part) part$ = partAfter({ kind: "move", d: worldToModelDelta(item, d) });
+      else item$ = { position: { x: r.value.x, y: start.position.y, z: r.value.y } };
       label = { distance: `${signed(d.x)}, ${signed(d.z)}`, value: `${part ? "Part at" : "At"} x ${r.value.x.toFixed(2)} m, y ${r.value.y.toFixed(2)} m`, note: r.reason };
     } else if (input.kind === "lift") {
       const r = liftItem(start, input.t, { snap });
       const dy = r.value - start.position.y;
-      if (part) part$ = { ...transform0, t: [transform0.t[0], transform0.t[1] + dy / item.scale, transform0.t[2]] };
+      if (part) part$ = partAfter({ kind: "move", d: worldToModelDelta(item, { x: 0, y: dy, z: 0 }) });
       else item$ = { position: { ...start.position, y: r.value } };
       label = { distance: signed(dy), value: `${part ? "Part height" : "Height"} ${r.value.toFixed(2)} m`, note: r.reason };
     } else if (drag.kind === "rotate") {
       const r: Result<number> = input.kind === "rotate" ? rotateItem(start, input.a0, input.a1, { snapDeg: snap ? ROTATE_STEP_DEG : null }) : rotateItem(start, 0, (input.kind === "typed" ? input.value : 0) * (Math.PI / 180), { snapDeg: null });
-      if (part) part$ = { ...transform0, rotY: r.value };
+      if (part && pivot0) part$ = partAfter({ kind: "turn", angle: wrapAngle(r.value - start.rotationY), about: pivot0 }); // about the pivot where it is now
       else item$ = { rotationY: r.value };
       const by = turnDegrees(start.rotationY, r.value);
       label = { distance: `${by < 0 ? "-" : "+"}${Math.abs(by)}°`, value: `Rotation ${deg(r.value)}°`, note: r.reason };
     } else if (drag.kind === "scale") {
       const r: Result<number> = input.kind === "scale" ? scaleItem(start, input.px0, input.px1, { snap }) : scaleToPercent(input.kind === "typed" ? input.value : 100);
       if (r.ok) {
-        if (part) part$ = { ...transform0, s: r.value };
+        if (part && pivot0) part$ = partAfter({ kind: "scale", factor: r.value / start.scale, about: pivot0 });
         else item$ = { scale: r.value };
       }
       label = { distance: `Scale ${pct(r.value)}`, value: `Size ${sizeAt(item, part ? target.path : null, r.value)}`, note: r.reason };
     }
 
-    if (part$) part$ = { ...part$, t: part$.t.map((v) => Number(v.toFixed(6)) || 0) as [number, number, number] }; // micrometres: no float dust (1e-17) in the plan
+    if (part$) part$ = { ...part$, t: part$.t.map((v) => Number(v.toFixed(9)) || 0) as [number, number, number] }; // nanometres: no float dust (1e-17) in the plan
     const isLive = live(() => {
       const s = usePlanStore.getState();
       if (item$) s.updateItem(target.itemId, item$);
@@ -262,6 +278,7 @@ export const useItemToolStore = create<ItemToolState>((set, get) => {
       if (!item?.import) return false;
       let start: ItemDrag["start"] = { position: { ...item.position }, rotationY: item.rotationY, scale: item.scale };
       let transform0: PartTransform | null = null;
+      let pivot0: Vec3 | null = null;
       if (target.path !== null) {
         const p = partInfo(item, target.path);
         if (!p) {
@@ -269,11 +286,12 @@ export const useItemToolStore = create<ItemToolState>((set, get) => {
           return false;
         }
         transform0 = { t: [...p.transform.t] as [number, number, number], rotY: p.transform.rotY, s: p.transform.s };
+        pivot0 = p.pivotNow;
         // the part as a stand-in item: standing at its pivot (where it is now), turned and scaled by its own transform
-        const at = itemPoint(item, { x: p.pivot.x + transform0.t[0] - p.base.x, y: p.pivot.y + transform0.t[1] - p.base.y, z: p.pivot.z + transform0.t[2] - p.base.z });
+        const at = itemPoint(item, { x: pivot0.x - p.base.x, y: pivot0.y - p.base.y, z: pivot0.z - p.base.z });
         start = { position: at, rotationY: transform0.rotY, scale: transform0.s };
       }
-      set({ drag: { kind, lift: kind === "move" && !!opts.lift, target, start, transform0, input: null, label: null, live: false }, hover: target, typed: "", message: null });
+      set({ drag: { kind, lift: kind === "move" && !!opts.lift, target, start, transform0, pivot0, input: null, label: null, live: false }, hover: target, typed: "", message: null });
       return true;
     },
     moveFloor: (grab, current) => get().typed === "" && render({ kind: "floor", grab, current }),
@@ -334,6 +352,5 @@ export function targetPivot(target: ItemTarget): Vec3 | null {
   if (target.path === null) return { ...item.position };
   const p = partInfo(item, target.path);
   if (!p) return null;
-  const t = p.transform.t;
-  return itemPoint(item, { x: p.pivot.x + t[0] - p.base.x, y: p.pivot.y + t[1] - p.base.y, z: p.pivot.z + t[2] - p.base.z });
+  return itemPoint(item, { x: p.pivotNow.x - p.base.x, y: p.pivotNow.y - p.base.y, z: p.pivotNow.z - p.base.z });
 }

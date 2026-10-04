@@ -47,6 +47,10 @@
  *   - room.dae, Edit parts: a click on the Table selects the part (its row active); Move, typed
  *     30° and typed 150% change ONLY the Table's world box (Sofa, Lamp and the cube within 1 mm);
  *     one Undo takes the scale back; after a reload the part's transform is back and drawn;
+ *   - (I.1b-fix) the 3000-unit STL, imported: its top face is lit (zero normals recomputed), not near-black;
+ *   - (I.1b-fix) nested.glb: Shelf (turned and scaled in the file) gets its own part turn 30° and scale 50%
+ *     (typed), then Box A under it is dragged with real input: its pivot lands on the label's point,
+ *     its world box moves exactly as its pivot, Box B stays, one undo;
  *   - Walk disables Move, Rotate and Scale with "Exit Walk to use …".
  * Lines of piece A changed in I.1b: Push/Pull's message (IMPORTED); the "ignore it" loop covers
  * Push/Pull only (Move moves models now); table.zip is guessed as inches and flagged ambiguous,
@@ -429,10 +433,9 @@ async function run(width: number, height: number) {
   const gBefore = await debug(page, (d) => d.renderer());
   await tid(page, "import-model-input").setInputFiles(join(FIX, "table.zip"));
   await reviewOpen();
-  // I.1b's rule (nearest 3 m) reads a 120-unit table with no stated unit as inches (3.05 m), and flags it ambiguous
-  assert.equal(await tid(page, "import-unit-in").isChecked(), true, `${tag}: a 120-unit table guessed as inches (nearest 3 m)`);
+  // I.1b-fix's rule (metric nearest 1.5 m) reads a 120-unit table with no stated unit as centimetres; inches also fit, so it is ambiguous
+  assert.equal(await tid(page, "import-unit-cm").isChecked(), true, `${tag}: a 120-unit table guessed as centimetres`);
   assert.equal(await tid(page, "import-ambiguous").isVisible(), true, `${tag}: and the dialog says several sizes are possible`);
-  await (touch ? tid(page, "import-unit-cm").tap() : tid(page, "import-unit-cm").check()); // the user picks centimetres
   assert.equal(await tid(page, "import-warnings").count(), 0, `${tag}: nothing missing from the zip`);
   const table = await confirmImport();
   await page.waitForTimeout(800);
@@ -512,6 +515,8 @@ async function meanDiff(a: Buffer, b: Buffer): Promise<number> {
   for (let i = 0; i < x.length; i++) sum += Math.abs(x[i] - y[i]);
   return sum / x.length;
 }
+/** An STL's lit top face must be brighter than this (mean of R, G, B, 0–255); with zero normals it was black. */
+const STL_LIT_MIN = 60;
 /** The selection outline must change the item's crop by more than this (mean per channel, 0–255). */
 const OUTLINE_DIFF_MIN = 4;
 
@@ -575,7 +580,7 @@ async function checkTools(width: number, height: number) {
   const itemOf = async (id: string) => (await page.evaluate(() => (window as Win).__planStore!.getState().plan.items)).find((i) => i.id === id) as unknown as ItemLike;
   const label = async (k: string) => ((await tid(page, `item-label-${k}`).innerText().catch(() => "")) ?? "").trim();
   /** A drag from `a` to `b` in `steps`, mouse or one real finger; `mid` runs halfway (a screenshot, a label read). */
-  const drag = async (a: Pt, b: Pt, opts: { steps?: number; mid?: () => Promise<void>; shift?: boolean } = {}) => {
+  const drag = async (a: Pt, b: Pt, opts: { steps?: number; mid?: () => Promise<void>; shift?: boolean; beforeRelease?: () => Promise<void> } = {}) => {
     const steps = opts.steps ?? 8;
     const at = (k: number) => ({ x: a.x + ((b.x - a.x) * k) / steps, y: a.y + ((b.y - a.y) * k) / steps });
     if (touch) {
@@ -584,6 +589,7 @@ async function checkTools(width: number, height: number) {
         await touchAt("touchMove", at(k));
         if (k === Math.ceil(steps / 2) && opts.mid) await opts.mid();
       }
+      if (opts.beforeRelease) await opts.beforeRelease();
       await touchAt("touchEnd");
     } else {
       await page.mouse.move(a.x, a.y);
@@ -593,6 +599,7 @@ async function checkTools(width: number, height: number) {
         await page.mouse.move(at(k).x, at(k).y);
         if (k === Math.ceil(steps / 2) && opts.mid) await opts.mid();
       }
+      if (opts.beforeRelease) await opts.beforeRelease();
       await page.mouse.up();
       if (opts.shift) await page.keyboard.up("Shift");
     }
@@ -634,7 +641,27 @@ async function checkTools(width: number, height: number) {
     await page.waitForTimeout(600);
     await page.screenshot({ path: `${OUT}/import-dialog-ambiguous-1440.png` });
   }
-  await press("import-cancel");
+  // normals (I.1b-fix): the STL's zero facet normals are recomputed, so its top face is lit, not near-black
+  await press("import-confirm");
+  await page.waitForSelector('[data-testid="import-dialog"][data-kind="closed"]', { state: "attached", timeout: 15000 });
+  const slab = (await plan(page)).items.at(-1)!.id;
+  await sheet(true);
+  await press("item-show");
+  await sheet(false);
+  await settle();
+  await tid(page, "scene-3d").focus();
+  await page.keyboard.press("Escape"); // unselected: no gilt tint to brighten it
+  if (!touch) await page.mouse.move(2, height - 2);
+  await page.waitForTimeout(400);
+  const sb0 = (await box(slab))!;
+  const sTop = await project([centreOf(sb0)[0], sb0.max[1], centreOf(sb0)[2]]);
+  const crop = await page.screenshot({ clip: { x: sTop.x - 10, y: sTop.y - 10, width: 20, height: 20 } });
+  const { channels } = await sharp(crop).stats();
+  const lum = (channels[0].mean + channels[1].mean + channels[2].mean) / 3;
+  console.log(`${tag}: the STL slab's top face is ${lum.toFixed(0)} / 255 bright (before I.1b-fix it rendered black)`);
+  assert.ok(lum > STL_LIT_MIN, `${tag}: the STL is lit (mean ${lum.toFixed(1)} > ${STL_LIT_MIN})`);
+  await undo(); // the slab goes again: one undo step
+  assert.equal((await plan(page)).items.some((i) => i.id === slab), false, `${tag}: (slab removed by Undo)`);
 
   // ---- cube.glb: imported, then put at x 2, y 2, 3 m up (clear of every wall), and Show in view
   await tid(page, "import-model-input").setInputFiles(join(FIX, "cube.glb"));
@@ -916,6 +943,77 @@ async function checkTools(width: number, height: number) {
   assert.deepEqual((await roomItem()).import!.nodeOverrides[tablePath].transform, kept, `${tag}: after a reload the part's transform is back`);
   sameBox(await partBox(room, tablePath), table2, 0.001, `${tag}: and the Table is drawn where it was`);
   sameBox(await partBox(room, sofaPath), o0.sofa, 0.001, `${tag}: and the Sofa where it was`);
+
+  // ---- nested.glb (I.1b-fix): Box A sits under Shelf, turned 30° and scaled 0.5 in the file AND by its own part transform;
+  //      dragging Box A on the floor moves its world box exactly as its pivot moves, to the label's grid point
+  await press("tool-select");
+  await tid(page, "import-model-input").setInputFiles(join(FIX, "nested.glb"));
+  await page.waitForSelector('[data-testid="import-dialog"][data-kind="review"]', { timeout: 20000 });
+  const nest = await confirmImport();
+  await type("item-x", "8");
+  await type("item-y", "6");
+  await type("item-height", "3");
+  await press("item-show");
+  await sheet(false);
+  await settle();
+  await sheet(true);
+  // a group's row button reads "Shelf (2)" (its mesh count): find rows by the name button's text
+  const nodePath = async (name: string) => (await page.locator('[data-testid^="object-name-"]').filter({ hasText: new RegExp(`^${name}\\s*(\\(\\d+\\))?$`) }).first().getAttribute("data-testid"))!.replace("object-name-", "");
+  const [shelfPath, aPath, bPath] = [await nodePath("Shelf"), await nodePath("Box_A"), await nodePath("Box_B")]; // GLTFLoader writes spaces in names as _
+  if ((await tid(page, "item-edit-parts").getAttribute("aria-pressed")) !== "true") await press("item-edit-parts");
+  await press(`object-name-${shelfPath}`); // the row picks the part
+  const typeValue = async (v: string) => {
+    if (touch) {
+      await sheet(false);
+      await tid(page, "item-typed-input").tap();
+      await tid(page, "item-typed-input").fill(v);
+      await tid(page, "item-typed-input").press("Enter");
+    } else {
+      await tid(page, "scene-3d").focus();
+      await page.keyboard.type(v);
+      await page.keyboard.press("Enter");
+    }
+    await page.waitForTimeout(300);
+  };
+  await press("tool-rotate");
+  await typeValue("30");
+  await press("tool-scale");
+  await typeValue("50");
+  const shelfT = (await itemOf(nest)).import!.nodeOverrides[shelfPath].transform!;
+  near(shelfT.rotY, Math.PI / 6, 1e-9, `${tag}: Shelf has its own part turn (30°)`);
+  near(shelfT.s, 0.5, 1e-9, `${tag}: and scale (50%)`);
+  await sheet(true);
+  await press(`object-name-${aPath}`);
+  assert.equal(await tid(page, `object-row-${aPath}`).getAttribute("data-active"), "true", `${tag}: Box A is the active part`);
+  await press("tool-move");
+  await sheet(false);
+  await settle();
+  const pivotOf = (path: string) => page.evaluate(([i, p]) => (window as unknown as { __importDebug: { partPivot(i: string, p: string): { x: number; y: number; z: number } | null } }).__importDebug.partPivot(i, p), [nest, path] as const);
+  const a0 = (await partBox(nest, aPath))!;
+  const bBox0 = await partBox(nest, bPath);
+  const pa0 = (await pivotOf(aPath))!;
+  const aTop = await project(top(a0));
+  let at: number[] = [];
+  await drag(aTop, { x: aTop.x + (touch ? 40 : 70), y: aTop.y + (touch ? 30 : 25) }, {
+    beforeRelease: async () => {
+      await page.waitForTimeout(200); // the last move's pointer event has been handled
+      at = numbers(await label("value")); // "Part at x 8.35 m, y 6.10 m"
+    },
+  });
+  const a1 = (await partBox(nest, aPath))!;
+  const pa1 = (await pivotOf(aPath))!;
+  near(pa1.x, at[0], 0.0005, `${tag}: nested: Box A's pivot lands where the label says (x)`);
+  near(pa1.z, at[1], 0.0005, `${tag}: nested: … (y)`);
+  near(pa1.y, pa0.y, 1e-6, `${tag}: nested: on the floor plane`);
+  assert.ok(Math.hypot(pa1.x - pa0.x, pa1.z - pa0.z) > 0.05, `${tag}: nested: it moved (${(pa1.x - pa0.x).toFixed(2)}, ${(pa1.z - pa0.z).toFixed(2)})`);
+  for (let i = 0; i < 3; i++) {
+    const d = [pa1.x - pa0.x, pa1.y - pa0.y, pa1.z - pa0.z][i];
+    near(a1.min[i] - a0.min[i], d, 1e-6, `${tag}: nested: Box A's world box moved exactly as its pivot (min[${i}])`);
+    near(a1.max[i] - a0.max[i], d, 1e-6, `${tag}: nested: … (max[${i}])`);
+  }
+  sameBox(await partBox(nest, bPath), bBox0, 1e-6, `${tag}: nested: Box B does not move`);
+  await undo();
+  sameBox(await partBox(nest, aPath), a0, 1e-6, `${tag}: nested: one undo puts Box A back`);
 
   // ---- walk mode disables the three tools
   await press("camera-walk");

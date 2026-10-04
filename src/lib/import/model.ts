@@ -214,6 +214,65 @@ export function applyPartTransforms(clone: THREE.Object3D, overrides: Record<str
   }
 }
 
+/**
+ * The part transforms of `path`'s ancestors (not its own), multiplied outermost first: the
+ * model-frame matrix that carries the part after its own transform. applyPartTransforms makes
+ * a node's model-frame matrix X(ancestor 1) · … · X(parent) · X(node) · (where the file put
+ * it), so this is everything above the part. The identity when no ancestor is transformed.
+ */
+export function ancestorTransforms(root: THREE.Object3D, path: string, overrides: Record<string, NodeOverride>, frame: ModelFrameInfo): THREE.Matrix4 {
+  const steps = path.split("/");
+  const A = new THREE.Matrix4();
+  for (let i = 1; i < steps.length; i++) {
+    const up = steps.slice(0, i).join("/");
+    const tr = overrides[up]?.transform;
+    const box = tr && !isIdentityTransform(tr) ? partBox(root, up, frame) : null;
+    if (tr && box) A.multiply(partMatrix(tr, pivotOf(box)));
+  }
+  return A;
+}
+
+/** Where a part's pivot is now (model frame): its original pivot moved by its own transform `own`, then carried by its ancestors'. */
+export function partPivotNow(root: THREE.Object3D, path: string, overrides: Record<string, NodeOverride>, frame: ModelFrameInfo, own: PartTransform): Vec3 | null {
+  const box = partBox(root, path, frame);
+  if (!box) return null;
+  const p = pivotOf(box);
+  const v = new THREE.Vector3(p.x + own.t[0], p.y + own.t[1], p.z + own.t[2]).applyMatrix4(ancestorTransforms(root, path, overrides, frame));
+  return { x: v.x, y: v.y, z: v.z };
+}
+
+/** A change made to a part in the MODEL frame (a world drag with the item's own turn and scale taken out). */
+export type PartChange = { kind: "move"; d: Vec3 } | { kind: "turn"; angle: number; about: Vec3 } | { kind: "scale"; factor: number; about: Vec3 };
+
+/**
+ * The part's new transform after `change` (step I.1b-fix: right under any parent chain). The
+ * part sits at A · X · (file), A its ancestors' transforms, X its own; the change D happens in
+ * the model frame, so the new own transform is X' = A⁻¹ · D · A · X. A, D and X are all a turn
+ * about the vertical, a uniform scale and a move, so X' is one too, and is read back as
+ * { t, rotY, s } about the part's original pivot.
+ */
+export function partTransformAfter(root: THREE.Object3D, path: string, overrides: Record<string, NodeOverride>, frame: ModelFrameInfo, own: PartTransform, change: PartChange): PartTransform | null {
+  const box = partBox(root, path, frame);
+  if (!box) return null;
+  const pivot = pivotOf(box);
+  const A = ancestorTransforms(root, path, overrides, frame);
+  const at = (c: Vec3) => [new THREE.Matrix4().makeTranslation(c.x, c.y, c.z), new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z)];
+  let D: THREE.Matrix4;
+  if (change.kind === "move") D = new THREE.Matrix4().makeTranslation(change.d.x, change.d.y, change.d.z);
+  else {
+    const [to, from] = at(change.about);
+    const k = change.kind === "scale" ? change.factor : 1;
+    D = to.multiply(change.kind === "turn" ? new THREE.Matrix4().makeRotationY(change.angle) : new THREE.Matrix4().makeScale(k, k, k)).multiply(from);
+  }
+  const X = A.clone().invert().multiply(D).multiply(A).multiply(partMatrix(own, pivot));
+  const e = X.elements; // column-major: the first column is s · (cos θ, 0, −sin θ)
+  const sc = Math.hypot(e[0], e[1], e[2]);
+  const rotY = Math.atan2(-e[2], e[0]);
+  const rp = new THREE.Vector3(pivot.x, pivot.y, pivot.z).applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY).multiplyScalar(sc);
+  // X · pivot = pivot + t, and X · pivot = s R pivot + (its translation): t = translation − pivot + s R pivot
+  return { t: [e[12] - pivot.x + rp.x, e[13] - pivot.y + rp.y, e[14] - pivot.z + rp.z], rotY, s: sc };
+}
+
 /** A node's path below `root`: its tag in a tagged clone, else its child indices. */
 function pathOf(root: THREE.Object3D, node: THREE.Object3D): string {
   if (typeof node.userData.importPath === "string") return node.userData.importPath;
@@ -316,8 +375,8 @@ export interface UnitGuess {
 
 /** The size a guess aims for (m): a piece of furniture. */
 export const TYPICAL_M = 1.5;
-/** Ties in the guess go in this order (the metric units first, then the imperial ones). */
-const TIE_ORDER: UnitId[] = ["m", "cm", "mm", "in", "ft"];
+/** Ties in the guess go in this order (as in I.1b). */
+const TIE_ORDER: UnitId[] = ["m", "mm", "cm", "in", "ft"];
 const METRIC: UnitId[] = ["m", "cm", "mm"];
 /** Plausible sizes further apart than this make the guess ambiguous. */
 export const AMBIGUOUS_RATIO = 2;
