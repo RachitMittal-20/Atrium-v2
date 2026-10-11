@@ -91,7 +91,77 @@ Read this before sections 18-22, which still describe the old order.
     - The table's `sr-only` header label escaped its scroll container and widened the phone layout to 577 px. The container is now `relative`, and the e2e checks `innerWidth` as well, because `scrollWidth <= innerWidth` alone could not see it.
   - **Existing test lines changed:** `e2e-import.ts` part e. The fake PDF now gets the damaged-PDF message (it said "PDFs aren't supported yet"), and the text-file message now mentions PDFs.
   - **One flake seen:** in the first combined run, `e2e-studio.ts` failed once at "390: the Delete key removes it too". A probe of mine was loading the same dev server at the time. The clean rerun passed. This step changes no studio code; this may be the known 390 timing flake (section 22).
-  - **M.1b (next): snap to the exact PDF vectors.** Snap wall faces and opening jambs to the PDF's own segments, with a coverage report (how much of the traced geometry found a matching segment, and which walls did not).
+  - **M.1b (DONE; not committed; 2026-10-11): exact walls from vector PDFs.** CLAUDE.md has the rules (section "Exact walls from vector PDFs (step M.1b)"). Checks, all passing against `npm run dev` on port 3000 from this checkout (pid 9154, cwd `/Users/rachitmittal20/Atrium-v2`, parent `next dev` ← `npm run dev`):
+    - `npm test`: now including the new `scripts/test-pdf-walls.ts`. `npx tsc --noEmit`, `npm run build`, the dev-hook grep (`clean`).
+    - `scripts/e2e-pdf-import.ts`, `e2e-studio.ts`, `e2e-walk.ts`, `e2e-import3d.ts`: each exit 0.
+  - **What M.1b added:**
+    - `src/lib/pdf/walls.ts`: face pairing, run in the PDF worker into `PdfInfo.vectorWalls`.
+    - `src/lib/pdf/snap.ts`: `buildPdfPlan` / `mergeVector`, the merge with the traced plan, the 3 px limit, the fallbacks and the coverage report.
+    - `Wall.provenance` and `Wall.edited`; the plan store's `edit()` sets `edited`.
+    - `scale.ts`: lines broken around their text, ticks against line length, the OCR source, and reading-order text joining.
+    - `analysePdf.ts`: the outlined-text OCR fallback (`ocrTexts`).
+    - `dimensions.ts`: `modelRows` and the two-section CSV.
+    - The import screen: `CoveragePanel`, the "Traced walls" overlay layer, `DimensionCheck` used for both tables, and a grid layout with the panels before the tables on a phone. `WallPanel` shows the provenance line.
+    - Fixtures, all synthetic, drawn by `scripts/make-pdf-fixtures.ts` from the sample plan:
+      - plan-clutter: hatching, a table, two boxed tags, a stray line and a diagonal wall.
+      - plan-broken-dims: lines broken around their text, ticks, one line overshooting its ticks by 5 mm real size at each end, and the overall line without ticks.
+      - plan-outlined: no text items. The room names and title block are glyph rectangles made from Arial drawn by @napi-rs/canvas; real CAD outlines are curves. The dimension texts are small embedded 300 dpi PNGs.
+      - plan-single-line: one wall drawn as a single heavy line.
+      - `truth.json` gained `planWalls` and `planOpenings` (the page's frame), `measure` and `lineLengthPt` per dimension, `diagonal`, and `tracedWalls`.
+      - `tests/fixtures/pdf/clutter-chromium-trace.json` (15 KB): Chromium's noisy trace of plan-clutter, kept as a regression.
+  - **Covered by tests (Node):**
+    - FAILING FIRST: the traced plan-filled has a wall 10.0 mm off in length (more than 4 mm); snapped, 0.0000 mm.
+    - filled, lines, rotated and imperial:
+      - every wall's ends and thickness are within 0.5 mm of the truth, with coverage 100%;
+      - the validator is clean, and room areas equal the truth's within 1e-6 m²;
+      - openings are within 0.5 mm: 9 of 9, except on plan-lines.
+    - plan-lines: 8 of 9 openings exact. The tracing made door `o3` 1.54 m wide (one jamb absorbed into the T at I). Snapping it would move a jamb 647 mm, so it stays traced and is reported.
+    - plan-clutter: exactly the 14 real walls; the diagonal is counted; 3 clutter pairs are dropped. With the Chromium trace it is still 14 exact, 4 named rooms and 9 openings.
+    - Synthetic tests:
+      - pairing at the gap limits (0.05 and 0.60 pair; 0.04 and 0.61 don't) and at the overlap limit (60% pairs, 59% doesn't);
+      - filled rectangles, widest wins, glass line = window, door gaps, clutter;
+      - an L corner, a T-junction and a crossing.
+    - Snapping: 1.5 px snaps; 2.5 px and an end 5 px out stay traced with their reasons; no end moves more than 3 px; a PDF stub that adds a validator problem is left out with its reason.
+    - plan-single-line: the single-line wall is traced within 4 px and the rest lie on true centre lines. K–L also goes back to traced: its PDF end stops at the single line's face, more than 3 px from the traced centre line, so the validator round sends it back, and the notes say so.
+    - Dimensions: broken lines are read; the overshooting line is exact between its ticks (by its line length it would be 10 mm over); "line length" for the overall line, which has no ticks.
+    - OCR: the title block alone stays "check". OCR words at the printed places give "good", every row "read by OCR". Real tesseract on plan-outlined reads 11 of 11 dimensions, but not "Living room", which becomes "Room 2".
+    - Model versus printed: centre to centre, OK to 0.5 mm; a misprint is flagged; traced rows are approximate; inside faces; both checks are in the CSV.
+    - Persistence: old plans load unchanged; provenance and `edited` round-trip; unknown values are dropped.
+    - The store marks an edited PDF wall and undo clears the mark.
+  - **In the browser, at 1440 and 390 (real touch), through the real file input:**
+    - Every new fixture (plan-filled too at 390): the coverage line, one dashed overlay line per traced wall, the model table and the "how" texts.
+    - Built and opened in the studio: every wall read from the PDF lies on a true wall within 1 mm. The worst was 0.000 mm.
+    - The panel says "Read from PDF", "Traced, approximate" (plan-single-line), and "Edited" after a height change.
+    - At 390 the PDF, coverage and scale panels sit above the tables, with no sideways scroll.
+    - Misprinted copy: flagged in both tables, one row in each overridden, and the CSV holds both sections.
+    - plan-outlined's OCR fetches only tesseract's language data from its CDN; plan-outlined took 5 s with that data cached and 33 s on the first download.
+  - **Screenshots** (`/tmp/studio/`):
+    - `pdf-coverage-1440.png` (plan-filled): "14 of 14 walls read exactly … (100% of wall length); 0 walls are traced approximately (about 12 mm)", "Doors and windows: 9 snapped to the PDF, 0 traced, 0 added", and both tables with every row OK.
+    - `pdf-model-check-1440.png`: 11 rows, centre to centre, 0.0 mm, OK.
+    - `pdf-clutter-1440.png`: the hatched plan with its table, tags and diagonal; 14 of 14 exact; "1 diagonal wall … skipped"; the 9 openings added from the PDF.
+    - `pdf-traced-1440.png` (plan-single-line): "12 of 14 … (89% of wall length); 2 walls are traced", with the two traced walls dashed in gilt round the bathroom's top and left and listed with reasons. Model table: 9 OK and 2 Flagged at ±6.0 mm; 4 rows are marked approximate.
+    - `pdf-review-390.png`: one column in the order plan, PDF, "Read from the PDF", Scale, Build, Dimension check, Model versus printed. The model table's "Between" column is cut at the right edge and scrolls inside its box.
+  - **NOT covered / limits:**
+    - No real CAD PDF was tested: `test-plans/` has no PDFs, and every fixture is synthetic.
+    - Diagonal and curved walls are only counted. Curved-wall counting is tested only by code reading; no fixture has one.
+    - Door swing sides are not read from the arcs. A door right at a corner is not bridged. Without a PDF scale, walls are traced only.
+    - Real outlined text is curves, not the rectangles this fixture uses.
+    - Safari, Firefox and a real phone were not tested.
+  - **Found and fixed on the way:**
+    - Chromium rasters plan-clutter differently from @napi-rs/canvas. The tracing became 61 noise pieces: letters, the title block, and the bottom wall's face line as a 0.05 m "wall" 8 px off. The first rule set then fell back to the whole traced plan. Now fragments and face lines inside PDF walls, traced clutter, and traced walls joined to nothing from the PDF are left out with notes.
+    - Validator problems were compared as text, so a moved origin made old problems look new. They are now compared without numbers or ".sN" suffixes.
+    - OCR boxes made "4000" and "mm" different heights, so they never joined. Bottom-to-top words were joined out of order.
+  - **Existing test lines changed:**
+    - `test-pdf.ts`: the trace note's text (the M.1a line was replaced, as asked).
+    - `e2e-pdf-import.ts`:
+      - the trace-note regex;
+      - M.1a's 4-pixel length check and the unasserted plan-lines block are replaced by the 1 mm checks;
+      - the CSV line count is now per section, because the CSV holds both tables;
+      - the two-page file now resets its list of outside requests. It inherited plan-outlined's OCR requests once the order changed.
+    - `test-persist.ts`: assertions added, none changed.
+  - **Flakes and hangs seen:**
+    - Once, at 390, the "Open in studio" tap on plan-clutter did not navigate. It passed alone and in the two later full runs; maybe the known 390 timing flake (section 22).
+    - Once, `e2e-import3d.ts` hung after its first dialog check while other e2e runs had just finished. A clean rerun alone passed. M.1b changes nothing it uses.
 - **Things 4.7b and 4.7c must know:**
   - `planStore.updateWall` re-clamps openings only when a wall's length changes. The tool shortens or lowers openings itself, inside its own transaction, by the rules of `edit.openingSize`. A new face that changes an opening or a wall's geometry must do the same.
   - The pixel fallback and the ray method differ by 1 / cos ψ near the 8° switch (about 7x), so the method is fixed when a face is grabbed. Do not switch mid-pull.

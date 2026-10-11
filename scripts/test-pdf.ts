@@ -250,7 +250,8 @@ async function main() {
     const doc = await open(file);
     const { analysis, pdf } = await analysePdfPage(pdfjs, await doc.getPage(1), { pageCount: 1, render: renderNode });
     assert.equal(pdf.route, "vector");
-    assert.ok(pdf.traceMm !== null && pdf.notes.includes(`Wall positions are traced at about ${Math.round(pdf.traceMm)} mm; exact snapping arrives in the next step.`), "trace note");
+    // M.1b replaced M.1a's "exact snapping arrives in the next step" with the line below.
+    assert.ok(pdf.traceMm !== null && pdf.notes.includes(`Walls are read exactly from the PDF's lines; any the lines don't explain are traced at about ${Math.round(pdf.traceMm)} mm.`), "trace note");
     assert.equal(analysis.angleDeg, 0, "vector pages are not straightened");
     assert.equal(analysis.imageScale, 1, "the raster is never downscaled");
     const { plan } = buildFromAnalysis(analysis, { pxPerM: analysis.scale.pxPerM!, source: "pdf" });

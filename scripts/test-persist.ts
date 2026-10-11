@@ -406,6 +406,26 @@ async function checkWiring() {
   delete g.document;
 }
 
+// ---- step M.1b: wall provenance. Old plans (no provenance) load unchanged; a stored provenance
+// and "edited" survive a save and reload; anything else in those fields is dropped, not refused.
+{
+  const old = serializePlan(samplePlan);
+  assert.ok(!old.includes("provenance") && !old.includes("edited"), "the sample stores no provenance");
+  const back = parseStoredPlan(old)!;
+  assert.deepEqual(back.walls, samplePlan.walls, "an old plan's walls load exactly as they were");
+  assert.ok(back.walls.every((w) => !("provenance" in w) && !("edited" in w)), "and gain no provenance field");
+  const marked: Plan = { ...samplePlan, walls: samplePlan.walls.map((w, i) => ({ ...w, provenance: i % 2 ? "traced" : "vector", ...(i === 0 ? { edited: true as const } : {}) })) };
+  const round = parseStoredPlan(serializePlan(marked))!;
+  assert.deepEqual(round.walls, marked.walls, "provenance and edited survive a save and reload");
+  const odd = JSON.parse(serializePlan(marked));
+  odd.plan.walls[0].provenance = "guessed";
+  odd.plan.walls[0].edited = "yes";
+  const cleaned = parseStoredPlan(JSON.stringify(odd))!;
+  assert.ok(cleaned, "an unknown provenance does not refuse the plan");
+  assert.ok(!("provenance" in cleaned.walls[0]) && !("edited" in cleaned.walls[0]), "it is dropped instead");
+  console.log("provenance: old plans unchanged, provenance and edited round-trip, unknown values dropped");
+}
+
 // (async because the debounce is waited out in real time; the CJS test runner has no top-level await)
 checkWiring().then(
   () => console.log("OK"),

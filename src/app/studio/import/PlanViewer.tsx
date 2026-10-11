@@ -11,6 +11,9 @@
  * gap, free wall ends (orange dots). Wheel zooms toward the cursor, dragging
  * pans, and +, − and Fit do the same for touch and keyboard users.
  *
+ * For a vector PDF (step M.1b) a "traced walls" layer marks, in gilt dashes, the
+ * walls the coverage report says were traced rather than read from the PDF.
+ *
  * Picking: while `picking` is on, a click (a press that hardly moves) reports
  * the image pixel under it through onPick; ScalePanel.tsx uses this to set
  * the scale from two points, drawn here with the line between them.
@@ -21,7 +24,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Analysis } from "@/lib/blueprint/analyse";
 import type { Vec2 } from "@/types/plan";
 
-type Layer = "walls" | "doors" | "windows" | "ends";
+type Layer = "walls" | "doors" | "windows" | "ends" | "traced";
 const MIN_K = 0.02;
 const MAX_K = 40;
 const CLICK_PX = 5; // a press that moves less than this is a click, not a pan
@@ -57,13 +60,26 @@ function useImageUrl(analysis: Analysis): string | null {
   return url;
 }
 
-export function PlanViewer({ analysis, picking, points, onPick }: { analysis: Analysis; picking: boolean; points: Vec2[]; onPick: (p: Vec2) => void }) {
+export function PlanViewer({
+  analysis,
+  picking,
+  points,
+  onPick,
+  traced,
+}: {
+  analysis: Analysis;
+  picking: boolean;
+  points: Vec2[];
+  onPick: (p: Vec2) => void;
+  /** Walls traced rather than read from the PDF, in image pixels (step M.1b). */
+  traced?: { id: string; a: Vec2; b: Vec2; thickness: number }[];
+}) {
   const { width: W, height: H } = analysis.pixels;
   const url = useImageUrl(analysis);
   const boxRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [view, setView] = useState<View>({ k: 1, x: 0, y: 0 });
-  const [show, setShow] = useState<Record<Layer, boolean>>({ walls: true, doors: true, windows: true, ends: true });
+  const [show, setShow] = useState<Record<Layer, boolean>>({ walls: true, doors: true, windows: true, ends: true, traced: true });
   const touched = useRef(false); // once the user zooms or pans, resizing no longer refits
 
   const fit = useCallback(() => {
@@ -143,6 +159,7 @@ export function PlanViewer({ analysis, picking, points, onPick }: { analysis: An
     { id: "doors", label: "Doors", count: doors.length, swatch: "bg-overlay-door" },
     { id: "windows", label: "Windows", count: windows.length, swatch: "bg-overlay-window" },
     { id: "ends", label: "Free ends", count: analysis.unpaired.length, swatch: "bg-overlay-end" },
+    ...(traced ? [{ id: "traced" as const, label: "Traced walls", count: traced.length, swatch: "bg-gilt", hint: "Walls not read from the PDF's lines: traced from the picture, about a pixel out." }] : []),
   ];
   const bar = (o: Analysis["openings"][number], i: number, kind: string) => (
     <line key={i} data-kind={kind} x1={o.a.x} y1={o.a.y} x2={o.b.x} y2={o.b.y} strokeWidth={o.wallThicknessPx * 1.2} strokeLinecap="butt" />
@@ -177,6 +194,13 @@ export function PlanViewer({ analysis, picking, points, onPick }: { analysis: An
               <g data-layer="ends" className="fill-overlay-end stroke-vellum" strokeWidth={1.5 * px}>
                 {analysis.unpaired.map((p, i) => (
                   <circle key={i} cx={p.x} cy={p.y} r={6 * px} />
+                ))}
+              </g>
+            )}
+            {traced && show.traced && (
+              <g data-layer="traced" className="stroke-gilt" strokeOpacity={0.85} strokeLinecap="butt" fill="none">
+                {traced.map((w) => (
+                  <line key={w.id} data-traced={w.id} x1={w.a.x} y1={w.a.y} x2={w.b.x} y2={w.b.y} strokeWidth={Math.max(w.thickness * 1.6, 6 * px)} strokeDasharray={`${12 * px} ${6 * px}`} />
                 ))}
               </g>
             )}
@@ -225,7 +249,13 @@ export function PlanViewer({ analysis, picking, points, onPick }: { analysis: An
             <input type="checkbox" checked={show[l.id]} onChange={(e) => setShow((s) => ({ ...s, [l.id]: e.target.checked }))} className="h-4 w-4 accent-cyanotype" />
             <span aria-hidden className={`inline-block h-2.5 w-2.5 rounded-full ${l.swatch}`} />
             <span className="text-iron" title={l.hint}>
-              {l.id === "walls" ? <><span data-testid="count-walls">{l.count}</span> {l.label}</> : l.label}
+              {l.id === "walls" ? (
+                <>
+                  <span data-testid="count-walls">{l.count}</span> {l.label}
+                </>
+              ) : (
+                l.label
+              )}
             </span>
             {l.id !== "walls" && <span data-testid={`count-${l.id}`}>{l.count}</span>}
           </label>

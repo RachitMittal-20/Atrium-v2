@@ -17,6 +17,11 @@
  * of the control points, which bounds the distance between curve and polyline.
  * Quadratic curves are raised to cubics first.
  *
+ * Each segment carries the number of the painted path it came from (`path`,
+ * in painting order) and whether it is a piece of a flattened curve (`curve`):
+ * src/lib/pdf/walls.ts reads a filled rectangle's edges as one wall, finds door
+ * leaves by the swing arcs they meet, and counts curved walls (step M.1b).
+ *
  * Stroke width in points is the line width × sqrt(|det|) of the CTM (a hairline,
  * width 0, stays 0). Text items come from getTextContent: position = the start
  * of the baseline, rotation from the text matrix's x axis, height from its y axis.
@@ -76,6 +81,9 @@ export function paperName(w: number, h: number): string {
   return hit ? hit[0] : `${Math.round((s * 25.4) / 72)} × ${Math.round((l * 25.4) / 72)} mm`;
 }
 
+/** CLASSIFY's "meaningful line work": enough segments, long enough in total. */
+export const meaningfulLines = (p: Pick<VectorPage, "segments" | "lineLength" | "width" | "height">) => p.segments.length >= CLASSIFY.minSegments && p.lineLength >= p.width + p.height;
+
 export const tooManyOps = (max: number) =>
   `This page has more than ${max.toLocaleString("en-GB")} drawing commands, too many to read in the browser. Export just the floor plan from your drawing program, or simplify it, and try again.`;
 
@@ -120,7 +128,9 @@ export async function extractVectorPage(pdfjs: PdfJs, page: PDFPageProxy, opts: 
   const stack: { ctm: M; lineWidth: number }[] = [];
 
   /** Adds the straight pieces of one painted path, in viewport points. */
+  let pathIndex = 0;
   const addPath = (data: ArrayLike<number>, op: number) => {
+    const path = pathIndex++; // every painted path gets its own number (walls.ts groups a filled polygon's edges by it)
     const stroked = STROKE.has(op) || BOTH.has(op);
     const filled = FILL.has(op) || BOTH.has(op);
     if (!stroked && !filled) return; // endPath: a clip only
@@ -131,8 +141,8 @@ export async function extractVectorPage(pdfjs: PdfJs, page: PDFPageProxy, opts: 
     let sx = 0;
     let sy = 0;
     let open = false; // a subpath has started
-    const seg = (x1: number, y1: number, x2: number, y2: number) => {
-      if (x1 !== x2 || y1 !== y2) segments.push({ x1, y1, x2, y2, width: w, filled });
+    const seg = (x1: number, y1: number, x2: number, y2: number, curve = false) => {
+      if (x1 !== x2 || y1 !== y2) segments.push({ x1, y1, x2, y2, width: w, filled, path, curve });
     };
     const close = () => {
       if (open) seg(cx, cy, sx, sy);
@@ -149,7 +159,7 @@ export async function extractVectorPage(pdfjs: PdfJs, page: PDFPageProxy, opts: 
         const u = 1 - t;
         const x = u * u * u * cx + 3 * u * u * t * p1x + 3 * u * t * t * p2x + t * t * t * p3x;
         const y = u * u * u * cy + 3 * u * u * t * p1y + 3 * u * t * t * p2y + t * t * t * p3y;
-        seg(px, py, x, y);
+        seg(px, py, x, y, true);
         [px, py] = [x, y];
       }
       [cx, cy] = [p3x, p3y];
@@ -220,7 +230,7 @@ export async function extractVectorPage(pdfjs: PdfJs, page: PDFPageProxy, opts: 
 
   const lineLength = segments.reduce((s, g) => s + Math.hypot(g.x2 - g.x1, g.y2 - g.y1), 0);
   const imageCover = images.reduce((m, im) => Math.max(m, im.area), 0) / (width * height);
-  const meaningful = segments.length >= CLASSIFY.minSegments && lineLength >= width + height;
+  const meaningful = meaningfulLines({ segments, lineLength, width, height });
   const picture = imageCover >= CLASSIFY.scanCover;
   const kind = picture ? (meaningful ? "mixed" : "scanned") : "vector";
   return { width, height, rotate: viewport.rotation, paper, segments, texts, images, pathOps, lineLength, imageCover, kind };

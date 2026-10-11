@@ -88,7 +88,7 @@ export function ScalePanel({ analysis, chosen, onChoose, picking, setPicking, po
   const from = foundSource === "pdf" ? "from the PDF" : "from the printed sizes";
 
   return (
-    <section aria-labelledby="scale-heading" className="flex flex-col gap-4 rounded border border-stone bg-vellum p-4">
+    <section aria-labelledby="scale-heading" className="flex flex-col gap-4 rounded border border-stone bg-vellum p-4" data-testid="scale-panel">
       <div>
         <h2 id="scale-heading" className="font-display text-lg">
           Scale

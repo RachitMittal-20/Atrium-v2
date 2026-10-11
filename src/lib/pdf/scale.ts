@@ -12,12 +12,19 @@
  * SOURCE A, dimension text. A line whose whole text is one length
  * (parseDimension: the image pipeline's parseLength, plus "12 ft 6 in"; so
  * 3800 mm, 3.8 m, 380 cm, 12'-6", 12' 6", 12 ft 6 in) is matched to the line
- * it labels: the nearest segment that runs in the text's direction (within
- * 2°), is at least 4 text heights long, lies within 1.5 text heights of the
- * text's centre (perpendicular distance) and passes beside it (the centre
- * projects inside the segment). Sample = value / segment length. A second
- * text on the same segment with the same value (within 2%) is checked but
- * counted once.
+ * it labels (dimensionLine): the nearest segment that runs in the text's
+ * direction (within 2°), is at least 4 text heights long, lies within 1.5 text
+ * heights of the text's centre (perpendicular distance) and passes beside it
+ * (the centre projects inside the segment); or (step M.1b) a line BROKEN around
+ * its own text: two collinear parts with the text between them, each ending
+ * within 2 text heights of the text, treated as one line from end to end.
+ * What is measured (step M.1b): when ticks or extension lines cross the line
+ * near both ends (segments perpendicular to it, at least 1 text height long,
+ * within 0.5 text heights of the end), the distance between those crossings
+ * ("between ticks"), so a line that overshoots its ticks is not over-measured;
+ * otherwise the line's own length ("line length"). Sample = value / measured
+ * length. A second text on the same line with the same value (within 2%) is
+ * checked but counted once.
  *
  * SOURCE B, a title-block scale: "1:100", "SCALE 1:50" (any line holding
  * 1:N), or the imperial 1/8" = 1'-0" (N = 12 / inches). Converted with
@@ -38,8 +45,12 @@
  *     reported in `unitless` (the "Feet or metres?" question), and only when
  *     no dimension with a unit was matched.
  *
+ * OCR (step M.1b): an outlined page's text, read by OCR, goes through the SAME
+ * rules (pdfScale(page, "ocr")); the matches say so, and the title block
+ * alone still gives "check".
+ *
  * Connects to: blueprint/scale.ts (parseLength, band), extract.ts (VectorPage),
- * analysePdf.ts; tested by scripts/test-pdf.ts.
+ * analysePdf.ts; tested by scripts/test-pdf.ts and scripts/test-pdf-walls.ts.
  */
 import { band, parseLength } from "@/lib/blueprint/scale";
 import type { DimensionMatch, PdfScale, PdfText, TitleBlockScale, VectorPage } from "@/types/pdf";
@@ -49,6 +60,9 @@ export const PAPER_M_PER_PT = 25.4 / 72 / 1000;
 const PARALLEL = Math.sin((2 * Math.PI) / 180);
 const MIN_LINE_H = 4; // × text height
 const NEAR_H = 1.5; // × text height
+const BROKEN_H = 2; // × text height: a broken line's parts end this close to the text
+const TICK_NEAR_H = 0.5; // × text height: a tick this close to a line end measures it
+const TICK_MIN_H = 1; // × text height: a tick or extension line at least this long
 const SAME_PCT = 2;
 const TITLE_AGREE_PCT = 2;
 
@@ -98,7 +112,13 @@ export function parseTitleScale(text: string): TitleBlockScale | null {
 /** Joins text items into lines (see header). */
 export function textLines(texts: PdfText[]): TextLine[] {
   const lines: (TextLine & { rotation: number })[] = [];
-  const sorted = [...texts].sort((p, q) => p.rotation - q.rotation || p.y - q.y || p.x - q.x);
+  // By rotation, then across the reading direction, then along it (for 0°: y, then x), so the
+  // words of a line always arrive in reading order, bottom-to-top text included.
+  const key = (t: PdfText) => {
+    const [c, n] = [Math.cos((t.rotation * Math.PI) / 180), Math.sin((t.rotation * Math.PI) / 180)];
+    return { across: -t.x * n + t.y * c, along: t.x * c + t.y * n };
+  };
+  const sorted = [...texts].sort((p, q) => p.rotation - q.rotation || key(p).across - key(q).across || key(p).along - key(q).along);
   for (const t of sorted) {
     const u = { x: Math.cos((t.rotation * Math.PI) / 180), y: Math.sin((t.rotation * Math.PI) / 180) };
     const line = lines.find((l) => {
@@ -134,27 +154,79 @@ export function lineBox(l: TextLine) {
   return { x0: Math.min(...pts.map((p) => p[0])), y0: Math.min(...pts.map((p) => p[1])), x1: Math.max(...pts.map((p) => p[0])), y1: Math.max(...pts.map((p) => p[1])) };
 }
 
-/** Index of the segment a text line labels (see header), or -1. */
-export function labelledSegment(page: VectorPage, l: TextLine): number {
-  let best = -1;
-  let bestD = Infinity;
-  page.segments.forEach((s, i) => {
-    const dx = s.x2 - s.x1;
-    const dy = s.y2 - s.y1;
+/** The line a dimension text labels, and what its length is measured between. */
+export interface DimensionLine {
+  /** Identifies the drawn line (segment indexes), for counting a value once per line. */
+  key: string;
+  line: { x1: number; y1: number; x2: number; y2: number };
+  ends: { x1: number; y1: number; x2: number; y2: number };
+  measure: "ticks" | "line";
+  lengthPt: number;
+}
+
+/** The line a text line labels (see header): one segment beside the text, or two
+ *  collinear parts with the text in the gap between them; null when neither. */
+export function dimensionLine(page: Pick<VectorPage, "segments">, l: TextLine): DimensionLine | null {
+  const h = l.height;
+  let best: { key: string; line: DimensionLine["line"]; d: number } | null = null;
+  const parts: { i: number; s: number; e: number; off: number }[] = []; // parallel segments on the text's line, in text coordinates
+  page.segments.forEach((g, i) => {
+    const dx = g.x2 - g.x1;
+    const dy = g.y2 - g.y1;
     const len = Math.hypot(dx, dy);
-    if (len < MIN_LINE_H * l.height) return;
-    const sx = dx / len;
-    const sy = dy / len;
-    if (Math.abs(sx * l.u.y - sy * l.u.x) > PARALLEL) return;
-    const cx = l.centre.x - s.x1;
-    const cy = l.centre.y - s.y1;
-    const along = cx * sx + cy * sy;
-    const d = Math.abs(cx * sy - cy * sx);
-    if (along < 0 || along > len || d > NEAR_H * l.height || d >= bestD) return;
-    best = i;
-    bestD = d;
+    if (len === 0 || Math.abs((dx / len) * l.u.y - (dy / len) * l.u.x) > PARALLEL) return;
+    // Along and across the text, from its centre.
+    const a1 = (g.x1 - l.centre.x) * l.u.x + (g.y1 - l.centre.y) * l.u.y;
+    const a2 = (g.x2 - l.centre.x) * l.u.x + (g.y2 - l.centre.y) * l.u.y;
+    const off = (g.x1 - l.centre.x) * -l.u.y + (g.y1 - l.centre.y) * l.u.x;
+    const d = Math.abs(off);
+    if (d > NEAR_H * h) return;
+    const [s, e] = a1 < a2 ? [a1, a2] : [a2, a1];
+    if (len >= MIN_LINE_H * h && s <= 0 && e >= 0 && (!best || d < best.d)) best = { key: `${i}`, line: { x1: g.x1, y1: g.y1, x2: g.x2, y2: g.y2 }, d };
+    parts.push({ i, s, e, off });
   });
-  return best;
+  // Broken around the text: a part ending before the text and one starting after it, on one line, each within 2 text heights of it.
+  const reach = l.width / 2 + BROKEN_H * h;
+  for (const p of parts.filter((p) => p.e <= 0 && p.e >= -reach))
+    for (const q of parts.filter((q) => q.s >= 0 && q.s <= reach && Math.abs(q.off - p.off) <= 0.1 * h)) {
+      const d = Math.abs((p.off + q.off) / 2);
+      if (q.e - p.s < MIN_LINE_H * h || (best && d >= best.d)) continue;
+      const at = (a: number, off: number) => ({ x: l.centre.x + l.u.x * a - l.u.y * off, y: l.centre.y + l.u.y * a + l.u.x * off });
+      const [from, to] = [at(p.s, p.off), at(q.e, q.off)];
+      best = { key: `${p.i}+${q.i}`, line: { x1: from.x, y1: from.y, x2: to.x, y2: to.y }, d };
+    }
+  if (!best) return null;
+  const { key, line } = best as { key: string; line: DimensionLine["line"] };
+  const ticks = tickEnds(page, line, h);
+  const ends = ticks ?? line;
+  return { key, line, ends, measure: ticks ? "ticks" : "line", lengthPt: Math.hypot(ends.x2 - ends.x1, ends.y2 - ends.y1) };
+}
+
+/** Where ticks or extension lines cross the line near both its ends (header), or null. */
+function tickEnds(page: Pick<VectorPage, "segments">, line: DimensionLine["line"], h: number): DimensionLine["ends"] | null {
+  const len = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
+  const u = { x: (line.x2 - line.x1) / len, y: (line.y2 - line.y1) / len };
+  const found: (number | null)[] = [null, null]; // along the line from its start
+  const gap: number[] = [Infinity, Infinity];
+  for (const g of page.segments) {
+    const dx = g.x2 - g.x1;
+    const dy = g.y2 - g.y1;
+    const gl = Math.hypot(dx, dy);
+    if (gl < TICK_MIN_H * h || Math.abs((dx / gl) * u.x + (dy / gl) * u.y) > PARALLEL) continue; // perpendicular, at least one text height
+    // The tick's position along the line, and whether it reaches the line across.
+    const a = ((g.x1 + g.x2) / 2 - line.x1) * u.x + ((g.y1 + g.y2) / 2 - line.y1) * u.y;
+    const c1 = (g.x1 - line.x1) * -u.y + (g.y1 - line.y1) * u.x;
+    const c2 = (g.x2 - line.x1) * -u.y + (g.y2 - line.y1) * u.x;
+    if (Math.min(c1, c2) > 0.05 * h || Math.max(c1, c2) < -0.05 * h) continue;
+    [0, len].forEach((end, k) => {
+      const d = Math.abs(a - end);
+      if (d <= TICK_NEAR_H * h && d < gap[k]) [found[k], gap[k]] = [a, d];
+    });
+  }
+  if (found[0] === null || found[1] === null) return null;
+  const p = (a: number) => ({ x: line.x1 + u.x * a, y: line.y1 + u.y * a });
+  const [p1, p2] = [p(found[0]), p(found[1])];
+  return { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y };
 }
 
 /** The result rules (header) from the dimension samples and the title block. */
@@ -193,13 +265,14 @@ export function combineScale(samples: number[], title: TitleBlockScale | null, p
   return out(null, "none", `No printed dimensions or title-block scale were found on this page. ${CLICK}`);
 }
 
-/** The page's scale (header). */
-export function pdfScale(page: VectorPage): PdfScale {
+/** The page's scale (header). `source` labels the matches: "ocr" when the
+ *  texts were read by OCR off a raster of an outlined page. */
+export function pdfScale(page: Pick<VectorPage, "segments" | "texts" | "paper">, source: DimensionMatch["source"] = "pdf"): PdfScale {
   const lines = textLines(page.texts);
   const matches: DimensionMatch[] = [];
   const rejected: PdfScale["rejected"] = [];
   const bare: number[] = []; // printed units per point
-  const used = new Map<number, number[]>(); // segment index -> values already counted on it
+  const used = new Map<string, number[]>(); // drawn line -> values already counted on it
   const titles: { t: TitleBlockScale; says: boolean }[] = [];
 
   for (const l of lines) {
@@ -211,21 +284,19 @@ export function pdfScale(page: VectorPage): PdfScale {
     const metres = parseDimension(l.text);
     const isBare = metres === null && BARE.test(l.text);
     if (metres === null && !isBare) continue;
-    const i = labelledSegment(page, l);
-    if (i < 0) {
+    const dim = dimensionLine(page, l);
+    if (!dim) {
       if (metres !== null) rejected.push({ text: l.text, why: "no dimension line found beside it" });
       continue;
     }
-    const s = page.segments[i];
-    const lengthPt = Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
     if (isBare) {
-      if (Number(l.text) > 0) bare.push(Number(l.text) / lengthPt);
+      if (Number(l.text) > 0) bare.push(Number(l.text) / dim.lengthPt);
       continue;
     }
-    const before = used.get(i) ?? [];
+    const before = used.get(dim.key) ?? [];
     const counted = !before.some((v) => Math.abs(v - metres!) <= (SAME_PCT / 100) * v);
-    if (counted) used.set(i, [...before, metres!]);
-    matches.push({ text: l.text, metres: metres!, lengthPt, line: { x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2 }, centre: l.centre, box: lineBox(l), counted });
+    if (counted) used.set(dim.key, [...before, metres!]);
+    matches.push({ text: l.text, metres: metres!, lengthPt: dim.lengthPt, line: dim.line, ends: dim.ends, measure: dim.measure, source, centre: l.centre, box: lineBox(l), counted });
   }
 
   const title = (titles.find((t) => t.says) ?? titles[0])?.t ?? null;

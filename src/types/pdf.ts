@@ -8,10 +8,12 @@
  * raster of the page at k pixels per point is exactly these coordinates × k.
  *
  * Produced by src/lib/pdf/extract.ts (VectorPage), src/lib/pdf/scale.ts
- * (PdfScale, DimensionMatch) and src/lib/pdf/analysePdf.ts (PdfInfo); the
+ * (PdfScale, DimensionMatch), src/lib/pdf/walls.ts (VectorWalls, in page
+ * METRES, step M.1b) and src/lib/pdf/analysePdf.ts (PdfInfo); the
  * import screen (src/app/studio/import/) shows them and
  * src/lib/pdf/dimensions.ts turns DimensionMatch into the dimension check.
  */
+import type { OpeningKind, SwingSide, Vec2, Wall } from "./plan";
 
 /** One straight piece of a stroked or filled path. Curves arrive flattened. */
 export interface PdfSegment {
@@ -23,6 +25,10 @@ export interface PdfSegment {
   width: number;
   /** True for an edge of a filled path (including fill-and-stroke). */
   filled: boolean;
+  /** The painted path it belongs to, numbered in painting order (step M.1b). */
+  path: number;
+  /** True for a piece of a flattened curve (a door swing, a curved wall). */
+  curve: boolean;
 }
 
 /** One text item as pdf.js reports it, placed on the page. */
@@ -69,10 +75,16 @@ export interface DimensionMatch {
   text: string;
   /** The printed value in metres. */
   metres: number;
-  /** Length of the matched line in points. */
+  /** The measured length in points: between the ticks (or extension lines) when
+   *  both ends have one, else the line's own length (`measure`). */
   lengthPt: number;
-  /** The matched line. */
+  /** The matched line (both parts of a line broken around its text, joined). */
   line: { x1: number; y1: number; x2: number; y2: number };
+  /** What `lengthPt` measures between: the two ticks' crossings, or the line's ends. */
+  ends: { x1: number; y1: number; x2: number; y2: number };
+  measure: "ticks" | "line";
+  /** "ocr": the text was read by OCR off a raster of the page (outlined text). */
+  source: "pdf" | "ocr";
   /** The text's centre and its axis-aligned box, in points. */
   centre: { x: number; y: number };
   box: { x0: number; y0: number; x1: number; y1: number };
@@ -126,11 +138,53 @@ export interface PdfInfo {
   traceMm: number | null;
   /** One plain line per note ("Scanned PDF: measurements are approximate", ...). */
   notes: string[];
+  /** Walls read from the PDF's own lines at the PDF's scale (step M.1b); null on
+   *  the raster route or without a scale. */
+  vectorWalls: VectorWalls | null;
+  /** True when the page's text was outlined and was read by OCR instead. */
+  ocrText: boolean;
 }
 
-/** One row of the dimension check (src/lib/pdf/dimensions.ts). */
+/** A door or window found in the PDF's lines (walls.ts), on a VectorWalls wall. */
+export interface VectorOpening {
+  id: string;
+  wallId: string;
+  kind: OpeningKind;
+  /** From the wall's a end to the opening's centre, m. */
+  offset: number;
+  width: number;
+  swing?: SwingSide;
+  /** The two jambs on the centre line, page metres (a nearer the wall's a). */
+  a: Vec2;
+  b: Vec2;
+}
+
+/** Walls read exactly from a vector page by face pairing (walls.ts), in PAGE
+ *  METRES (x = pt × mPerPt), unrounded. */
+export interface VectorWalls {
+  mPerPt: number;
+  /** Provenance "vector". */
+  walls: Wall[];
+  openings: VectorOpening[];
+  /** Read but not built: walls the Plan can't hold yet. */
+  skipped: { diagonal: number; curved: number };
+  /** Pairs dropped, by rule, and openings a joint would have cut. */
+  dropped: { short: number; clutter: number; inside: number; openingsCut: number };
+  /** The clutter pieces themselves (centre line and thickness, page metres): a
+   *  traced wall lying on one is furniture or a text box too (snap.ts drops it). */
+  clutter: { a: Vec2; b: Vec2; thickness: number }[];
+}
+
+/** One row of the dimension check (src/lib/pdf/dimensions.ts), or of the
+ *  model-versus-printed check (`spans` and `approximate` set). */
 export interface DimensionRow {
   text: string;
+  /** "between ticks" / "line length", and "read by OCR" when it was. */
+  how: string;
+  /** Model check only: what the model length runs between ("centre to centre", ...). */
+  spans?: string;
+  /** Model check only: a wall it measures is traced, not read from the PDF. */
+  approximate?: boolean;
   printedM: number;
   measuredM: number;
   diffMm: number;

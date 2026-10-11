@@ -101,7 +101,11 @@ function vec2(v: unknown): Vec2 | null {
 function wall(v: unknown): Wall | null {
   if (!isObject(v) || !isStr(v.id) || !isNum(v.thickness) || !isNum(v.height) || v.thickness <= 0 || v.height <= 0) return null;
   const [a, b] = [vec2(v.a), vec2(v.b)];
-  return a && b ? { id: v.id, a, b, thickness: v.thickness, height: v.height } : null;
+  if (!a || !b) return null;
+  const out: Wall = { id: v.id, a, b, thickness: v.thickness, height: v.height };
+  if (v.provenance === "vector" || v.provenance === "traced") out.provenance = v.provenance; // step M.1b; older plans have none
+  if (v.edited === true) out.edited = true;
+  return out;
 }
 
 function opening(v: unknown): Opening | null {

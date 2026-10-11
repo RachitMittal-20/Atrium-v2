@@ -10,10 +10,18 @@
  *     PDF", "Scanned PDF", "Mixed PDF"), its notes ("Read from PDF vectors",
  *     the tracing tolerance, or "Scanned PDF: measurements are approximate"),
  *     and for a vector page the scale the PDF gave with its sources: the
- *     printed dimensions, the title block, and the warning when they disagree.
- * Connects to: src/types/pdf.ts (PdfInfo), src/lib/pdf/extract.ts (paperName).
+ *     printed dimensions, the title block, and the warning when they disagree;
+ *   - CoveragePanel (step M.1b): how much of the plan was read exactly from the
+ *     PDF's lines (snap.ts's Coverage): "N of M walls read exactly from the PDF
+ *     (X% of wall length); K walls are traced approximately (about Y mm)", the
+ *     traced walls (also drawn in gilt dashes on the overlay) with why, the
+ *     diagonal and curved walls skipped, openings snapped, traced and added,
+ *     and any fallback.
+ * Connects to: src/types/pdf.ts (PdfInfo), src/lib/pdf/extract.ts (paperName),
+ * src/lib/pdf/snap.ts (Coverage).
  */
 import { paperName } from "@/lib/pdf/extract";
+import type { Coverage } from "@/lib/pdf/snap";
 import type { PdfInfo } from "@/types/pdf";
 import type { PdfPageSize } from "./importFile";
 
@@ -107,6 +115,65 @@ export function PdfPanel({ pdf }: { pdf: PdfInfo }) {
             <li>Title block: {s.title ? `${s.title.text} on ${pdf.paper}` : "no scale printed"}</li>
           </ul>
         </div>
+      )}
+    </section>
+  );
+}
+
+const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** The coverage line, as the review screen and the tests read it. */
+export function coverageLine(c: Coverage): string {
+  const pct = c.lengthM > 0 ? Math.round((100 * c.exactLengthM) / c.lengthM) : 0;
+  return `${c.exact} of ${c.walls} walls read exactly from the PDF (${pct}% of wall length); ${count(c.traced, "wall is", "walls are")} traced approximately (about ${Math.round(c.traceMm)} mm).`;
+}
+
+export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
+  const len = (w: Coverage["tracedWalls"][number]) => Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+  return (
+    <section aria-labelledby="coverage-heading" className="flex flex-col gap-2 rounded border border-stone bg-vellum p-4" data-testid="coverage">
+      <h2 id="coverage-heading" className="font-display text-lg">
+        Read from the PDF
+      </h2>
+      <p data-testid="coverage-line" data-exact={c.exact} data-walls={c.walls} data-traced={c.traced}>
+        {coverageLine(c)}
+      </p>
+      {c.traced > 0 && (
+        <details className="text-sm" open={c.traced <= 6}>
+          <summary className="cursor-pointer">
+            <span aria-hidden className="mr-2 inline-block h-2.5 w-4 border-t-2 border-dashed border-gilt align-middle" />
+            Traced walls, dashed on the plan
+          </summary>
+          <ul className="mt-1 list-disc pl-5 text-smoke" data-testid="coverage-traced">
+            {c.tracedWalls.map((w) => (
+              <li key={w.id} data-wall={w.id}>
+                <span className="text-iron">
+                  Wall {w.id}, {len(w).toFixed(2)} m
+                </span>
+                : {w.reason}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      <ul className="list-disc pl-5 text-sm text-smoke" data-testid="coverage-counts">
+        <li data-testid="coverage-skipped">
+          {count(c.skipped.diagonal, "diagonal wall", "diagonal walls")} and {count(c.skipped.curved, "curved wall", "curved walls")} skipped (not read yet)
+        </li>
+        <li data-testid="coverage-openings">
+          Doors and windows: {c.openings.snapped} snapped to the PDF, {c.openings.traced} traced, {c.openings.added} added from the PDF
+        </li>
+        {c.added > 0 && <li>{count(c.added, "wall the tracing missed was", "walls the tracing missed were")} added from the PDF</li>}
+      </ul>
+      {c.notes.length > 0 && (
+        <details className="text-sm text-smoke" open={c.fellBack}>
+          <summary className="cursor-pointer text-iron">{count(c.notes.length, "note", "notes")}</summary>
+          <ul className="mt-1 list-disc pl-5" data-testid="coverage-notes">
+            {c.notes.map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </ul>
+        </details>
       )}
     </section>
   );

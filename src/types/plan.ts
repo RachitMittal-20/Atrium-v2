@@ -28,6 +28,13 @@ export interface Wall {
   b: Vec2;
   thickness: number;
   height: number;
+  /** Where an imported wall came from (step M.1b): "vector" = read exactly from a
+   *  PDF's own lines, "traced" = traced from a picture, about a pixel out. Absent for
+   *  walls drawn by hand, the sample, and image imports. Editing keeps it. */
+  provenance?: "vector" | "traced";
+  /** Set by the plan store the first time a wall with a provenance changes shape, so
+   *  the panel can say "Edited" instead of claiming the PDF's numbers. */
+  edited?: true;
 }
 
 export type OpeningKind = "door" | "window";

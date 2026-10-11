@@ -11,7 +11,8 @@
  * (edit.withSwingSides). `addImportedItem` and `setNodeOverride` add an imported
  * 3D model and hide, delete or restore its parts (step I.1), and `setNodeTransform`
  * moves, turns or scales one part (step I.1b), one undo step each; imported models
- * never touch walls or rooms. Connects to:
+ * never touch walls or rooms. A wall imported from a PDF keeps its provenance
+ * through edits; `edit()` marks it `edited` once its shape changes (step M.1b). Connects to:
  * src/types/plan.ts, src/lib/plan/{validate,geometry,rooms,edit}.ts,
  * src/lib/keyboard.ts; the 3D scene, 2D plan and exports read `plan` from here.
  */
@@ -107,7 +108,11 @@ let tx: { depth: number; entry: HistoryEntry } | null = null;
 export const usePlanStore = create<PlanState>((set, get) => {
   /** Apply `recipe` to the plan and record it in history (or in the open transaction). */
   function edit(recipe: (draft: Draft<Plan>) => void) {
-    const [plan, patches, inverse] = produceWithPatches(get().plan, recipe);
+    const before = get().plan;
+    const [plan, patches, inverse] = produceWithPatches(before, (d) => {
+      recipe(d);
+      markEdited(d, before);
+    });
     if (patches.length === 0) return;
     if (tx) {
       // Undo applies the newest edit first, so later inverses go in front.
@@ -347,6 +352,16 @@ export const usePlanStore = create<PlanState>((set, get) => {
 });
 
 /** Recompute stored rooms; only writes when they changed, so plain moves add no room patches. */
+/** A wall read from a PDF (step M.1b) whose shape changed, or a new piece cut from
+ *  one, says "Edited" from then on; its provenance stays. Every edit passes here. */
+function markEdited(d: Draft<Plan>, before: Plan) {
+  for (const w of d.walls) {
+    if (!w.provenance || w.edited) continue;
+    const was = before.walls.find((p) => p.id === w.id);
+    if (!was || was.a.x !== w.a.x || was.a.y !== w.a.y || was.b.x !== w.b.x || was.b.y !== w.b.y || was.thickness !== w.thickness || was.height !== w.height) w.edited = true;
+  }
+}
+
 function syncRooms(d: Draft<Plan>, previous: Plan) {
   const rooms = deriveRooms(d as Plan, previous).map(toStoredRoom);
   if (JSON.stringify(rooms) !== JSON.stringify(d.rooms)) d.rooms = rooms;

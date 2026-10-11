@@ -20,23 +20,33 @@
  * (DimensionCheck.tsx) under the plan. The overlay, scale panel and Build
  * model flow are the same.
  *
+ * Step M.1b: a vector page with a scale is built by snap.ts's buildPdfPlan
+ * (walls read exactly from the PDF's lines, merged with the traced ones)
+ * instead of buildFromAnalysis. Once a scale is in use (the chosen one, else
+ * the PDF's), that build is made at review time too, so the screen shows its
+ * coverage (CoveragePanel, with the traced walls dashed on the overlay) and a
+ * second table, "Model versus printed". The layout is a grid: on a phone the
+ * plan, then the side panels (PDF, coverage, scale, Build), then the tables;
+ * from lg the tables sit under the plan beside the panels.
+ *
  * Nothing is kept except the plan loaded into the store, which autosaves to
  * the browser (src/store/persistence.ts). Editing walls
  * here is a later piece; this screen only reviews.
  */
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { buildFromAnalysis, STAGES, type Analysis, type AnalysisWarning, type Stage } from "@/lib/blueprint/analyse";
 import { usePlanStore } from "@/store/planStore";
 import { usePersistenceReady } from "@/store/persistence";
-import type { Overrides } from "@/lib/pdf/dimensions";
+import { dimensionRows, modelRows, rowsToCsv, type Overrides } from "@/lib/pdf/dimensions";
+import { buildPdfPlan, planToPixels, type PdfBuild } from "@/lib/pdf/snap";
 import type { PlanScale } from "@/types/blueprint";
 import type { PdfInfo } from "@/types/pdf";
 import type { Vec2 } from "@/types/plan";
 import { DimensionCheck } from "./DimensionCheck";
 import { Cancelled, checkFile, decodeImage, isPdf, runAnalysis, runPdf, STAGE_LABELS, type PdfPageSize } from "./importFile";
-import { PagePicker, PdfPanel } from "./PdfPanels";
+import { CoveragePanel, PagePicker, PdfPanel } from "./PdfPanels";
 import { PlanViewer } from "./PlanViewer";
 import { primaryBtn, ScalePanel, secondaryBtn } from "./ScalePanel";
 
@@ -47,7 +57,12 @@ type Phase =
   | { kind: "error"; message: string }
   | { kind: "results"; analysis: Analysis; original: { width: number; height: number }; pdf?: PdfInfo };
 
-type Built = ReturnType<typeof buildFromAnalysis>;
+type Built = ReturnType<typeof buildFromAnalysis> | PdfBuild;
+
+/** The build for a page: a vector PDF with walls read from its lines goes through snap.ts. */
+function buildFor(analysis: Analysis, pdf: PdfInfo | undefined, scale: PlanScale): Built {
+  return pdf?.vectorWalls ? buildPdfPlan(analysis, pdf, scale) : buildFromAnalysis(analysis, scale);
+}
 
 /** One plain-words line per analysis warning. */
 function warningText(w: AnalysisWarning, a: Analysis): string {
@@ -79,6 +94,7 @@ export default function ImportPage() {
   const [buildError, setBuildError] = useState<string | null>(null);
   const [thumbs, setThumbs] = useState<Record<number, string>>({});
   const [overrides, setOverrides] = useState<Overrides>({});
+  const [modelOverrides, setModelOverrides] = useState<Overrides>({});
   const pdfPageRef = useRef<(n: number) => void>(() => {});
   const fileRef = useRef<HTMLInputElement>(null);
   const cancelRef = useRef<() => void>(() => {});
@@ -93,6 +109,7 @@ export default function ImportPage() {
     setBuildError(null);
     setThumbs({});
     setOverrides({});
+    setModelOverrides({});
   };
 
   async function start(blob: Blob) {
@@ -162,10 +179,23 @@ export default function ImportPage() {
     setPicking(false);
   };
 
-  function build(analysis: Analysis) {
+  // A vector PDF's merged build at the scale in use (the chosen one, else the PDF's), for the
+  // coverage report and the model check before Build; Build makes the same plan.
+  const results = phase.kind === "results" ? phase : null;
+  const scaleInUse: PlanScale | null = chosen ?? (results?.pdf?.vectorWalls && results.analysis.scale.pxPerM ? { pxPerM: results.analysis.scale.pxPerM, source: "pdf" } : null);
+  const review = useMemo(() => {
+    if (!results?.pdf?.vectorWalls || !scaleInUse) return null;
+    try {
+      return buildPdfPlan(results.analysis, results.pdf, scaleInUse);
+    } catch {
+      return null; // Build model shows the error
+    }
+  }, [results, scaleInUse?.pxPerM]); // eslint-disable-line react-hooks/exhaustive-deps -- the scale's value, not its object
+
+  function build(analysis: Analysis, pdf?: PdfInfo) {
     if (!chosen) return;
     try {
-      setBuilt(buildFromAnalysis(analysis, chosen));
+      setBuilt(buildFor(analysis, pdf, chosen));
       setBuildError(null);
     } catch (e) {
       setBuilt(null);
@@ -285,28 +315,31 @@ export default function ImportPage() {
       )}
 
       {phase.kind === "results" && (
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-start" data-testid="results">
-          <div className="min-w-0 flex-1">
-            <PlanViewer analysis={phase.analysis} picking={picking} points={points} onPick={(p) => setPoints((ps) => (ps.length >= 2 ? [p] : [...ps, p]))} />
+        // Grid: phone order is plan, panels, tables; from lg the panels span both rows on the right.
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start" data-testid="results">
+          <div className="min-w-0 lg:col-start-1 lg:row-start-1">
+            <PlanViewer
+              analysis={phase.analysis}
+              picking={picking}
+              points={points}
+              onPick={(p) => setPoints((ps) => (ps.length >= 2 ? [p] : [...ps, p]))}
+              traced={
+                review && scaleInUse
+                  ? review.coverage.tracedWalls.map((w) => {
+                      const px = planToPixels(review.coverage, scaleInUse.pxPerM);
+                      return { id: w.id, a: px(w.a), b: px(w.b), thickness: w.thickness * scaleInUse.pxPerM };
+                    })
+                  : undefined
+              }
+            />
             {phase.analysis.imageScale < 1 && !phase.pdf && (
               <p className="mt-1 text-sm text-smoke">
                 Your {phase.original.width} × {phase.original.height} px image was read at {phase.analysis.pixels.width} × {phase.analysis.pixels.height} px.
               </p>
             )}
-            {phase.pdf?.scale && phase.pdf.scale.matches.length > 0 && (phase.pdf.scale.mPerPt || chosen) && (
-              <div className="mt-6">
-                <DimensionCheck
-                  matches={phase.pdf.scale.matches}
-                  mPerPt={chosen ? phase.pdf.pxPerPt / chosen.pxPerM : phase.pdf.scale.mPerPt!}
-                  chosen={chosen !== null}
-                  overrides={overrides}
-                  setOverrides={setOverrides}
-                />
-              </div>
-            )}
           </div>
 
-          <aside className="flex w-full flex-col gap-4 lg:w-96 lg:shrink-0">
+          <aside className="flex w-full flex-col gap-4 lg:col-start-2 lg:row-span-2 lg:row-start-1">
             {phase.analysis.warnings.length > 0 && (
               <ul role="status" className="flex flex-col gap-1 rounded border border-gilt/50 bg-vellum p-4 text-sm" data-testid="warnings">
                 {phase.analysis.warnings.map((w) => (
@@ -316,6 +349,7 @@ export default function ImportPage() {
             )}
 
             {phase.pdf && <PdfPanel pdf={phase.pdf} />}
+            {review && <CoveragePanel coverage={review.coverage} />}
 
             <ScalePanel
               analysis={phase.analysis}
@@ -328,7 +362,7 @@ export default function ImportPage() {
               clearPoints={() => setPoints([])}
             />
 
-            <button type="button" className={primaryBtn} disabled={!chosen} onClick={() => build(phase.analysis)}>
+            <button type="button" className={primaryBtn} disabled={!chosen} onClick={() => build(phase.analysis, phase.pdf)}>
               Build model
             </button>
             {!chosen && <p className="-mt-2 text-sm text-smoke">Choose a scale first.</p>}
@@ -339,9 +373,31 @@ export default function ImportPage() {
               Try another file
             </button>
           </aside>
+
+          {phase.pdf?.scale && phase.pdf.scale.matches.length > 0 && (phase.pdf.scale.mPerPt || chosen) && (
+            <Tables pdf={phase.pdf} chosen={chosen} review={review} overrides={overrides} setOverrides={setOverrides} modelOverrides={modelOverrides} setModelOverrides={setModelOverrides} />
+          )}
         </div>
       )}
     </main>
+  );
+}
+
+/** The dimension check and, once the PDF's walls are built, the model check; one CSV for both. */
+function Tables(p: { pdf: PdfInfo; chosen: PlanScale | null; review: PdfBuild | null; overrides: Overrides; setOverrides: (o: Overrides) => void; modelOverrides: Overrides; setModelOverrides: (o: Overrides) => void }) {
+  const scale = p.pdf.scale!;
+  const mPerPt = p.chosen ? p.pdf.pxPerPt / p.chosen.pxPerM : scale.mPerPt!;
+  const rows = dimensionRows(scale.matches, mPerPt, p.overrides);
+  const c = p.review?.coverage;
+  // Ends within 3 raster pixels of a wall line, face or jamb land on it.
+  const model = p.review && c ? modelRows(scale.matches, p.review.plan, (x, y) => ({ x: x * c.mPerPt - c.origin.x, y: y * c.mPerPt - c.origin.y }), (3 * c.traceMm) / 1000, p.modelOverrides) : [];
+  const csv = () => rowsToCsv(rows, model);
+  const at = p.chosen ? "at the scale in use" : "at the PDF's scale";
+  return (
+    <div className="flex min-w-0 flex-col gap-6 lg:col-start-1 lg:row-start-2">
+      <DimensionCheck kind="printed" rows={rows} measuredAt={at} overrides={p.overrides} setOverrides={p.setOverrides} csv={csv} />
+      {model.length > 0 && <DimensionCheck kind="model" rows={model} measuredAt={`built ${at}`} overrides={p.modelOverrides} setOverrides={p.setModelOverrides} csv={csv} />}
+    </div>
   );
 }
 

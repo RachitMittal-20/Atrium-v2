@@ -14,6 +14,9 @@
  * Thickness and height go through planStore.updateWall, clamped with the reason
  * shown. Values are read in metres or feet with parseTypedLength, so 3.8, 3.8 m,
  * 380 cm and 12'6" all work; anything else puts the old value back and says why.
+ * A wall imported from a PDF (step M.1b) says where its numbers came from:
+ * "Read from PDF" (exact), "Traced, approximate", or, once changed, "Edited"
+ * (its provenance field is kept; the store sets `edited`).
  * Connects to: src/store/{planStore,selectionStore}.ts, src/lib/plan/edit.ts.
  */
 import { useState } from "react";
@@ -115,6 +118,12 @@ export function WallPanel({ unit }: { unit: Unit }) {
           Back to summary
         </button>
       </div>
+
+      {wall.provenance && (
+        <p data-testid="wall-provenance" data-provenance={wall.provenance} data-edited={wall.edited ? "true" : undefined} className="mb-2 text-xs text-smoke">
+          {wall.edited ? "Edited" : wall.provenance === "vector" ? "Read from PDF" : "Traced, approximate"}
+        </p>
+      )}
 
       <div className="flex flex-col gap-1">
         <NumberField label="Length" value={formatLength(wallLength(wall), unit)} testId="wall-length" onCommit={say(setLength)} />
