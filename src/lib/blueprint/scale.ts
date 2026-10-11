@@ -152,6 +152,9 @@ export interface UnitlessScale {
    *  metres) if the printed numbers are feet, and if they are metres. */
   ifFeet: { pxPerM: number; width: number; depth: number };
   ifMetres: { pxPerM: number; width: number; depth: number };
+  /** PDF pages only (src/lib/pdf/analysePdf.ts): bare numbers on dimension
+   *  lines are often millimetres. estimateScale never sets it. */
+  ifMillimetres?: { pxPerM: number; width: number; depth: number };
 }
 
 /** How one single-length label looked for its dimension line (debugging).
@@ -188,7 +191,7 @@ export interface ScaleEstimate {
 }
 
 /** Proper median: the mean of the middle two for an even count. */
-function median(values: number[]): number {
+export function median(values: number[]): number {
   const s = [...values].sort((p, q) => p - q);
   const mid = s.length >> 1;
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
@@ -492,7 +495,7 @@ function dimensionLine(
 // ---------------------------------------------------------------- estimate
 
 /** The result rules from the header, applied to one list of samples. */
-function band(values: number[]): { median: number; spreadPct: number; confidence: ScaleEstimate["confidence"] } | null {
+export function band(values: number[]): { median: number; spreadPct: number; confidence: ScaleEstimate["confidence"] } | null {
   if (values.length === 0) return null;
   const med = median(values);
   const spreadPct = values.length < 2 ? 0 : Math.max(...values.map((v) => Math.abs(v - med) / med)) * 100;

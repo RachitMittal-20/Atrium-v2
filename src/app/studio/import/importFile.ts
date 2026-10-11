@@ -4,9 +4,13 @@
  * The non-visual half of the import screen (page.tsx):
  *   - checkFile / decodeImage: accept PNG, JPEG or WebP up to 25 MB and turn
  *     it into PlanPixels with createImageBitmap and an OffscreenCanvas
- *     (browser only; createImageBitmap applies the photo's EXIF rotation);
+ *     (browser only; createImageBitmap applies the photo's EXIF rotation), or
+ *     a PDF up to 50 MB (isPdf);
  *   - runAnalysis: hands the pixels to src/workers/analyse.worker.ts and
  *     relays its progress; cancel() terminates the worker;
+ *   - runPdf: hands a PDF's bytes to src/workers/pdf.worker.ts, which lists
+ *     its pages (with thumbnails when there are several), then reads the
+ *     chosen one; cancel() terminates the worker and frees the thumbnails;
  *   - parseTypedLength: what the user types for a known length, in metres;
  *   - planSize: the size of the whole plan at a given scale, for the sanity
  *     checks in ScalePanel.tsx.
@@ -15,17 +19,22 @@
 import type { Analysis, Stage } from "@/lib/blueprint/analyse";
 import { parseLength } from "@/lib/blueprint/scale";
 import type { PlanPixels } from "@/types/blueprint";
+import { MAX_PDF_BYTES, PDF_MESSAGES } from "@/lib/pdf/open";
+import type { PdfInfo } from "@/types/pdf";
 import type { AnalyseReply, AnalyseRequest } from "@/workers/analyse.worker";
+import type { PdfReply, PdfRequest } from "@/workers/pdf.worker";
 
 const MAX_BYTES = 25 * 1024 * 1024;
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
 
+export const isPdf = (file: File) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+
 /** A message for a file we won't read, or null when it's worth decoding. */
 export function checkFile(file: File): string | null {
   const ext = file.name.toLowerCase().split(".").pop() ?? "";
-  if (file.type === "application/pdf" || ext === "pdf") return "PDFs aren't supported yet. Export the page as an image and upload that.";
+  if (isPdf(file)) return file.size > MAX_PDF_BYTES ? PDF_MESSAGES.tooBig(file.size) : null;
   if (!IMAGE_TYPES.includes(file.type) && !["png", "jpg", "jpeg", "webp"].includes(ext))
-    return "That file isn't an image we can read. Upload a PNG, JPEG or WebP picture of your plan.";
+    return "That file isn't a plan we can read. Upload a PDF, or a PNG, JPEG or WebP picture of your plan.";
   if (file.size > MAX_BYTES) return `That image is ${(file.size / 1024 / 1024).toFixed(0)} MB. The limit is 25 MB, so save it smaller and try again.`;
   return null;
 }
@@ -82,6 +91,67 @@ export function runAnalysis(pixels: PlanPixels, onProgress: (stage: Stage, fract
   const request: AnalyseRequest = { type: "analyse", pixels };
   worker.postMessage(request, [pixels.rgba.buffer as ArrayBuffer]);
   return { result, cancel };
+}
+
+export type PdfPageSize = { number: number; width: number; height: number };
+
+/** Starts the PDF worker on a file. `page(n)` reads page n (call it once the
+ *  pages are listed); thumbnails arrive as object URLs, freed by cancel(). */
+export function runPdf(
+  file: File,
+  on: {
+    pages: (count: number, listed: PdfPageSize[]) => void;
+    thumb: (pageNumber: number, url: string) => void;
+    progress: (stage: Stage | null, fraction: number) => void;
+    done: (analysis: Analysis, pdf: PdfInfo) => void;
+    error: (message: string) => void;
+  },
+): { page: (n: number) => void; cancel: () => void } {
+  const worker = new Worker(new URL("../../../workers/pdf.worker.ts", import.meta.url), { type: "module" });
+  const urls: string[] = [];
+  let over = false;
+  const finish = () => {
+    over = true;
+    worker.terminate();
+  };
+  worker.onmessage = (e: MessageEvent<PdfReply>) => {
+    const msg = e.data;
+    // pdf.js's core, imported in the worker, also posts its own handshake here: skip anything not ours.
+    if (over || !msg || typeof msg !== "object" || "sourceName" in msg) return;
+    if (msg.type === "pages") on.pages(msg.count, msg.listed);
+    else if (msg.type === "thumb") {
+      const url = URL.createObjectURL(msg.blob);
+      urls.push(url);
+      on.thumb(msg.number, url);
+    } else if (msg.type === "progress") on.progress(msg.stage, msg.fraction);
+    else {
+      finish();
+      if (msg.type === "done") on.done(msg.analysis, msg.pdf);
+      else on.error(msg.user ? msg.message : "Something went wrong while reading this PDF. Try another file, or export the plan page as an image.");
+    }
+  };
+  worker.onerror = (e) => {
+    console.error("[import] PDF worker failed", e);
+    finish();
+    on.error("Your browser couldn't start the PDF reader. Reload the page and try again.");
+  };
+  file.arrayBuffer().then(
+    (bytes) => {
+      const request: PdfRequest = { type: "open", bytes };
+      worker.postMessage(request, [bytes]);
+    },
+    () => {
+      finish();
+      on.error("That file couldn't be read. Try choosing it again.");
+    },
+  );
+  return {
+    page: (n) => worker.postMessage({ type: "page", number: n } satisfies PdfRequest),
+    cancel: () => {
+      finish();
+      urls.forEach((u) => URL.revokeObjectURL(u));
+    },
+  };
 }
 
 /** A typed length in metres: "3.8", "3.8 m", "380 cm", "12'6\"", "12 ft 6 in",

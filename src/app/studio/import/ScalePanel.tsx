@@ -9,7 +9,11 @@
  *   check  the same as "Please confirm", with the samples it came from.
  *   none   says no scale was found.
  *   unit-less sizes  "Are the printed sizes in feet or metres?", each answer
- *          with the plan size it implies so the plausible one stands out.
+ *          with the plan size it implies so the plausible one stands out (a
+ *          PDF also offers millimetres, the usual unit of bare numbers on
+ *          metric drawings).
+ *   For a PDF page (`foundSource` "pdf") the found scale is the PDF's own
+ *   (src/lib/pdf/scale.ts), so it reads "from the PDF".
  *   always "Set the scale yourself": the user clicks two points in
  *          PlanViewer.tsx (picking), types the real length (parseTypedLength:
  *          3.8, 3.8 m, 12'6", 12 ft 6 in), and scaleFromPoints gives pxPerM,
@@ -29,6 +33,8 @@ const SOURCE_TEXT: Record<PlanScale["source"], string> = {
   manual: "from your measurement",
   "unitless-feet": "reading the printed sizes as feet",
   "unitless-metres": "reading the printed sizes as metres",
+  "unitless-millimetres": "reading the printed sizes as millimetres",
+  pdf: "from the PDF",
 };
 
 const btn = "min-h-11 rounded-full px-5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50";
@@ -43,9 +49,11 @@ interface Props {
   setPicking: (on: boolean) => void;
   points: Vec2[];
   clearPoints: () => void;
+  /** Where analysis.scale came from: OCR of the image (default) or a PDF's text and lines. */
+  foundSource?: "ocr" | "pdf";
 }
 
-export function ScalePanel({ analysis, chosen, onChoose, picking, setPicking, points, clearPoints }: Props) {
+export function ScalePanel({ analysis, chosen, onChoose, picking, setPicking, points, clearPoints, foundSource = "ocr" }: Props) {
   const { scale } = analysis;
   const [typed, setTyped] = useState("");
   const lengthId = useId();
@@ -76,7 +84,8 @@ export function ScalePanel({ analysis, chosen, onChoose, picking, setPicking, po
       }
   }
 
-  const found = scale.pxPerM !== null && scale.confidence !== "none" ? { pxPerM: scale.pxPerM, source: "ocr" as const } : null;
+  const found = scale.pxPerM !== null && scale.confidence !== "none" ? { pxPerM: scale.pxPerM, source: foundSource } : null;
+  const from = foundSource === "pdf" ? "from the PDF" : "from the printed sizes";
 
   return (
     <section aria-labelledby="scale-heading" className="flex flex-col gap-4 rounded border border-stone bg-vellum p-4">
@@ -90,7 +99,7 @@ export function ScalePanel({ analysis, chosen, onChoose, picking, setPicking, po
       {found && scale.confidence === "good" && (
         <div className="flex flex-col gap-2" data-testid="scale-found">
           <p>
-            Scale found: <strong data-testid="suggested-scale">{found.pxPerM.toFixed(1)}</strong> px/m from the printed sizes.
+            Scale found: <strong data-testid="suggested-scale">{found.pxPerM.toFixed(1)}</strong> px/m {from}.
           </p>
           <p className="text-sm text-smoke">The whole plan would be {size(found.pxPerM)}.</p>
           {use(found)}
@@ -100,7 +109,7 @@ export function ScalePanel({ analysis, chosen, onChoose, picking, setPicking, po
       {found && scale.confidence === "check" && (
         <div className="flex flex-col gap-2" data-testid="scale-found">
           <p>
-            Please confirm: <strong data-testid="suggested-scale">{found.pxPerM.toFixed(1)}</strong> px/m from the printed sizes.
+            Please confirm: <strong data-testid="suggested-scale">{found.pxPerM.toFixed(1)}</strong> px/m {from}.
           </p>
           <p className="text-sm text-smoke">{scale.reason}</p>
           <ul className="list-disc pl-5 text-sm text-smoke">
@@ -128,6 +137,9 @@ export function ScalePanel({ analysis, chosen, onChoose, picking, setPicking, po
             [
               ["Feet", { pxPerM: scale.unitless.ifFeet.pxPerM, source: "unitless-feet" }, scale.unitless.ifFeet],
               ["Metres", { pxPerM: scale.unitless.ifMetres.pxPerM, source: "unitless-metres" }, scale.unitless.ifMetres],
+              ...(scale.unitless.ifMillimetres
+                ? ([["Millimetres", { pxPerM: scale.unitless.ifMillimetres.pxPerM, source: "unitless-millimetres" }, scale.unitless.ifMillimetres]] as const)
+                : []),
             ] as const
           ).map(([label, s, fp]) => (
             <div key={label} className="flex flex-wrap items-center justify-between gap-2">

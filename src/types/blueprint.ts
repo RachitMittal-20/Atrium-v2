@@ -253,11 +253,12 @@ export interface OpeningCandidate {
 }
 
 /** Pixels per metre and where that number came from (scale.ts found it on
- *  the plan, the user typed a length, or a unit-less size label was read
- *  as feet or metres). */
+ *  the plan, the user typed a length, a unit-less size label was read as
+ *  feet, metres or millimetres, or a PDF's own dimensions or title block
+ *  gave it, src/lib/pdf/scale.ts). */
 export interface PlanScale {
   pxPerM: number;
-  source: "ocr" | "manual" | "unitless-feet" | "unitless-metres";
+  source: "ocr" | "manual" | "unitless-feet" | "unitless-metres" | "unitless-millimetres" | "pdf";
 }
 
 /** What lib/blueprint/toPlan.ts `buildPlan` turns into a Plan, all in

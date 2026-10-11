@@ -12,6 +12,14 @@
  * runs buildFromAnalysis and shows a summary → "Open in studio" calls the
  * plan store's loadPlan and goes to /studio.
  *
+ * A PDF (step M.1a) goes to src/workers/pdf.worker.ts instead, which does all
+ * the PDF work: a file with several pages first shows the page picker
+ * (PdfPanels.tsx), then the chosen page is read and analysed there. Its review
+ * adds the PDF panel (the page's kind, notes, and the scale with its sources)
+ * and, for a vector page with printed dimensions, the dimension check
+ * (DimensionCheck.tsx) under the plan. The overlay, scale panel and Build
+ * model flow are the same.
+ *
  * Nothing is kept except the plan loaded into the store, which autosaves to
  * the browser (src/store/persistence.ts). Editing walls
  * here is a later piece; this screen only reviews.
@@ -22,17 +30,22 @@ import { useRef, useState } from "react";
 import { buildFromAnalysis, STAGES, type Analysis, type AnalysisWarning, type Stage } from "@/lib/blueprint/analyse";
 import { usePlanStore } from "@/store/planStore";
 import { usePersistenceReady } from "@/store/persistence";
+import type { Overrides } from "@/lib/pdf/dimensions";
 import type { PlanScale } from "@/types/blueprint";
+import type { PdfInfo } from "@/types/pdf";
 import type { Vec2 } from "@/types/plan";
-import { Cancelled, checkFile, decodeImage, runAnalysis, STAGE_LABELS } from "./importFile";
+import { DimensionCheck } from "./DimensionCheck";
+import { Cancelled, checkFile, decodeImage, isPdf, runAnalysis, runPdf, STAGE_LABELS, type PdfPageSize } from "./importFile";
+import { PagePicker, PdfPanel } from "./PdfPanels";
 import { PlanViewer } from "./PlanViewer";
 import { primaryBtn, ScalePanel, secondaryBtn } from "./ScalePanel";
 
 type Phase =
   | { kind: "idle" }
-  | { kind: "busy"; stage: Stage | null; fraction: number }
+  | { kind: "busy"; stage: Stage | null; fraction: number; pdf?: boolean }
+  | { kind: "pages"; count: number; listed: PdfPageSize[] }
   | { kind: "error"; message: string }
-  | { kind: "results"; analysis: Analysis; original: { width: number; height: number } };
+  | { kind: "results"; analysis: Analysis; original: { width: number; height: number }; pdf?: PdfInfo };
 
 type Built = ReturnType<typeof buildFromAnalysis>;
 
@@ -64,6 +77,9 @@ export default function ImportPage() {
   const [points, setPoints] = useState<Vec2[]>([]);
   const [built, setBuilt] = useState<Built | null>(null);
   const [buildError, setBuildError] = useState<string | null>(null);
+  const [thumbs, setThumbs] = useState<Record<number, string>>({});
+  const [overrides, setOverrides] = useState<Overrides>({});
+  const pdfPageRef = useRef<(n: number) => void>(() => {});
   const fileRef = useRef<HTMLInputElement>(null);
   const cancelRef = useRef<() => void>(() => {});
 
@@ -75,6 +91,8 @@ export default function ImportPage() {
     setPoints([]);
     setBuilt(null);
     setBuildError(null);
+    setThumbs({});
+    setOverrides({});
   };
 
   async function start(blob: Blob) {
@@ -96,13 +114,36 @@ export default function ImportPage() {
     }
   }
 
+  /** Reads a PDF in its worker: the page picker for several pages, else straight to page 1. */
+  function startPdf(file: File) {
+    reset();
+    setPhase({ kind: "busy", stage: null, fraction: 0, pdf: true });
+    const job = runPdf(file, {
+      pages: (count, listed) => (count === 1 ? job.page(1) : setPhase({ kind: "pages", count, listed })),
+      thumb: (n, url) => setThumbs((t) => ({ ...t, [n]: url })),
+      progress: (stage, fraction) => setPhase({ kind: "busy", stage, fraction, pdf: true }),
+      done: (analysis, pdf) => {
+        // Development only: scripts/e2e-pdf-import.ts reads these.
+        if (process.env.NODE_ENV === "development") Object.assign(window, { __importAnalysis: analysis, __importPdf: pdf });
+        setPhase({ kind: "results", analysis, original: { width: analysis.pixels.width, height: analysis.pixels.height }, pdf });
+      },
+      error: (message) => setPhase({ kind: "error", message }),
+    });
+    pdfPageRef.current = (n) => {
+      setPhase({ kind: "busy", stage: null, fraction: 0, pdf: true });
+      job.page(n);
+    };
+    cancelRef.current = job.cancel; // also frees the thumbnails
+  }
+
   function takeFile(file: File | undefined) {
     if (!file) return;
     const problem = checkFile(file);
     if (problem) {
       reset();
       setPhase({ kind: "error", message: problem });
-    } else void start(file);
+    } else if (isPdf(file)) startPdf(file);
+    else void start(file);
   }
 
   async function trySample() {
@@ -150,7 +191,7 @@ export default function ImportPage() {
       <input
         ref={fileRef}
         type="file"
-        accept="image/png,image/jpeg,image/webp"
+        accept="application/pdf,.pdf,image/png,image/jpeg,image/webp"
         className="hidden"
         data-testid="file-input"
         onChange={(e) => {
@@ -174,8 +215,10 @@ export default function ImportPage() {
           }}
           className={`mx-auto flex max-w-2xl flex-col items-center gap-4 rounded border-2 border-dashed px-4 py-12 text-center transition-colors sm:px-8 ${dragging ? "border-gilt bg-vellum" : "border-stone"}`}
         >
-          <h2 className="font-display text-lg">Drop a floor plan image here</h2>
-          <p className="text-sm text-smoke">A PNG, JPEG or WebP up to 25 MB. A straight-on scan or export works best; a phone photo works too.</p>
+          <h2 className="font-display text-lg">Drop a floor plan PDF or image here</h2>
+          <p className="text-sm text-smoke">
+            A PDF up to 50 MB, or a PNG, JPEG or WebP up to 25 MB. A PDF exported from a drawing program reads best; a straight-on scan or a phone photo works too.
+          </p>
           <div className="flex flex-wrap justify-center gap-3">
             <button type="button" className={primaryBtn} onClick={() => fileRef.current?.click()}>
               Choose a file
@@ -203,7 +246,7 @@ export default function ImportPage() {
             <div className="h-full bg-gilt transition-[width] duration-300" style={{ width: `${Math.max(4, phase.fraction * 100)}%` }} />
           </div>
           <ul className="flex flex-col gap-1 text-sm" aria-live="polite">
-            {phase.stage === null && <li className="text-iron">Opening your image…</li>}
+            {phase.stage === null && <li className="text-iron">{phase.pdf ? "Reading the PDF…" : "Opening your image…"}</li>}
             {STAGES.map((s) => {
               const at = phase.stage === null ? -1 : STAGES.indexOf(phase.stage);
               const i = STAGES.indexOf(s);
@@ -223,6 +266,15 @@ export default function ImportPage() {
         </section>
       )}
 
+      {phase.kind === "pages" && (
+        <div className="flex flex-col gap-4">
+          <PagePicker count={phase.count} listed={phase.listed} thumbs={thumbs} onPick={(n) => pdfPageRef.current(n)} />
+          <button type="button" className={`${secondaryBtn} self-center`} onClick={reset}>
+            Try another file
+          </button>
+        </div>
+      )}
+
       {phase.kind === "error" && (
         <section role="alert" className="mx-auto flex max-w-md flex-col items-start gap-4 rounded border border-stone bg-vellum p-6" data-testid="error">
           <p data-testid="error-message">{phase.message}</p>
@@ -236,10 +288,21 @@ export default function ImportPage() {
         <div className="flex flex-col gap-6 lg:flex-row lg:items-start" data-testid="results">
           <div className="min-w-0 flex-1">
             <PlanViewer analysis={phase.analysis} picking={picking} points={points} onPick={(p) => setPoints((ps) => (ps.length >= 2 ? [p] : [...ps, p]))} />
-            {phase.analysis.imageScale < 1 && (
+            {phase.analysis.imageScale < 1 && !phase.pdf && (
               <p className="mt-1 text-sm text-smoke">
                 Your {phase.original.width} × {phase.original.height} px image was read at {phase.analysis.pixels.width} × {phase.analysis.pixels.height} px.
               </p>
+            )}
+            {phase.pdf?.scale && phase.pdf.scale.matches.length > 0 && (phase.pdf.scale.mPerPt || chosen) && (
+              <div className="mt-6">
+                <DimensionCheck
+                  matches={phase.pdf.scale.matches}
+                  mPerPt={chosen ? phase.pdf.pxPerPt / chosen.pxPerM : phase.pdf.scale.mPerPt!}
+                  chosen={chosen !== null}
+                  overrides={overrides}
+                  setOverrides={setOverrides}
+                />
+              </div>
             )}
           </div>
 
@@ -252,8 +315,11 @@ export default function ImportPage() {
               </ul>
             )}
 
+            {phase.pdf && <PdfPanel pdf={phase.pdf} />}
+
             <ScalePanel
               analysis={phase.analysis}
+              foundSource={phase.pdf?.route === "vector" ? "pdf" : "ocr"}
               chosen={chosen}
               onChoose={choose}
               picking={picking}

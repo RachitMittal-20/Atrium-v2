@@ -17,7 +17,8 @@
  *   c. 02 has no printed scale: "Set the scale yourself", click two points
  *      1000 px apart along the top wall, type 10 m; it builds 4 rooms.
  *   d. "Try a sample plan" reaches the results view.
- *   e. A PDF and a text file get their plain-words messages.
+ *   e. A broken PDF and a text file get their plain-words messages (since M.1a
+ *      a PDF is read, so the fake one is "damaged").
  *   f. Cancel during analysis returns to the drop zone and no results appear.
  * Screenshots of the results view at both sizes go to /tmp/import/.
  *
@@ -146,8 +147,9 @@ async function main() {
   writeFileSync(`${OUT}/plan.pdf`, "%PDF-1.4\n%fake\n");
   writeFileSync(`${OUT}/notes.txt`, "not a plan\n");
   for (const [file, want] of [
-    [`${OUT}/plan.pdf`, "PDFs aren't supported yet. Export the page as an image and upload that."],
-    [`${OUT}/notes.txt`, "That file isn't an image we can read. Upload a PNG, JPEG or WebP picture of your plan."],
+    // Since M.1a PDFs are read; this fake one is refused as damaged (by the PDF worker).
+    [`${OUT}/plan.pdf`, "This PDF is damaged and can't be read. Save it again from the program that made it, then try again."],
+    [`${OUT}/notes.txt`, "That file isn't a plan we can read. Upload a PDF, or a PNG, JPEG or WebP picture of your plan."],
   ]) {
     await big.goto(URL_);
     await big.setInputFiles("[data-testid=file-input]", file);

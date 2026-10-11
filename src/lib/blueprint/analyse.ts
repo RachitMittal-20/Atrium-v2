@@ -9,7 +9,8 @@
  * before it starts and yielding a macrotask between them so a browser page can
  * repaint:
  *   1. straighten      downscale when the longer side is over maxSide (area
- *                      averaging), then deskew.ts
+ *                      averaging), then deskew.ts (skipped with
+ *                      `straighten: false`, for PDF vector pages)
  *   2. find walls      hollowWalls.ts detectWalls (solid or hollow, by its own
  *                      mode rule), then vectorize.ts
  *   3. find openings   openings.ts, on the deskewed UNFILLED image
@@ -118,7 +119,7 @@ const nextTask = () => new Promise<void>((r) => setTimeout(r, 0));
 
 export async function analyseBlueprint(
   input: PlanPixels,
-  opts: { onProgress?: (stage: string, fraction: number) => void; ocr?: (p: PlanPixels) => Promise<OcrResult>; maxSide?: number } = {},
+  opts: { onProgress?: (stage: string, fraction: number) => void; ocr?: (p: PlanPixels) => Promise<OcrResult>; maxSide?: number; straighten?: boolean } = {},
 ): Promise<Analysis> {
   const timings = {} as Record<Stage, number>;
   /** Runs one stage: report it, time it, then yield so the page can repaint. */
@@ -136,7 +137,9 @@ export async function analyseBlueprint(
     const maxSide = opts.maxSide ?? MAX_SIDE;
     const f = long > maxSide ? maxSide / long : 1;
     const small = f < 1 ? areaResize(input, Math.round(input.width * f), Math.round(input.height * f)) : input;
-    return { ...deskew(small), imageScale: f };
+    // straighten: false (a PDF page drawn from vectors) keeps the page's own axes, so
+    // positions read from the PDF still land on the same pixels.
+    return { ...(opts.straighten === false ? { pixels: small, angleDeg: 0 } : deskew(small)), imageScale: f };
   });
   const found = await stage("find walls", () => {
     const d = detectWalls(pixels);

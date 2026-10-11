@@ -42,6 +42,56 @@ Read this before sections 18-22, which still describe the old order.
   4. **Outline:** visible edges solid gilt with depth testing, hidden ones at 20%. `import-rotate-mid-drag-1440.png` re-taken: the cube's visible edges (top face outline, the near vertical edges, the front bottom edge) are solid gilt lines; the three back edges (the far vertical edge and the two far bottom edges) are faint gilt and no longer read as solid lines; label "-45° / Rotation -45°".
   - Existing test lines changed: `test-import.ts`: 126 → cm (was in), the 120 cm OBJ table → cm (was in), and the comment naming the rule; `test-import-transform.ts` (unit section): 126 → cm (was in), the helper `g` takes a last unit; `e2e-import3d.ts`: table.zip expects cm (was in) and no longer clicks cm; the 3000-unit STL is now imported (it was cancelled) for the brightness check and then undone; `drag` gained a `beforeRelease` callback. Nothing else changed in existing assertions.
   - NOT covered: a model whose parts are turned by a parent's part transform AND typed in the panel's part rows (those numbers are the part's own offset); a real phone, Safari and Firefox.
+- **M.1 (floor-plan PDFs) is split in two:**
+  - **M.1a (DONE; not committed; 2026-10-11): read floor-plan PDFs.** All PDF work runs in the browser, in `src/workers/pdf.worker.ts`. pdf.js's core is set as `globalThis.pdfjsWorker` there, so it never starts a worker of its own or fetches one. Vector pages take their scale from the PDF's own dimensions and title block; walls are still traced from a raster. Scanned pages go through the image pipeline unchanged. A dimension check covers every printed dimension, with overrides and a CSV. CLAUDE.md has the rules (section "Reading PDFs (step M.1a)"). Checks, all passing against `npm run dev` on port 3000 from this checkout (`lsof -i :3000`, cwd `/Users/rachitmittal20/Atrium-v2`, `next dev`):
+    - `npm test`: 24 suites, including the new `scripts/test-pdf.ts`.
+    - `npx tsc --noEmit` and `npm run build`.
+    - The dev-hook grep (now also `__importPdf`) prints `clean`.
+    - `scripts/e2e-pdf-import.ts` (new), `scripts/e2e-studio.ts`, `scripts/e2e-walk.ts` and `scripts/e2e-import3d.ts`: each exit 0.
+  - **What M.1a added:**
+    - `pdfjs-dist` 6.4.299 (Apache-2.0). Dev only: `pdf-lib` 1.17.1 (MIT); `@napi-rs/canvas` comes in as pdf.js's optional dependency and is used only by the Node scripts.
+    - `public/pdfjs/wasm/`: pdf.js's JBIG2/CCITT, JPEG 2000 and ICC decoders with their licences, served from our own origin. Nothing else is fetched.
+    - `src/lib/pdf/{open,extract,scale,dimensions,analysePdf,render}.ts`, `src/types/pdf.ts` and `src/types/pdfjs-worker.d.ts`.
+    - The import screen: `PdfPanels.tsx` (page picker, badge, scale sources) and `DimensionCheck.tsx`, plus PDF handling in `importFile.ts` (`isPdf`, `runPdf`) and `page.tsx`.
+    - `analyseBlueprint` gained an opt-in `straighten: false`. The image pipeline's behaviour and tests are unchanged.
+    - `scale.ts` exports `band` and `median`, and `UnitlessScale.ifMillimetres` is optional (PDF only). `PlanScale.source` adds `"pdf"` and `"unitless-millimetres"`.
+    - `scripts/make-pdf-fixtures.ts` writes the 8 fixtures (2–22 KB each) and `truth.json` in `tests/fixtures/pdf/`; `scripts/pdf-node.ts` sets up pdf.js for Node.
+  - **Covered by tests:**
+    - The title-block rule. It was written first and seen failing (`'good' !== 'check'`) before the rule existed.
+    - Every straight segment within 0.01 pt after the matrix and /Rotate. Every other segment lies on a door arc within 0.05 + 0.01 pt.
+    - Text strings, positions, rotations and heights.
+    - Classification of all 8 fixtures and the cover page.
+    - Scale "good" within 0.001% on filled, lines, rotated, imperial and two-pages. plan-fit: 1:115 and the exact warning. plan-no-dims: "check" from the title block alone.
+    - Every dimension row OK under 1 mm. An injected 4100 mm is flagged, and an override keeps both values (also in the CSV).
+    - Plain messages for over 50 MB, the path-command cap, empty, garbage, cut short, encrypted, and an empty page tree (a blank page).
+    - The scanned fixture takes the raster route at 300 dpi.
+    - plan-filled and plan-rotated build the sample's rooms by name and 54.0 m of wall.
+  - **In the browser, at 1440 mouse:**
+    - All 8 fixtures through the real file input, with the badge, scale status and reason.
+    - Every table value within 0.1 mm of the truth, and the ft-in switch.
+    - The page picker with thumbnails on the two-page file.
+    - No request leaves the origin while a vector PDF is read.
+    - Build and open in the studio: rooms named from the PDF, and every wall length within 4 raster pixels of the truth (worst 10.4 mm against a 45–57 mm tolerance).
+    - About 1 s per vector page and 12.7 s for the scanned one, including OCR, which found 80.8 px/m.
+  - **At 390, real touch:** plan-filled built and checked, the picker by tap, and the layout viewport and page exactly 390 px wide while the table scrolls inside its container. At both sizes, the misprinted copy is overridden and the CSV downloaded.
+  - **Screenshots** (`/tmp/studio/`):
+    - `pdf-review-1440.png`: plan-filled, Vector PDF badge, "Scale found · measures 1:100 on A4", 11 rows OK.
+    - `pdf-fit-warning-1440.png`: "measures 1:115" and the gilt-bordered title-block warning; the plan sits smaller on the page.
+    - `pdf-dimension-check-1440.png`: 10 OK and the 4100 mm row "Overridden" with measured 4000.0 mm kept and the note.
+    - `pdf-review-390.png`: one column. The table shows Printed, Measured and part of Difference and scrolls sideways. On the phone the table comes BEFORE the PDF and scale panels, because it sits under the plan in the left column. Worth reordering for phones.
+  - **NOT covered:**
+    - plan-lines (walls as double lines) builds without its living room. Hollow mode doesn't close it, and its windows are missed; the e2e prints this instead of asserting it.
+    - Real CAD PDFs: `test-plans/` has no PDFs yet.
+    - A dimension line broken around its text, curved walls, multi-page reading, mixed pages (no fixture), and encrypted or damaged files in the browser (unit tests only).
+    - JBIG2/CCITT/JPEG 2000 scans (decoders served but untested).
+    - Safari, Firefox, a real phone.
+  - **Found and fixed on the way:**
+    - pdf.js's core, imported in a worker, wires itself to that worker's port and posts a "ready" handshake to the page, which first read as a failure. `runPdf` ignores non-protocol messages.
+    - pdf.js shows a PDF with no pages as one blank A4 page, so blank pages are refused.
+    - The table's `sr-only` header label escaped its scroll container and widened the phone layout to 577 px. The container is now `relative`, and the e2e checks `innerWidth` as well, because `scrollWidth <= innerWidth` alone could not see it.
+  - **Existing test lines changed:** `e2e-import.ts` part e. The fake PDF now gets the damaged-PDF message (it said "PDFs aren't supported yet"), and the text-file message now mentions PDFs.
+  - **One flake seen:** in the first combined run, `e2e-studio.ts` failed once at "390: the Delete key removes it too". A probe of mine was loading the same dev server at the time. The clean rerun passed. This step changes no studio code; this may be the known 390 timing flake (section 22).
+  - **M.1b (next): snap to the exact PDF vectors.** Snap wall faces and opening jambs to the PDF's own segments, with a coverage report (how much of the traced geometry found a matching segment, and which walls did not).
 - **Things 4.7b and 4.7c must know:**
   - `planStore.updateWall` re-clamps openings only when a wall's length changes. The tool shortens or lowers openings itself, inside its own transaction, by the rules of `edit.openingSize`. A new face that changes an opening or a wall's geometry must do the same.
   - The pixel fallback and the ray method differ by 1 / cos ψ near the 8° switch (about 7x), so the method is fixed when a face is grabbed. Do not switch mid-pull.
@@ -292,7 +342,7 @@ Rules:
 Verification status at `4ba7192` (main):
 - `npm test` (18 suites), `npx tsc --noEmit` and `npm run build` passed.
 - The browser e2e (`scripts/e2e-studio.ts`) was run on this commit after main was updated, and it passed (result below). To re-run it: terminal A runs `npm run dev` and stays running (it must be port 3000, and it must be `dev` and not `start`, because the e2e uses dev-only hooks such as `window.__planStore`); terminal B runs `npx tsx scripts/e2e-studio.ts` and must exit 0.
-- **Run before committing** (since 4.7c): `npm test`, `npx tsc --noEmit`, `npm run build`, `grep -rlE "__studio3d|__pushPullDebug|__importDebug" .next/static || echo clean` (must print `clean`), and with `npm run dev` on port 3000 from THIS checkout (`lsof -i :3000`, then the process's working directory): `npx tsx scripts/e2e-studio.ts`, `npx tsx scripts/e2e-walk.ts` and (since I.1a) `npx tsx scripts/e2e-import3d.ts`, all exit 0. Do not edit source files while an e2e runs: the dev server hot-reloads mid-test.
+- **Run before committing** (since 4.7c): `npm test`, `npx tsc --noEmit`, `npm run build`, `grep -rlE "__studio3d|__pushPullDebug|__importDebug|__importPdf" .next/static || echo clean` (must print `clean`), and with `npm run dev` on port 3000 from THIS checkout (`lsof -i :3000`, then the process's working directory): `npx tsx scripts/e2e-studio.ts`, `npx tsx scripts/e2e-walk.ts`, (since I.1a) `npx tsx scripts/e2e-import3d.ts` and (since M.1a) `npx tsx scripts/e2e-pdf-import.ts`, all exit 0. Do not edit source files while an e2e runs: the dev server hot-reloads mid-test.
 - e2e result on `4ba7192`, 2026-10-01: PASSED, exit 0. At 1440 (mouse) and 390 (real touch events): 2D, select and edit, wall runs, draw walls, opening selection, doors and windows, Measure, nothing outside the viewport, 19 tab stops all with a focus ring, and the Import plan link; plus autosave restore and flipped-door swing persistence through a reload at both sizes. No 390 px flake appeared in this run. Tag `editor-complete-4.6` points at `4ba7192`.
 
 ## 16. Historical engineering lessons
