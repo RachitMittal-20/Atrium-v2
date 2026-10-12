@@ -150,7 +150,32 @@ export interface Plan {
   openings: Opening[];
   rooms: Room[];
   items: Item[];
+  /** Quantity takeoffs (step M.2a): annotations measured on the plan, never geometry. Absent on older plans. */
+  takeoffs?: Takeoff[];
   meta: PlanMeta;
+}
+
+/** A value someone typed against a takeoff: metres for a length, m² for an area. */
+export interface TakeoffValue {
+  value: number;
+  note?: string;
+}
+
+/**
+ * A measured length (a polyline) or area (a polygon, minus cutouts) in plan metres (step M.2a).
+ * The points are absolute: they do not follow the walls. `wallsHash` is the walls' hash
+ * (src/lib/takeoff/rows.ts) when it was measured, so the table can say the walls have moved
+ * since. An override never replaces the measured value; both are kept.
+ */
+export interface Takeoff {
+  id: string;
+  name: string;
+  kind: "length" | "area";
+  points: [number, number][];
+  cutouts?: [number, number][][];
+  reference?: TakeoffValue;
+  override?: TakeoffValue;
+  wallsHash: string;
 }
 
 /** A named design alternative: a full snapshot so options can be compared and

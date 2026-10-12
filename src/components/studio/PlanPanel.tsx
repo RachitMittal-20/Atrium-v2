@@ -8,8 +8,9 @@
  * replaced by WallPanel.tsx, while a door or window is selected by
  * OpeningPanel.tsx, and while an imported 3D model is selected by ItemPanel.tsx. Anything an edit broke is listed underneath as a
  * warning, never silently. A right column at 768 px and wider; below that a
- * collapsible sheet under the canvas. The unit lives in the studio page, so the
- * 2D plan's area labels follow the same toggle.
+ * collapsible sheet under the canvas. The unit comes from the studio page (which reads
+ * src/store/unitsStore.ts), so the 2D plan's area labels follow the same toggle. The
+ * Takeoff section (TakeoffPanel.tsx, step M.2a) sits at the bottom, under Rooms.
  * Mounted by src/app/studio/page.tsx.
  */
 import { useState } from "react";
@@ -18,6 +19,7 @@ import { useSelectionStore } from "@/store/selectionStore";
 import { EditableText } from "./EditableText";
 import { ItemPanel } from "./ItemPanel";
 import { OpeningPanel } from "./OpeningPanel";
+import { TakeoffPanel } from "./TakeoffPanel";
 import { WallPanel } from "./WallPanel";
 
 const SQFT_PER_M2 = 10.7639;
@@ -141,6 +143,8 @@ export function PlanPanel({ unit, setUnit }: { unit: Unit; setUnit: (u: Unit) =>
             </ul>
           )}
         </section>
+
+        <TakeoffPanel />
       </div>
     </aside>
   );

@@ -426,6 +426,31 @@ async function checkWiring() {
   console.log("provenance: old plans unchanged, provenance and edited round-trip, unknown values dropped");
 }
 
+// ---- step M.2a: takeoffs. Old plans (none) load unchanged and gain no field; takeoffs round-trip; a malformed
+// one is refused like any other bad entry.
+{
+  const old = serializePlan(samplePlan);
+  assert.ok(!old.includes("takeoffs"), "the sample stores no takeoffs");
+  const back = parseStoredPlan(old)!;
+  assert.ok(!("takeoffs" in back), "an old plan gains no takeoffs field");
+  assert.deepEqual(back, parseStoredPlan(old), "and loads the same every time");
+  const withT: Plan = {
+    ...samplePlan,
+    takeoffs: [
+      { id: "t-1", name: "Length 1", kind: "length", points: [[0, 0], [4, 0]], reference: { value: 4, note: "drawing" }, override: { value: 4.1 }, wallsHash: "abc" },
+      { id: "t-2", name: "Area 1", kind: "area", points: [[0, 0], [4, 0], [4, 3]], cutouts: [[[1, 0.5], [2, 0.5], [2, 1]]], wallsHash: "abc" },
+    ],
+  };
+  assert.deepEqual(parseStoredPlan(serializePlan(withT))!.takeoffs, withT.takeoffs, "takeoffs survive a save and reload");
+  const bad = JSON.parse(serializePlan(withT));
+  bad.plan.takeoffs[1].points = [[0, 0], [1, 1]];
+  assert.equal(parseStoredPlan(JSON.stringify(bad)), null, "an area with two corners is refused");
+  const dup = JSON.parse(serializePlan(withT));
+  dup.plan.takeoffs[1].id = "t-1";
+  assert.equal(parseStoredPlan(JSON.stringify(dup)), null, "duplicate takeoff ids are refused");
+  console.log("takeoffs: old plans unchanged, takeoffs round-trip, malformed ones refused");
+}
+
 // (async because the debounce is waited out in real time; the CJS test runner has no top-level await)
 checkWiring().then(
   () => console.log("OK"),

@@ -7,7 +7,9 @@
  * (step 4.7b, key V), Rotate (Q) and Scale (Z) (step I.1b, imported models) work; the
  * active one is aria-pressed and set in src/store/toolStore.ts. The 3D tools are
  * aria-disabled, with a tooltip that
- * says why, in the 2D-only view and while walking. A disabled button stays
+ * says why, in the 2D-only view and while walking. Takeoff (step M.2a, key K) works in
+ * the 2D plan, so it is disabled in the 3D-only view ("Takeoff works in the 2D plan")
+ * and while walking. A disabled button stays
  * focusable, so keyboard users can read why. Mounted by src/app/studio/page.tsx.
  */
 import type { ReactNode } from "react";
@@ -21,7 +23,7 @@ const svg = (children: ReactNode) => (
 );
 
 /** `tool` is set for the tools that work; the rest show "coming soon". */
-const TOOLS: { id: string; label: string; tool?: Tool; tip?: string; needs3d?: boolean; icon: ReactNode }[] = [
+const TOOLS: { id: string; label: string; tool?: Tool; tip?: string; needs3d?: boolean; needs2d?: boolean; icon: ReactNode }[] = [
   { id: "select", label: "Select", tool: "select", tip: "Select and inspect", icon: svg(<path d="M6 3l12 8-5.5 1.5L10 18 6 3z" />) },
   { id: "wall", label: "Wall", tool: "wall", tip: "Draw walls", icon: svg(<><path d="M3 9h18v6H3z" /><path d="M9 9v6M15 9v6" /></>) },
   { id: "door", label: "Door", tool: "door", tip: "Place a door on a wall", icon: svg(<><path d="M5 20V4M5 20h14" /><path d="M5 4a16 16 0 0 1 14 16" /></>) },
@@ -31,20 +33,24 @@ const TOOLS: { id: string; label: string; tool?: Tool; tip?: string; needs3d?: b
   { id: "rotate", label: "Rotate", tool: "rotate", tip: "Turn an imported model or part in the 3D view (Q)", needs3d: true, icon: svg(<><path d="M20 12a8 8 0 1 1-2.3-5.6" /><path d="M20 4v4h-4" /></>) },
   { id: "scale", label: "Scale", tool: "scale", tip: "Scale an imported model or part in the 3D view (Z)", needs3d: true, icon: svg(<><path d="M4 20h7v-7H4z" /><path d="M13 11l7-7M15 4h5v5" /></>) },
   { id: "measure", label: "Measure", tool: "measure", tip: "Measure a distance in the 2D plan", icon: svg(<><path d="M3 15L15 3l6 6L9 21z" /><path d="M7 11l2 2M10 8l2 2M13 5l2 2" /></>) },
+  { id: "takeoff", label: "Takeoff", tool: "takeoff", tip: "Measure lengths, areas and wall faces into a table (K)", needs2d: true, icon: svg(<><path d="M5 4h14v16H5z" /><path d="M8 8h8M8 12h8M8 16h4" /></>) },
 ];
 
 /** Why a 3D tool can't be used right now, or null when it can. */
 const blocked3d = (label: string, view3d: boolean, walking: boolean) => (!view3d ? `${label} works in the 3D view` : walking ? `Exit Walk to use ${label}` : null);
 
-/** `view3d`: the 3D pane is showing, so Push/Pull and Move can be used (unless walking). */
-export function ToolRail({ view3d }: { view3d: boolean }) {
+/** Why a 2D-plan tool (Takeoff) can't be used right now, or null when it can. */
+const blocked2d = (label: string, view2d: boolean, walking: boolean) => (!view2d ? `${label} works in the 2D plan` : walking ? `Exit Walk to use ${label}` : null);
+
+/** `view3d`: the 3D pane is showing, so Push/Pull and Move can be used (unless walking); `view2d`: the 2D plan is, so Takeoff can. */
+export function ToolRail({ view3d, view2d }: { view3d: boolean; view2d: boolean }) {
   const active = useToolStore((s) => s.tool);
   const setTool = useToolStore((s) => s.setTool);
   const walking = useViewStore((s) => s.mode === "walk");
   return (
     <nav aria-label="Tools" className="flex shrink-0 justify-around gap-0 bg-cyanotype p-1 text-vellum max-md:order-last md:w-20 md:flex-col md:justify-start md:gap-2 md:p-2">
       {TOOLS.map((t) => {
-        const why = t.needs3d ? blocked3d(t.label, view3d, walking) : null; // needs the 3D pane, and it is hidden or walking
+        const why = t.needs3d ? blocked3d(t.label, view3d, walking) : t.needs2d ? blocked2d(t.label, view2d, walking) : null; // needs a pane that is hidden, or walking
         const off = !t.tool || why !== null;
         const on = !off && t.tool === active;
         return (
@@ -61,7 +67,7 @@ export function ToolRail({ view3d }: { view3d: boolean }) {
             }`}
           >
             {t.icon}
-            {t.label.replace("/", "/\u200b") /* nine tools share a phone's bar: "Push/Pull" may break after the slash, nothing else */}
+            {t.label.replace("/", "/\u200b") /* ten tools share a phone's bar: "Push/Pull" may break after the slash, nothing else */}
             {/* Tooltip on hover and keyboard focus; to the right of the rail, above the bar on a phone. */}
             <span
               id={`tip-${t.id}`}

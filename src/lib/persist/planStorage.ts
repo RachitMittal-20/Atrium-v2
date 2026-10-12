@@ -11,10 +11,11 @@
  * Measure overlay live in other stores and never come through here, and undo
  * history is not stored either. An imported model's Item keeps only its asset id and
  * settings (`Item.import`); the file bytes live in IndexedDB (src/lib/import/assetStore.ts)
- * and never come through here. Connects to: src/types/plan.ts; wired to the plan
+ * and never come through here. Quantity takeoffs (step M.2a, `plan.takeoffs`) are plan data
+ * and are stored; the Takeoff tool's mode, draft and selected row are not. Connects to: src/types/plan.ts; wired to the plan
  * store by src/store/persistence.ts; tested by scripts/test-persist.ts.
  */
-import type { ImportFormat, ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Room, Vec2, Wall } from "@/types/plan";
+import type { ImportFormat, ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Room, Takeoff, TakeoffValue, Vec2, Wall } from "@/types/plan";
 
 export const STORAGE_KEY = "atrium-v2:plan";
 /** Bump when the stored shape changes, and add a case to `migrate`. */
@@ -164,6 +165,45 @@ function importInfo(v: unknown): ImportInfo | null {
   return { assetId: v.assetId, name: v.name, format: v.format as ImportFormat, unitToMetres: v.unitToMetres, upAxis: v.upAxis, doubleSided: v.doubleSided, nodeOverrides };
 }
 
+/** A point list: at least `min` pairs of finite numbers. */
+function points(v: unknown, min: number): [number, number][] | null {
+  const xs = list(v);
+  if (!xs || xs.length < min) return null;
+  const out: [number, number][] = [];
+  for (const p of xs) {
+    const q = list(p);
+    if (!q || q.length !== 2 || !isNum(q[0]) || !isNum(q[1])) return null;
+    out.push([q[0], q[1]]);
+  }
+  return out;
+}
+
+/** A typed reference or override: a finite value and an optional note. */
+function takeoffValue(v: unknown): TakeoffValue | null {
+  if (!isObject(v) || !isNum(v.value) || (v.note !== undefined && !isStr(v.note))) return null;
+  return { value: v.value, ...(isStr(v.note) && { note: v.note }) };
+}
+
+/** A quantity takeoff (step M.2a), rebuilt field by field like every other entry. */
+function takeoff(v: unknown): Takeoff | null {
+  if (!isObject(v) || !isStr(v.id) || !isStr(v.name) || (v.kind !== "length" && v.kind !== "area") || !isStr(v.wallsHash)) return null;
+  const pts = points(v.points, v.kind === "length" ? 2 : 3);
+  if (!pts) return null;
+  const out: Takeoff = { id: v.id, name: v.name, kind: v.kind, points: pts, wallsHash: v.wallsHash };
+  if (v.cutouts !== undefined) {
+    const cuts = v.kind === "area" ? all(v.cutouts, (c) => points(c, 3)) : null; // only an area has cutouts
+    if (!cuts) return null;
+    if (cuts.length) out.cutouts = cuts;
+  }
+  for (const key of ["reference", "override"] as const) {
+    if (v[key] === undefined) continue;
+    const tv = takeoffValue(v[key]);
+    if (!tv) return null;
+    out[key] = tv;
+  }
+  return out;
+}
+
 /** Map every element through `one`; null when the input is not an array or any element is bad. */
 function all<T>(v: unknown, one: (e: unknown) => T | null): T[] | null {
   const xs = list(v);
@@ -202,7 +242,11 @@ function coercePlan(v: unknown): Plan | null {
   if (!unique(walls.map((w) => w.id)) || !unique(openings.map((o) => o.id)) || !unique(rooms.map((r) => r.id)) || !unique(items.map((i) => i.id))) return null;
   if (openings.some((o) => !wallIds.has(o.wallId)) || rooms.some((r) => r.wallIds.some((id) => !wallIds.has(id)))) return null;
 
-  return { id: v.id, name: v.name, units: "m", walls, openings, rooms, items, meta: { createdAt, updatedAt, source } };
+  const plan: Plan = { id: v.id, name: v.name, units: "m", walls, openings, rooms, items, meta: { createdAt, updatedAt, source } };
+  if (v.takeoffs === undefined) return plan; // every plan before step M.2a: loads exactly as it was
+  const takeoffs = all(v.takeoffs, takeoff);
+  if (!takeoffs || !unique(takeoffs.map((t) => t.id))) return null;
+  return { ...plan, takeoffs };
 }
 
 // ---------------------------------------------------------------- autosave

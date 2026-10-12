@@ -65,6 +65,12 @@
  * no wall, door or window selects the model (selectionStore.itemId). Models are
  * never dragged here in this step; the panel moves them.
  *
+ * Takeoff tool (step M.2a, src/store/takeoffStore.ts, drawn by TakeoffLayer.tsx): like
+ * Measure, a press never picks a wall; hover, tap, double-click and the keys (Enter
+ * finishes, Backspace removes the last point, Escape cancels the draft and then goes back
+ * to Select) are handed to the takeoff store with the pointer in plan metres. A drag still
+ * pans and two fingers still pinch.
+ *
  * Pan/zoom lives here, not in the store. Nothing animates, so
  * prefers-reduced-motion needs no special case.
  * Mounted by src/app/studio/page.tsx (2D view and the 2D half of Split).
@@ -121,7 +127,9 @@ import { footprint, itemLocalBox } from "@/lib/import/model";
 import { pointInPolygon } from "@/lib/plan/rooms";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { useSelectedRun, useSelectionStore } from "@/store/selectionStore";
+import { useTakeoffStore, type TakeoffPointer } from "@/store/takeoffStore";
 import { useToolStore } from "@/store/toolStore";
+import { TakeoffBar, TakeoffOverlay } from "./TakeoffLayer";
 import type { Opening, OpeningKind, Vec2, Wall } from "@/types/plan";
 
 const NAME_PX = 15; // text-sm
@@ -493,6 +501,11 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   };
   const world = (p: Vec2) => screenToWorld(view, p);
+  /** A pointer for the Takeoff tool: plan metres, metres per pixel, finger or mouse, and Alt / Shift. */
+  const takeoffPointer = (e: ReactPointerEvent | React.MouseEvent, p: Vec2): TakeoffPointer => {
+    const w = world(p);
+    return { at: [w.x, w.y], px: 1 / view.scale, touch: "pointerType" in e && e.pointerType === "touch", alt: e.altKey, shift: e.shiftKey };
+  };
   /** What a Select-tool press at canvas pixel `p` picks. Touch gets bigger handles
    *  and a bigger opening reach: a fingertip covers more than a cursor. */
   const targetAt = (p: Vec2, touch: boolean) =>
@@ -557,6 +570,8 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
         const pl = placementAt(local(e));
         setPlace(pl);
         if (!pl) setDrawMsg(null); // off every wall: nothing to explain
+      } else if (tool === "takeoff") {
+        useTakeoffStore.getState().pointer(takeoffPointer(e, local(e)));
       } else if (tool === "select") {
         // Select only: Measure and Push/Pull never hover a wall (and so never tint it in 3D either)
         const t = targetAt(local(e), false); // plain hover, no button down: the same rule as a click
@@ -644,6 +659,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
       if (tool === "measure") placeMeasure(local(e), e);
       else if (tool === "wall") placePoint(local(e), e.altKey);
       else if (tool === "door" || tool === "window") placeAt(local(e));
+      else if (tool === "takeoff") useTakeoffStore.getState().click(takeoffPointer(e, local(e)));
       else {
         // no wall, door or window here: an imported model's footprint (the one drawn on top), or empty space
         const at = world(local(e));
@@ -712,6 +728,26 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
         return;
       }
       if (e.key === "Delete" || e.key === "Backspace") return; // nothing to delete while measuring
+    }
+
+    if (tool === "takeoff") {
+      const t = useTakeoffStore.getState();
+      if (e.key === "Escape") {
+        e.stopPropagation(); // beat the page-wide Escape in selectionStore
+        if (t.draft.length || t.cutoutFor) t.cancel(); // the draft was never in the plan: history stays as it was
+        else setTool("select");
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        t.finish();
+        return;
+      }
+      if (e.key === "Backspace" || e.key === "Delete") {
+        e.preventDefault(); // never deletes a wall here
+        if (e.key === "Backspace") t.undoPoint();
+        return;
+      }
     }
 
     if ((tool === "door" || tool === "window") && e.key === "Escape") {
@@ -877,6 +913,8 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
           ? "2D plan, drawing walls. Click to start a wall and click again to add it; keep clicking to add joined walls. Type a length and press Enter for an exact one. Escape, Enter or double-click finishes; Escape again goes back to Select."
           : tool === "measure"
             ? "2D plan, measuring. Click or tap two points to measure between them; drag a marker to adjust it. Escape clears the measurement, and again goes back to Select. Plus and minus zoom, 0 fits the plan."
+          : tool === "takeoff"
+            ? "2D plan, takeoff. Length: click points, then double-click or Enter. Area: click corners and click the first one or press Enter. Wall: click a wall's side or middle. Backspace removes the last point, Escape cancels, and again goes back to Select."
           : tool === "door" || tool === "window"
             ? `2D plan, placing ${tool}s. Click a wall to place a ${tool} there. Escape goes back to Select.`
             : "2D plan. Click a wall, door or window to select it; drag a door or window to slide it along its wall. Arrow keys nudge the selected wall or pan when no wall is selected, Delete removes the selection, Escape clears it. Plus and minus zoom, 0 fits the plan."
@@ -911,8 +949,12 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
             hover(null);
             setHoverOp(null);
             setPlace(null);
+            useTakeoffStore.getState().leave();
           }}
-          onDoubleClick={() => tool === "wall" && finishChain()}
+          onDoubleClick={() => {
+            if (tool === "wall") finishChain();
+            if (tool === "takeoff") useTakeoffStore.getState().finish();
+          }}
         >
           {/* room floors, tinted by the floor material */}
           {rooms.map((r) => (
@@ -1125,6 +1167,9 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
             <MeasureOverlay a={S(measurement.a)} b={measurement.b && S(measurement.b)} metres={measurement.b ? measureDistance(measurement.a, measurement.b) : 0} size={size} world={measurement} />
           )}
 
+          {/* takeoffs: every one in the plan (Show takeoffs), and the tool's draft and hover */}
+          <TakeoffOverlay view={view} active={tool === "takeoff"} size={size} />
+
           {/* scale bar, bottom left */}
           <g data-testid="plan-scalebar" className="font-sans" transform={`translate(16 ${size.height - 16})`}>
             <path d={`M0,-6V0H${barPx}V-6`} fill="none" className="stroke-iron" strokeWidth={1.5} />
@@ -1164,6 +1209,9 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
           )}
         </div>
       )}
+
+      {/* Takeoff tool: Length | Area | Wall, and Finish / Undo point / Cancel for touch */}
+      {tool === "takeoff" && <TakeoffBar />}
 
       {/* Wall tool: what to do next, and Finish for touch screens with no Escape key */}
       {tool === "wall" && (

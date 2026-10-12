@@ -162,6 +162,42 @@ Read this before sections 18-22, which still describe the old order.
   - **Flakes and hangs seen:**
     - Once, at 390, the "Open in studio" tap on plan-clutter did not navigate. It passed alone and in the two later full runs; maybe the known 390 timing flake (section 22).
     - Once, `e2e-import3d.ts` hung after its first dialog check while other e2e runs had just finished. A clean rerun alone passed. M.1b changes nothing it uses.
+- **M.2 (quantity takeoffs) is split in two:**
+  - **M.2a (DONE; not committed; 2026-10-12): the Takeoff tool.** It measures lengths, polygon areas with cutouts, and wall faces in the 2D plan. It has units, references, discrepancy flags, overrides, a basis per row, a stale marker, totals and a CSV. CLAUDE.md has the rules (section "Quantity takeoffs (step M.2a)"). Checks, all passing against `npm run dev` on port 3000 from this checkout (pid 9154, cwd `/Users/rachitmittal20/Atrium-v2`, parent `next dev`):
+    - `npm test`, including the new `scripts/test-takeoff.ts` and the assertions added to `test-persist.ts`. `npx tsc --noEmit`, `npm run build`, and the dev-hook grep (now with `__plan2d` and `__takeoffStore`) prints `clean`.
+    - `scripts/e2e-takeoff.ts` (new), `e2e-studio.ts`, `e2e-walk.ts`, `e2e-import3d.ts`, `e2e-pdf-import.ts`: each exit 0.
+  - **What M.2a added:**
+    - `src/lib/units/format.ts` and `src/store/unitsStore.ts` (localStorage "atrium.units"). The Summary's m² | sq ft toggle now uses the same area setting, so it persists.
+    - `src/lib/takeoff/{geometry,rows}.ts`.
+    - `Plan.takeoffs?` / `Takeoff` in `src/types/plan.ts`, the four store actions, and the strict reader in `planStorage` (no schema bump).
+    - `src/store/takeoffStore.ts`, `src/components/plan2d/TakeoffLayer.tsx` and `src/components/studio/TakeoffPanel.tsx`.
+    - `takeoff` in `toolStore` (key K). The rail button is disabled in 3D-only and while walking. The page's tool keys now listen in every view and check each tool's pane.
+  - **Covered by tests (Node):**
+    - Units, including the failing-first totals test, which was seen failing as `'3 mm' !== '2 mm'` against a naive sum of rounded values.
+    - Shoelace areas (rectangle 12.6, L 12, triangle 3, either winding), a bowtie refused, cutouts (inside, on the edge, half or wholly outside, in an L's notch), and polylines.
+    - `wallFaceLengths` on the partition (3.85 / 4 / 3.85, rooms Bedroom 2 left and Bedroom 1 right) and on the south run (10.2 outside, 9.8 inside, equal to the sums of `wallOutline` edges). Alt gives one piece (3 m). A 0.3 m middle piece gives stepped faces of 10.3 and 9.9.
+    - Snap priorities, Alt and Shift; tolerance boundaries for both kinds (exactly at the tolerance OK, 0.1 mm or 0.0001 m² beyond Flagged); overrides keep both values; totals from unrounded values; basis from provenance; the CSV's escaping and columns.
+    - The stale hash and Mark as current; every store action is one undo step with redo; drafts never touch history.
+    - `validatePlan`, rooms and collision are unaffected (no collision rebuild). The autosave round trip adds 358 bytes for two takeoffs, and the shortcuts are unique.
+  - **In the browser:**
+    - 1440 (mouse, Split): disabled in 3D-only with its tooltip. Length on the south outside face equals `wallOutline` (10.200000). Escape mid-draw leaves history unchanged. Area on Bedroom 1 equals its net area (14.822500), and a cutout subtracts 1 m². The partition's left face, centre line and right face are picked by the pointer's side and equal `wallOutline` ("Room side: Bedroom 2" on the hover label).
+    - 1440, panel and persistence: the mm, ft-in and sq ft texts; a Flagged reference; an override showing both values; Delete then Ctrl+Z restores exactly. The CSV downloads and parses (`Length 1,length,Drawn,10200,10150,50.0,Flagged,10180,,10180,no`). A reload keeps the takeoffs and the units. K picks the tool, and entering Walk switches it to Select and disables it ("Exit Walk to use Takeoff").
+    - 390 (real touch, 2D): Length by taps with Undo point and Finish; Cancel leaves history unchanged; Area by taps with Finish; the partition's left face through the Left toggle. The page and body are exactly 390 px wide while the 885 px table scrolls inside its 356 px box.
+  - **Screenshots** (`/tmp/studio/`):
+    - `takeoff-length-mid-draw-1440.png`: the draft along the south face with the "face corner" snap marker. The live label "Total 10.200 m · last 10.200 m" is flipped to the left of the point. Before that fix it was cut off at the pane's right edge.
+    - `takeoff-area-cutout-1440.png`: Area 1 over Bedroom 1 with its dashed cutout and the "Add cutout to Area 1" button. The label "Area 1: 13.823 m²" overlaps the room's own "Bedroom 1" label.
+    - `takeoff-panel-flagged-1440.png`: the 320 px panel scrolled sideways to Difference "+50 mm", the Flagged badge and the 10180 mm override. The "Overridden: …" line is cut at the box's right edge, which scrolls. On the canvas, the three partition takeoffs' labels overlap one another.
+    - `takeoff-390.png`: the sheet open on the table (Name, Kind, Basis, Measured; the rest scrolls) and the totals. The mode bar and toggle cover the top of the small plan above the sheet.
+  - **NOT covered:**
+    - Copy table in the browser (the clipboard is not granted; its cells are the CSV's, which are tested).
+    - Shift and Alt in the browser (Node tests only), the stepped-face label in the browser, and a cutout refused in the browser (Node tests only).
+    - The stale marker and Mark as current in the browser (Node tests only), and the mm² unit in the browser.
+    - The 390 CSV download and reload (1440 only), a real phone, Safari and Firefox.
+  - **Existing tests:** only `test-persist.ts` gained assertions; nothing existing changed. `package.json`'s test script runs `test-takeoff.ts`. No `__plan2d` hook was needed: the e2e reuses the canvas camera attributes, as `e2e-studio.ts` does.
+  - **M.2b (next):**
+    - Recalibrate the scale inside the studio: type the true distance between two points, preview the factor and the new plan size, and apply it as one undo step.
+    - Keep the PDF import's printed-dimension rows with the plan and show them beside the takeoffs.
+    - Overlay the PDF page under the 2D plan.
 - **Things 4.7b and 4.7c must know:**
   - `planStore.updateWall` re-clamps openings only when a wall's length changes. The tool shortens or lowers openings itself, inside its own transaction, by the rules of `edit.openingSize`. A new face that changes an opening or a wall's geometry must do the same.
   - The pixel fallback and the ray method differ by 1 / cos ψ near the 8° switch (about 7x), so the method is fixed when a face is grabbed. Do not switch mid-pull.
@@ -412,7 +448,7 @@ Rules:
 Verification status at `4ba7192` (main):
 - `npm test` (18 suites), `npx tsc --noEmit` and `npm run build` passed.
 - The browser e2e (`scripts/e2e-studio.ts`) was run on this commit after main was updated, and it passed (result below). To re-run it: terminal A runs `npm run dev` and stays running (it must be port 3000, and it must be `dev` and not `start`, because the e2e uses dev-only hooks such as `window.__planStore`); terminal B runs `npx tsx scripts/e2e-studio.ts` and must exit 0.
-- **Run before committing** (since 4.7c): `npm test`, `npx tsc --noEmit`, `npm run build`, `grep -rlE "__studio3d|__pushPullDebug|__importDebug|__importPdf" .next/static || echo clean` (must print `clean`), and with `npm run dev` on port 3000 from THIS checkout (`lsof -i :3000`, then the process's working directory): `npx tsx scripts/e2e-studio.ts`, `npx tsx scripts/e2e-walk.ts`, (since I.1a) `npx tsx scripts/e2e-import3d.ts` and (since M.1a) `npx tsx scripts/e2e-pdf-import.ts`, all exit 0. Do not edit source files while an e2e runs: the dev server hot-reloads mid-test.
+- **Run before committing** (since 4.7c): `npm test`, `npx tsc --noEmit`, `npm run build`, `grep -rlE "__studio3d|__pushPullDebug|__importDebug|__importPdf|__plan2d|__takeoffStore" .next/static || echo clean` (must print `clean`), and with `npm run dev` on port 3000 from THIS checkout (`lsof -i :3000`, then the process's working directory): `npx tsx scripts/e2e-studio.ts`, `npx tsx scripts/e2e-walk.ts`, (since I.1a) `npx tsx scripts/e2e-import3d.ts` and (since M.1a) `npx tsx scripts/e2e-pdf-import.ts` and (since M.2a) `npx tsx scripts/e2e-takeoff.ts`, all exit 0. Do not edit source files while an e2e runs: the dev server hot-reloads mid-test.
 - e2e result on `4ba7192`, 2026-10-01: PASSED, exit 0. At 1440 (mouse) and 390 (real touch events): 2D, select and edit, wall runs, draw walls, opening selection, doors and windows, Measure, nothing outside the viewport, 19 tab stops all with a focus ring, and the Import plan link; plus autosave restore and flipped-door swing persistence through a reload at both sizes. No 390 px flake appeared in this run. Tag `editor-complete-4.6` points at `4ba7192`.
 
 ## 16. Historical engineering lessons
@@ -508,4 +544,6 @@ Atrium 2.0 now has the editable Plan pipeline, 2D/3D studio shell, wall selectio
 - Put the OCR language data (eng.traineddata) in `public/` so the demo works offline.
 - Test pinch zoom on a real phone after deployment, and test the import worker in Safari and Firefox.
 - Room list rounds each area to one decimal, so the rows can add to 0.1 less than the total. Fix with the schedules in 7.1.
+- M.1c: read openings and door swings from the PDF vectors (swing arcs, gaps in wall pairs).
+- Flake hunt: three unexplained one-off e2e failures (390 Open in studio tap, e2e-import3d first-step hang, 390 Delete key); warm every route and add a first-navigation timeout before rerunning blindly.
 - Decide the order after 5.3: landing page (Phase 8) before or after the catalog (Phase 6). The core editor, walkthrough, bird's-eye and recenter will be demoable by then.

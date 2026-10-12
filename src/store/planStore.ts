@@ -12,7 +12,10 @@
  * 3D model and hide, delete or restore its parts (step I.1), and `setNodeTransform`
  * moves, turns or scales one part (step I.1b), one undo step each; imported models
  * never touch walls or rooms. A wall imported from a PDF keeps its provenance
- * through edits; `edit()` marks it `edited` once its shape changes (step M.1b). Connects to:
+ * through edits; `edit()` marks it `edited` once its shape changes (step M.1b).
+ * `addTakeoff`, `updateTakeoff`, `deleteTakeoff` and `markTakeoffCurrent` keep the
+ * quantity takeoffs (step M.2a), one undo step each; takeoffs are annotations and
+ * never touch walls, rooms or openings. Connects to:
  * src/types/plan.ts, src/lib/plan/{validate,geometry,rooms,edit}.ts,
  * src/lib/keyboard.ts; the 3D scene, 2D plan and exports read `plan` from here.
  */
@@ -26,7 +29,8 @@ import { clampOpening, JOINT_EPS, wallLength } from "@/lib/plan/geometry";
 import { deriveRooms, toStoredRoom, type DerivedRoom } from "@/lib/plan/rooms";
 import { validatePlan } from "@/lib/plan/validate";
 import { isIdentityTransform } from "@/lib/import/transform";
-import type { ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Vec2, Vec3, Wall } from "@/types/plan";
+import { wallsHash } from "@/lib/takeoff/rows";
+import type { ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Takeoff, TakeoffValue, Vec2, Vec3, Wall } from "@/types/plan";
 
 enablePatches();
 
@@ -83,6 +87,13 @@ interface PlanState {
   /** Trims, caps at PLAN_NAME_MAX; an empty name is ignored. Undoable. */
   renamePlan: (name: string) => void;
   setRoomMaterial: (id: string, floorMaterial: string) => void;
+  /** A takeoff (step M.2a), stamped with the walls' hash now. One undo step; returns its id. */
+  addTakeoff: (takeoff: Omit<Takeoff, "id" | "wallsHash">) => string;
+  /** Rename, set or clear (null) the reference or the override, or replace the cutouts. One undo step. */
+  updateTakeoff: (id: string, changes: TakeoffChanges) => void;
+  deleteTakeoff: (id: string) => void;
+  /** Accept the walls as they are now: the stale marker goes. One undo step. */
+  markTakeoffCurrent: (id: string) => void;
 
   /** Run `fn`; every edit inside becomes a single undo step. Synchronous only. */
   transaction: (fn: () => void) => void;
@@ -99,6 +110,16 @@ interface PlanState {
   undo: () => void;
   redo: () => void;
 }
+
+export interface TakeoffChanges {
+  name?: string;
+  reference?: TakeoffValue | null;
+  override?: TakeoffValue | null;
+  cutouts?: [number, number][][];
+}
+
+const copyValue = (v: TakeoffValue): TakeoffValue => ({ value: v.value, ...(v.note?.trim() && { note: v.note.trim() }) });
+const copyPoints = (ps: [number, number][]): [number, number][] => ps.map(([x, y]) => [x, y]);
 
 const newId = (prefix: string) => `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
 
@@ -298,6 +319,46 @@ export const usePlanStore = create<PlanState>((set, get) => {
         const room = d.rooms.find((r) => r.id === id);
         if (room) room.floorMaterial = floorMaterial;
       }),
+
+    addTakeoff: (takeoff) => {
+      const id = newId("t");
+      const hash = wallsHash(get().plan.walls);
+      edit((d) => {
+        const t: Takeoff = { id, name: takeoff.name, kind: takeoff.kind, points: copyPoints(takeoff.points), wallsHash: hash };
+        if (takeoff.cutouts?.length) t.cutouts = takeoff.cutouts.map(copyPoints);
+        if (takeoff.reference) t.reference = copyValue(takeoff.reference);
+        if (takeoff.override) t.override = copyValue(takeoff.override);
+        (d.takeoffs ??= []).push(t);
+      });
+      return id;
+    },
+    updateTakeoff: (id, changes) =>
+      edit((d) => {
+        const t = d.takeoffs?.find((x) => x.id === id);
+        if (!t) return;
+        const name = changes.name?.trim();
+        if (name) t.name = name;
+        for (const key of ["reference", "override"] as const) {
+          const v = changes[key];
+          if (v === null) delete t[key];
+          else if (v) t[key] = copyValue(v);
+        }
+        if (changes.cutouts) {
+          if (changes.cutouts.length) t.cutouts = changes.cutouts.map(copyPoints);
+          else delete t.cutouts;
+        }
+      }),
+    deleteTakeoff: (id) =>
+      edit((d) => {
+        if (d.takeoffs) d.takeoffs = d.takeoffs.filter((t) => t.id !== id);
+      }),
+    markTakeoffCurrent: (id) => {
+      const hash = wallsHash(get().plan.walls);
+      edit((d) => {
+        const t = d.takeoffs?.find((x) => x.id === id);
+        if (t) t.wallsHash = hash;
+      });
+    },
 
     transaction: (fn) => {
       if (tx) {

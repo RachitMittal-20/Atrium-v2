@@ -4,7 +4,9 @@
  * wall), Measure (a temporary two-point dimension), Push/Pull (move a face of
  * the 3D model), Move (slide a door or window along its wall, a wall sideways, a
  * corner, or an imported model in 3D), Rotate or Scale (an imported model or one of its
- * parts, step I.1b). Push/Pull and Move share src/store/pushPullStore.ts, whose `kind`
+ * parts, step I.1b), Takeoff (lengths, areas and wall faces measured into the plan's
+ * takeoffs in the 2D plan, step M.2a; its working state is src/store/takeoffStore.ts,
+ * whose draft is dropped whenever the tool changes). Push/Pull and Move share src/store/pushPullStore.ts, whose `kind`
  * follows the tool chosen here; Move, Rotate and Scale use src/store/itemToolStore.ts
  * on imported models, and keep a selected model selected when chosen.
  * Editor state, not plan state, so switching tools or measuring is never an undo
@@ -14,7 +16,7 @@
  * Escape cancels it from anywhere. Leaving a 3D tool mid-pull takes the preview back.
  *
  * TOOL_SHORTCUTS is the one list of tool keys (src/app/studio/page.tsx reads it):
- * P for Push/Pull, V for Move, Q for Rotate and Z for Scale. Not M: m is a unit letter
+ * P for Push/Pull, V for Move, Q for Rotate, Z for Scale and K for Takeoff. Not M: m is a unit letter
  * in a typed distance ("30 cm", "0.3 m"), so it would switch tools in the middle of
  * typing one. None may be a walking key (W A S D) either.
  *
@@ -32,8 +34,9 @@ import { useItemToolStore } from "./itemToolStore";
 import { usePlanStore } from "./planStore";
 import { usePushPullStore } from "./pushPullStore";
 import { useSelectionStore } from "./selectionStore";
+import { useTakeoffStore } from "./takeoffStore";
 
-export type Tool = "select" | "wall" | "door" | "window" | "measure" | "pushpull" | "move" | "rotate" | "scale";
+export type Tool = "select" | "wall" | "door" | "window" | "measure" | "pushpull" | "move" | "rotate" | "scale" | "takeoff";
 
 /** The tools that work in the 3D pane only: disabled in the 2D-only view and while walking. */
 export const TOOLS_3D: readonly Tool[] = ["pushpull", "move", "rotate", "scale"];
@@ -49,7 +52,7 @@ export const isPushPullTool = (tool: Tool) => tool === "pushpull" || tool === "m
  * scripts/test-import-transform.ts check no two tools share one, and that none is a
  * walking key (W A S D) or a letter a typed distance uses (digits, signs, c m f t i n).
  */
-export const TOOL_SHORTCUTS: Partial<Record<Tool, string>> = { pushpull: "p", move: "v", rotate: "q", scale: "z" };
+export const TOOL_SHORTCUTS: Partial<Record<Tool, string>> = { pushpull: "p", move: "v", rotate: "q", scale: "z", takeoff: "k" };
 
 interface ToolState {
   tool: Tool;
@@ -77,6 +80,10 @@ export const useToolStore = create<ToolState>((set, get) => ({
     if (isItemTool(get().tool)) {
       useItemToolStore.getState().cancel(); // and mid-drag on a model
       useItemToolStore.getState().setHover(null);
+    }
+    if (get().tool === "takeoff") {
+      useTakeoffStore.getState().cancel(); // a half-drawn takeoff belongs to the tool
+      useTakeoffStore.getState().leave();
     }
     if (isPushPullTool(tool)) usePushPullStore.getState().setKind(tool === "move" ? "move" : "pull");
     set({ tool, measurement: null }); // any tool change drops the temporary measurement

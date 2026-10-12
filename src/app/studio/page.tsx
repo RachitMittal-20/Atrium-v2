@@ -7,7 +7,9 @@
  * (PlanCanvas); walls, doors and windows are edited and placed in 2D. Choosing
  * the Wall, Door, Window or Measure tool while only 3D is showing opens the 2D
  * plan beside it (Split), or instead of it on a phone, since they work there.
- * Owns the m² / sq ft unit so the panel and the 2D labels agree. Mounts the undo/redo and Escape shortcuts. Starts
+ * Reads the area unit from src/store/unitsStore.ts (step M.2a; persisted, never in the plan) so the
+ * panel and the 2D labels agree. Takeoff (step M.2a, key K) is a 2D-plan tool: it steps back to
+ * Select when the 2D plan goes away and when a walk starts. Mounts the undo/redo and Escape shortcuts. Starts
  * autosave and restores the last saved plan before the views mount
  * (src/store/persistence.ts), so both cameras fit the restored plan. Walking
  * (src/store/viewStore.ts) turns ceilings on and puts the previous setting back
@@ -22,7 +24,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { PlanCanvas } from "@/components/plan2d/PlanCanvas";
 import { ImportModelDialog } from "@/components/studio/ImportModelDialog";
-import { PlanPanel, type Unit } from "@/components/studio/PlanPanel";
+import { PlanPanel } from "@/components/studio/PlanPanel";
 import { Scene3D } from "@/components/studio/Scene3D";
 import { ToolRail } from "@/components/studio/ToolRail";
 import { TopBar, type View } from "@/components/studio/TopBar";
@@ -31,6 +33,7 @@ import { installPlanShortcuts } from "@/store/planStore";
 import { usePersistenceReady } from "@/store/persistence";
 import { installSelectionShortcuts } from "@/store/selectionStore";
 import { installToolShortcuts, is3dTool, TOOL_SHORTCUTS, useToolStore, type Tool } from "@/store/toolStore";
+import { useUnitsStore } from "@/store/unitsStore";
 import { useViewStore } from "@/store/viewStore";
 
 const SPLIT_QUERY = "(min-width: 640px)"; // Split is offered from here up (see TopBar)
@@ -43,7 +46,9 @@ const watchWide = (cb: () => void) => {
 export default function Studio() {
   const [view, setView] = useState<View>("3d");
   const [ceiling, setCeiling] = useState(false);
-  const [unit, setUnit] = useState<Unit>("m2");
+  const area = useUnitsStore((s) => s.area);
+  const setArea = useUnitsStore((s) => s.setArea);
+  const unit = area === "sqft" ? "sqft" : "m2"; // the room list and the wall, opening and item panels know m² and sq ft (mm² shows as m² there)
   useEffect(() => installPlanShortcuts(), []);
   useEffect(() => installSelectionShortcuts(), []); // Escape clears the selection from anywhere
   useEffect(() => installToolShortcuts(), []); // Escape cancels a measurement first
@@ -71,7 +76,8 @@ export default function Studio() {
     () =>
       useViewStore.subscribe((s, prev) => {
         if (s.mode === prev.mode) return;
-        if (s.mode === "walk" && is3dTool(useToolStore.getState().tool)) useToolStore.getState().setTool("select"); // walking has no 3D tools
+        const tool = useToolStore.getState().tool;
+        if (s.mode === "walk" && (is3dTool(tool) || tool === "takeoff")) useToolStore.getState().setTool("select"); // walking has no 3D tools and no Takeoff
         if (s.mode === "walk")
           setCeiling((c) => {
             ceilingBefore.current = c; // the updater may run twice in dev; it stores the same value both times
@@ -85,14 +91,15 @@ export default function Studio() {
   useEffect(() => {
     if (shown === "2d") useViewStore.getState().exitWalk();
     if (shown === "2d" && is3dTool(useToolStore.getState().tool)) useToolStore.getState().setTool("select"); // no 3D pane, no 3D tools
+    if (shown === "3d" && useToolStore.getState().tool === "takeoff") useToolStore.getState().setTool("select"); // no 2D plan, no Takeoff
   }, [shown]);
-  // P picks Push/Pull and V picks Move, when the 3D pane is showing, nobody is walking and nothing is being typed into a field
+  // P, V, Q and Z pick the 3D tools when the 3D pane is showing, K picks Takeoff when the 2D plan is; never while walking or typing into a field
   useEffect(() => {
-    if (shown === "2d") return;
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.repeat || isTypingTarget(e.target)) return;
       const tool = (Object.keys(TOOL_SHORTCUTS) as Tool[]).find((t) => TOOL_SHORTCUTS[t] === e.key.toLowerCase());
       if (!tool || useViewStore.getState().mode === "walk") return;
+      if (is3dTool(tool) ? shown === "2d" : shown === "3d") return; // the tool's pane is hidden
       useToolStore.getState().setTool(tool);
     };
     window.addEventListener("keydown", onKey);
@@ -105,7 +112,7 @@ export default function Studio() {
     <div className="flex h-svh flex-col overflow-hidden bg-limestone">
       <TopBar view={shown} setView={setView} showCeiling={ceiling} setShowCeiling={setCeiling} />
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <ToolRail view3d={shown !== "2d"} />
+        <ToolRail view3d={shown !== "2d"} view2d={shown !== "3d"} />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
           {shown !== "2d" && (
             <div className="relative min-h-0 min-w-0 flex-1" data-testid="pane-3d">
@@ -118,7 +125,7 @@ export default function Studio() {
             </div>
           )}
         </main>
-        <PlanPanel unit={unit} setUnit={setUnit} />
+        <PlanPanel unit={unit} setUnit={setArea} />
       </div>
       <ImportModelDialog />
     </div>
