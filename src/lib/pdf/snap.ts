@@ -40,12 +40,26 @@
  * within 3 px of a traced wall's centre line moves onto it and splits it.
  * Farther than 3 px, nothing moves (the validator then lists a free end).
  *
- * Openings. A traced opening whose jambs are both within 3 px of a vector
- * opening's jambs takes the vector jambs (exact width and offset) and keeps its
- * own kind ("snapped"). One overlapping a vector opening with a jamb farther
- * than 3 px keeps its traced jambs, reported. One with no vector opening at
- * its place stays traced, placed on the final wall under its centre (clamped
- * into it). Vector openings no traced one matched are added from the PDF.
+ * Openings (step M.1c: the PDF's are primary). A traced opening whose jambs are
+ * both within 3 px of a vector opening's is that opening ("snapped"); one that
+ * overlaps a vector opening, or comes within 3 px of it, with a jamb farther out
+ * is replaced by it ("replaced", noted with the distance: the PDF's jambs are
+ * exact, the tracing's were wrong); one with no vector opening within 3 px stays
+ * traced, placed on the final wall under its centre (clamped into it) and listed
+ * (`tracedOpenings`). Vector openings the tracing missed are added. Every vector
+ * opening keeps the PDF's kind, class and swing: the swing is re-derived on the
+ * wall it lands on from the side its arc lies on (`swingNormal` against that
+ * wall's (-dy, dx) normal). A vector opening `openingProblem` refuses (outside
+ * its wall's usable span, overlapping another, too narrow) is left out with the
+ * reason and its traced counterpart, if any, comes back; a traced opening that
+ * overlaps a vector one is left out. Every opening gets `provenance` and
+ * `defaultHeight` (a PDF has no heights: DOOR_SIZE and WINDOW_SIZE).
+ *
+ * Hinges. The plan hangs every door on the jamb nearer its wall's a end. A wall
+ * whose doors read from arcs mostly hang on the jamb nearer b is turned round (a
+ * and b swapped, its openings' offsets measured from the new a, door sides
+ * flipped with the normal), so the plan holds the PDF's doors exactly; a door
+ * still hanging on the b jamb (a wall with doors hung both ways) is noted.
  *
  * Safety: validatePlan must not get worse than the traced plan's and the
  * rooms must still derive (no fewer than the traced plan's). A vector wall named
@@ -67,12 +81,13 @@ import { DOOR_SIZE, LEGACY_SWING, WINDOW_SIZE } from "@/data/samplePlan";
 import type { Analysis } from "@/lib/blueprint/analyse";
 import { nameRooms, type NamingReport } from "@/lib/blueprint/nameRooms";
 import { buildPlan } from "@/lib/blueprint/toPlan";
-import { clampOpening, wallLength } from "@/lib/plan/geometry";
+import { openingProblem } from "@/lib/plan/edit";
+import { clampOpening, wallLength, wallNormal } from "@/lib/plan/geometry";
 import { deriveRooms } from "@/lib/plan/rooms";
 import { validatePlan } from "@/lib/plan/validate";
 import { BlueprintError, type BuildReport, type PlanScale } from "@/types/blueprint";
-import type { Opening, Plan, Vec2, Wall } from "@/types/plan";
-import type { PdfInfo, VectorWalls } from "@/types/pdf";
+import type { Opening, OpeningKind, Plan, SwingSide, Vec2, Wall } from "@/types/plan";
+import type { OpeningClass, PdfInfo, UnusedArc, VectorWalls } from "@/types/pdf";
 
 export const SNAP_PX = { near: 2, move: 3 };
 /** walls.ts's clutter rule, applied to traced walls too. */
@@ -95,7 +110,24 @@ export interface Coverage {
   /** Vector walls the tracing missed, added. */
   added: number;
   skipped: { diagonal: number; curved: number };
-  openings: { snapped: number; traced: number; added: number };
+  /** Step M.1c: snapped, replaced and added are read exactly (`exact`), by class; traced are not. */
+  openings: {
+    snapped: number;
+    traced: number;
+    added: number;
+    replaced: number;
+    exact: number;
+    total: number;
+    doors: number;
+    windows: number;
+    unclassified: number;
+    arcsNotUsed: number;
+  };
+  /** Traced openings and the unclassified ones read from the PDF (assumed doors), in PLAN metres
+   *  (jambs on the centre line), for the overlay and the list; and the arcs no opening used. */
+  tracedOpenings: { id: string; a: Vec2; b: Vec2; thickness: number; reason: string }[];
+  unclassifiedOpenings: { id: string; a: Vec2; b: Vec2; thickness: number }[];
+  unusedArcs: UnusedArc[];
   /** Fallbacks and refused snaps, in plain words. */
   notes: string[];
   /** Plan (0, 0) in page metres at the scale in use. */
@@ -358,10 +390,22 @@ export function mergeVector(
     walls = walls.filter((w) => reached.has(w));
   }
 
-  // Openings: traced ones (jambs in page metres), then vector ones.
+  // Openings (header): the PDF's are primary; traced ones match them, are replaced by them, or stay.
   const byId = new Map(T.map((t) => [t.id, t]));
   const jambs = (op: { wallId: string; offset: number; width: number }, w: Wall) => [pointAt(w, op.offset - op.width / 2), pointAt(w, op.offset + op.width / 2)];
-  const vOpen = vector.openings.map((op) => ({ ...op, a: { x: op.a.x * f, y: op.a.y * f }, b: { x: op.b.x * f, y: op.b.y * f }, used: false }));
+  const sc = (p: Vec2) => ({ x: p.x * f, y: p.y * f });
+  type TracedOp = { id: string; kind: OpeningKind; a: Vec2; b: Vec2 };
+  type From = "snapped" | "replaced" | "added";
+  const vOpen = vector.openings.map((op) => ({
+    ...op,
+    a: sc(op.a),
+    b: sc(op.b),
+    hinge: op.hinge && sc(op.hinge),
+    // A reading from before M.1c (no class) said "door" for every gap: nothing was drawn to tell.
+    cls: op.class ?? (op.kind === "window" ? "window" : "unclassified"),
+    from: "added" as From,
+    tracedOp: null as TracedOp | null,
+  }));
   const hostOf = (p: Vec2, q: Vec2) => {
     const mid = { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
     return walls.find((w) => {
@@ -371,9 +415,9 @@ export function mergeVector(
       return Math.abs(u.x * uw.y - u.y * uw.x) <= PARALLEL && Math.abs(c.off) <= w.thickness / 2 + reach && c.along > 0 && c.along < wallLength(w);
     });
   };
-  const counts = { snapped: 0, traced: 0, added: 0 };
-  type Placed = Omit<Opening, "id" | "wallId" | "offset" | "width"> & { a: Vec2; b: Vec2; id: string; from: keyof typeof counts };
-  const openings: Placed[] = [];
+  const counts = { snapped: 0, traced: 0, added: 0, replaced: 0 };
+  let tracedOps: TracedOp[] = [];
+  const tracedWhy = new Map<string, string>();
   for (const op of traced.plan.openings) {
     const w = byId.get(op.wallId);
     if (!w) continue;
@@ -382,29 +426,28 @@ export function mergeVector(
       continue;
     }
     const [p, q] = jambs(op, w);
-    const overlapping = vOpen.filter((v) => {
-      const [c0, c1] = [lineCoords(p, v), lineCoords(q, v)];
-      const ov = Math.min(Math.max(c0.along, c1.along), dist(v.a, v.b)) - Math.max(Math.min(c0.along, c1.along), 0);
-      return !v.used && Math.abs(c0.off) <= 2 * reach && Math.abs(c1.off) <= 2 * reach && ov > 0;
-    });
-    const hit = vOpen.find((v) => !v.used && ((dist(p, v.a) <= reach && dist(q, v.b) <= reach) || (dist(p, v.b) <= reach && dist(q, v.a) <= reach)));
-    const size = op.kind === "door" ? { ...DOOR_SIZE, swing: LEGACY_SWING } : WINDOW_SIZE;
+    const tOp: TracedOp = { id: op.id, kind: op.kind, a: p, b: q };
+    const hit = vOpen.find((v) => v.from === "added" && ((dist(p, v.a) <= reach && dist(q, v.b) <= reach) || (dist(p, v.b) <= reach && dist(q, v.a) <= reach)));
     if (hit) {
-      hit.used = true;
-      counts.snapped++;
-      openings.push({ id: op.id, kind: op.kind, ...size, a: hit.a, b: hit.b, from: "snapped" });
+      hit.from = "snapped";
+      hit.tracedOp = tOp;
       continue;
     }
-    for (const v of overlapping) {
-      v.used = true; // the traced one wins this place
-      notes.push(`Opening ${op.id} kept as traced: the PDF's jambs are ${fmtM(Math.max(Math.min(dist(p, v.a), dist(p, v.b)), Math.min(dist(q, v.a), dist(q, v.b))))} away, more than ${SNAP_PX.move} px.`);
+    // On the same line, overlapping or within 3 px along it: the PDF's opening at this place wins.
+    const near = vOpen.filter((v) => {
+      const [c0, c1] = [lineCoords(p, v), lineCoords(q, v)];
+      const ov = Math.min(Math.max(c0.along, c1.along), dist(v.a, v.b)) - Math.max(Math.min(c0.along, c1.along), 0);
+      return v.from === "added" && Math.abs(c0.off) <= 2 * reach && Math.abs(c1.off) <= 2 * reach && ov >= -reach - 1e-9;
+    });
+    for (const v of near) {
+      v.from = "replaced";
+      v.tracedOp = tOp;
+      const off = Math.max(Math.min(dist(p, v.a), dist(p, v.b)), Math.min(dist(q, v.a), dist(q, v.b)));
+      notes.push(`Traced opening ${op.id} (${dist(p, q).toFixed(2)} m) replaced by ${v.id} read from the PDF (${dist(v.a, v.b).toFixed(2)} m): the traced jambs were up to ${fmtM(off)} out, more than ${SNAP_PX.move} px.`);
     }
-    counts.traced++;
-    openings.push({ id: op.id, kind: op.kind, ...size, a: p, b: q, from: "traced" });
-  }
-  for (const v of vOpen.filter((v) => !v.used)) {
-    counts.added++;
-    openings.push({ id: v.id, kind: v.kind, ...(v.kind === "door" ? { ...DOOR_SIZE, swing: LEGACY_SWING } : WINDOW_SIZE), a: v.a, b: v.b, from: "added" });
+    if (near.length) continue;
+    tracedOps.push(tOp);
+    tracedWhy.set(op.id, `no opening in the PDF within ${SNAP_PX.move} px`);
   }
 
   // Plan frame: origin at the top-left of the final walls, rounded.
@@ -413,28 +456,71 @@ export function mergeVector(
   const toPlan = (p: Vec2) => ({ x: r4(p.x - origin.x), y: r4(p.y - origin.y) });
   const planWalls: Wall[] = walls.map((w) => ({ ...w, a: toPlan(w.a), b: toPlan(w.b), thickness: w.provenance === "vector" ? r5(w.thickness) : w.thickness }));
   const planOpenings: Opening[] = [];
-  const lost: string[] = [];
-  for (const op of openings) {
-    const host = hostOf(op.a, op.b);
-    if (!host) {
-      lost.push(op.id);
-      counts[op.from]--;
-      continue;
-    }
+  const hingeAt = new Map<string, "a" | "b">(); // doors read from an arc: the jamb they hang on, on their plan wall
+  const classOf = new Map<string, OpeningClass>();
+  let lost = 0;
+  /** Places an opening (jambs in page metres) on the wall under it; null when there is none. */
+  const place = (id: string, kind: OpeningKind, a: Vec2, b: Vec2, extra: Partial<Opening>): Opening | null => {
+    const host = hostOf(a, b);
+    if (!host) return null;
     const pw = planWalls[walls.indexOf(host)];
-    const [s0, s1] = [lineCoords(op.a, host).along, lineCoords(op.b, host).along].sort((p, q) => p - q);
-    const { a: _a, b: _b, from, ...rest } = op;
-    const placed = clampOpening({ ...rest, wallId: pw.id, offset: r4((s0 + s1) / 2), width: r4(s1 - s0) } as Opening, pw);
-    // Snapped and traced openings were placed first; one added from the PDF never overlaps them.
-    const clash = planOpenings.find((o) => o.wallId === placed.wallId && Math.min(o.offset + o.width / 2, placed.offset + placed.width / 2) - Math.max(o.offset - o.width / 2, placed.offset - placed.width / 2) > 0.01);
-    if (clash && from === "added") {
-      counts.added--;
-      notes.push(`Opening ${op.id} from the PDF left out: it overlaps ${clash.id}, which the tracing placed.`);
+    const [s0, s1] = [lineCoords(a, host).along, lineCoords(b, host).along].sort((p, q) => p - q);
+    const size = kind === "door" ? { ...DOOR_SIZE, swing: LEGACY_SWING as SwingSide } : WINDOW_SIZE;
+    const placed = clampOpening({ id, wallId: pw.id, kind, ...size, offset: r4((s0 + s1) / 2), width: r4(s1 - s0), ...extra, defaultHeight: true } as Opening, pw);
+    return { ...placed, offset: r4(placed.offset), width: r4(placed.width) };
+  };
+  // The PDF's openings first.
+  for (const v of vOpen) {
+    const host = hostOf(v.a, v.b);
+    const swing: Partial<Opening> = v.kind === "door" && host && v.swingNormal ? { swing: dotN(v.swingNormal, wallNormal(host)) > 0 ? "left" : "right" } : {};
+    const o = place(v.from === "snapped" ? v.tracedOp!.id : v.id, v.kind, v.a, v.b, { ...swing, provenance: "vector" });
+    const problem = o ? openingProblem({ walls: planWalls, openings: planOpenings }, o) : "no wall under it";
+    if (!o || problem) {
+      notes.push(`Opening ${v.id} from the PDF left out: ${problem}${v.tracedOp ? ` The traced opening ${v.tracedOp.id} is kept instead.` : ""}`);
+      if (!o) lost++;
+      if (v.tracedOp && !tracedOps.includes(v.tracedOp)) {
+        tracedOps = [...tracedOps, v.tracedOp];
+        tracedWhy.set(v.tracedOp.id, `the PDF's opening ${v.id} there was refused: ${problem}`);
+      }
       continue;
     }
-    planOpenings.push({ ...placed, offset: r4(placed.offset), width: r4(placed.width) });
+    counts[v.from]++;
+    planOpenings.push(o);
+    classOf.set(o.id, v.cls);
+    if (v.hinge && host) hingeAt.set(o.id, lineCoords(v.hinge, host).along < (lineCoords(v.a, host).along + lineCoords(v.b, host).along) / 2 ? "a" : "b");
   }
-  if (lost.length) notes.push(`${lost.length} ${lost.length === 1 ? "opening" : "openings"} had no wall under them and ${lost.length === 1 ? "was" : "were"} left out.`);
+  // Then the traced ones; one overlapping an opening read from the PDF is left out.
+  for (const t of tracedOps) {
+    const o = place(t.id, t.kind, t.a, t.b, { provenance: "traced" });
+    if (!o) {
+      lost++;
+      continue;
+    }
+    const clash = planOpenings.find((x) => x.wallId === o.wallId && Math.min(x.offset + x.width / 2, o.offset + o.width / 2) - Math.max(x.offset - x.width / 2, o.offset - o.width / 2) > 0.01);
+    if (clash) {
+      notes.push(`Traced opening ${t.id} left out: it overlaps ${clash.id}, read from the PDF.`);
+      continue;
+    }
+    counts.traced++;
+    planOpenings.push(o);
+  }
+  if (lost) notes.push(`${lost} ${lost === 1 ? "opening" : "openings"} had no wall under them and ${lost === 1 ? "was" : "were"} left out.`);
+
+  // Hinges (header): turn a wall round when its doors mostly hang on the jamb nearer b.
+  planWalls.forEach((w, i) => {
+    const doors = planOpenings.filter((o) => o.wallId === w.id && hingeAt.has(o.id));
+    const atB = doors.filter((o) => hingeAt.get(o.id) === "b").length;
+    if (atB * 2 <= doors.length) return;
+    const L = wallLength(w);
+    planWalls[i] = { ...w, a: w.b, b: w.a };
+    for (const o of planOpenings.filter((o) => o.wallId === w.id)) {
+      o.offset = r4(L - o.offset);
+      if (o.swing) o.swing = o.swing === "left" ? "right" : "left"; // the normal turns round with the wall
+      if (hingeAt.has(o.id)) hingeAt.set(o.id, hingeAt.get(o.id) === "a" ? "b" : "a");
+    }
+  });
+  for (const [id, end] of hingeAt)
+    if (end === "b") notes.push(`Door ${id} hangs on the jamb nearer its wall's end in the PDF; the plan hangs doors on the jamb nearer the start, so its leaf is drawn on the other jamb (opening to the same side).`);
 
   const plan: Plan = { ...traced.plan, walls: planWalls, openings: planOpenings, rooms: [] };
 
@@ -481,7 +567,7 @@ export function mergeVector(
       }),
       added,
       skipped: vector.skipped,
-      openings: counts,
+      ...openingCoverage(namedPlan, classOf, tracedWhy, (p) => ({ x: p.x - origin.x, y: p.y - origin.y }), vector, f, counts),
       notes,
       origin,
       mPerPt,
@@ -490,13 +576,54 @@ export function mergeVector(
   };
 }
 
+/** The openings part of the coverage report (step M.1c), with the jambs in plan metres. */
+function openingCoverage(
+  plan: Plan,
+  classOf: Map<string, OpeningClass>,
+  tracedWhy: Map<string, string>,
+  pageToPlan: (p: Vec2) => Vec2,
+  vector: VectorWalls,
+  f: number,
+  counts: { snapped: number; traced: number; added: number; replaced: number },
+): Pick<Coverage, "openings" | "tracedOpenings" | "unclassifiedOpenings" | "unusedArcs"> {
+  const wall = new Map(plan.walls.map((w) => [w.id, w]));
+  const mark = (o: Opening) => {
+    const w = wall.get(o.wallId)!;
+    return { id: o.id, a: pointAt(w, o.offset - o.width / 2), b: pointAt(w, o.offset + o.width / 2), thickness: w.thickness };
+  };
+  const exact = plan.openings.filter((o) => o.provenance === "vector");
+  const cls = (o: Opening) => classOf.get(o.id) ?? "unclassified";
+  const unusedArcs = (vector.arcs?.notUsed ?? []).map((a) => ({ ...a, centre: pageToPlan({ x: a.centre.x * f, y: a.centre.y * f }), r: a.r * f }));
+  return {
+    openings: {
+      ...counts,
+      exact: exact.length,
+      total: plan.openings.length,
+      doors: exact.filter((o) => o.kind === "door" && cls(o) !== "unclassified").length,
+      windows: exact.filter((o) => o.kind === "window").length,
+      unclassified: exact.filter((o) => cls(o) === "unclassified").length,
+      arcsNotUsed: unusedArcs.length,
+    },
+    tracedOpenings: plan.openings.filter((o) => o.provenance === "traced").map((o) => ({ ...mark(o), reason: tracedWhy.get(o.id) ?? "traced" })),
+    unclassifiedOpenings: exact.filter((o) => cls(o) === "unclassified").map(mark),
+    unusedArcs,
+  };
+}
+
+/** Dot product of two directions. */
+const dotN = (p: Vec2, q: Vec2) => p.x * q.x + p.y * q.y;
+
 function freeEnds(walls: Wall[]): Vec2[] {
   return walls.flatMap((w) => [w.a, w.b].filter((p) => !walls.some((o) => o !== w && (dist(o.a, p) < 0.01 || dist(o.b, p) < 0.01))));
 }
 
 /** The whole traced plan, every wall marked traced, with the reason. */
 function fallback(traced: { plan: Plan; report: BuildReport }, o: { pxPerM: number; pxPerPt: number; labels: Analysis["labels"] }, vector: VectorWalls, note: string): PdfBuild {
-  const plan: Plan = { ...traced.plan, walls: traced.plan.walls.map((w) => ({ ...w, provenance: "traced" as const })) };
+  const plan: Plan = {
+    ...traced.plan,
+    walls: traced.plan.walls.map((w) => ({ ...w, provenance: "traced" as const })),
+    openings: traced.plan.openings.map((x) => ({ ...x, provenance: "traced" as const, defaultHeight: true as const })),
+  };
   const { plan: namedPlan, report: naming } = nameRooms(plan, o.labels, traced.report.origin, o.pxPerM);
   const px = 1 / o.pxPerM;
   const len = plan.walls.reduce((s, w) => s + wallLength(w), 0);
@@ -514,7 +641,16 @@ function fallback(traced: { plan: Plan; report: BuildReport }, o: { pxPerM: numb
       tracedWalls: plan.walls.map((w) => ({ id: w.id, a: w.a, b: w.b, thickness: w.thickness, reason: "the whole plan fell back to traced" })),
       added: 0,
       skipped: vector.skipped,
-      openings: { snapped: 0, traced: plan.openings.length, added: 0 },
+      // No opening from the PDF is used, so neither is any arc.
+      ...openingCoverage(
+        namedPlan,
+        new Map(),
+        new Map(plan.openings.map((x) => [x.id, "the whole plan fell back to traced"])),
+        (p) => ({ x: p.x - traced.report.origin.x * px, y: p.y - traced.report.origin.y * px }),
+        vector,
+        o.pxPerPt / o.pxPerM / vector.mPerPt,
+        { snapped: 0, traced: plan.openings.length, added: 0, replaced: 0 },
+      ),
       notes: [note],
       origin: { x: traced.report.origin.x * px, y: traced.report.origin.y * px },
       mPerPt: o.pxPerPt / o.pxPerM,

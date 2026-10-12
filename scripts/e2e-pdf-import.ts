@@ -43,12 +43,25 @@
  *     from its CDN: the only requests leaving the origin for that file (the PDF never does);
  *   - the misprinted copy: the model table flags it too, one flagged model row is
  *     overridden, and the CSV holds both tables.
+ * Step M.1c (doors, windows and swings from the PDF's lines), plan-doors.pdf at 1440 and
+ * 390 (real touch), through the real file input:
+ *   - the openings line ("11 of 11 openings read exactly (doors 6, windows 4, unclassified
+ *     1); 0 traced approximately; 4 arcs not used"), the default-height line, no traced
+ *     opening boxed and one unclassified one boxed on the overlay, as wide as the bare gap;
+ *     the model table's two printed opening widths say "opening width" and are OK;
+ *   - built and opened in the studio: every opening's jambs (so its width and offset)
+ *     within 1 mm of the truth in the page's frame, its kind, provenance "vector", and for
+ *     every door the plan's own swing geometry (doorSwing) hanging on the PDF's jamb and
+ *     opening to the PDF's side; an opening's panel says "Read from PDF · Default height";
+ *   - 1440 only: in 3D, every door's rendered frame-and-leaf box reaches out of the wall on
+ *     the PDF's side and not the other (the leaf stands open about 17° towards its swing).
  * Any .pdf in test-plans/ (local only, never committed) is also read at 1440 and one
- * row per file printed: classification, walls total, exact and traced, dimensions read,
- * flagged in each table, time.
+ * row per file printed: classification, walls total, exact and traced, openings exact,
+ * traced and unclassified, arcs not used, dimensions read, flagged in each table, time.
  * Screenshots in /tmp/studio/: pdf-review-1440.png, pdf-dimension-check-1440.png,
  * pdf-fit-warning-1440.png, pdf-review-390.png, pdf-coverage-1440.png,
- * pdf-model-check-1440.png, pdf-clutter-1440.png, pdf-traced-1440.png.
+ * pdf-model-check-1440.png, pdf-clutter-1440.png, pdf-traced-1440.png, and (M.1c)
+ * pdf-openings-1440.png, pdf-openings-3d-1440.png, pdf-openings-390.png.
  * Run: npx tsx scripts/e2e-pdf-import.ts
  */
 import assert from "node:assert/strict";
@@ -58,6 +71,8 @@ import { chromium, type Browser, type Locator, type Page } from "playwright";
 import { samplePlan } from "../src/data/samplePlan";
 import { titleCase } from "../src/lib/blueprint/nameRooms";
 import { formatFeetInches } from "../src/lib/pdf/dimensions";
+import { doorSwing } from "../src/lib/plan2d/openings";
+import type { Opening } from "../src/types/plan";
 import type { PdfInfo } from "../src/types/pdf";
 import { misprintedPdf, type Truth } from "./make-pdf-fixtures";
 
@@ -71,14 +86,17 @@ const KIND = { vector: "Vector PDF", scanned: "Scanned PDF", mixed: "Mixed PDF" 
 const NAMES = samplePlan.rooms.map((r) => titleCase(r.name)).sort();
 
 type PlanWall = { id: string; a: { x: number; y: number }; b: { x: number; y: number }; thickness: number; provenance?: "vector" | "traced"; edited?: true };
+type Box3d = { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number };
 type Win = Window & {
-  __planStore?: { getState(): { plan: { walls: PlanWall[]; rooms: { name: string }[] }; updateWall(id: string, c: object): void } };
-  __selectionStore?: { getState(): { select(id: string | null): void } };
+  __planStore?: { getState(): { plan: { walls: PlanWall[]; openings: Opening[]; rooms: { name: string }[] }; updateWall(id: string, c: object): void } };
+  __selectionStore?: { getState(): { select(id: string | null): void; selectOpening(id: string | null): void } };
   __importPdf?: PdfInfo;
+  __studio3d?: { openingBox(id: string): Box3d | null };
 };
 const COVERAGE = /^(\d+) of (\d+) walls read exactly from the PDF \((\d+)% of wall length\); (\d+) walls? (?:is|are) traced approximately \(about (\d+) mm\)\.$/;
 /** Fixtures checked at 390 by touch (besides the two-page picker). */
-const PHONE = ["plan-filled.pdf", "plan-clutter.pdf", "plan-broken-dims.pdf", "plan-outlined.pdf", "plan-single-line.pdf"];
+const PHONE = ["plan-filled.pdf", "plan-clutter.pdf", "plan-broken-dims.pdf", "plan-outlined.pdf", "plan-single-line.pdf", "plan-doors.pdf"];
+const OPENINGS = /^(\d+) of (\d+) openings read exactly \(doors (\d+), windows (\d+), unclassified (\d+)\); (\d+) traced approximately; (\d+) arcs? not used\.$/;
 
 const errors: string[] = [];
 const tid = (page: Page, id: string) => page.locator(`[data-testid="${id}"]`);
@@ -184,7 +202,10 @@ async function session(browser: Browser, width: number, height: number, touch: b
       const approx = (await rows.nth(i).getAttribute("data-approximate")) === "true";
       approximate += Number(approx);
       if (!approx) assert.equal(await rows.nth(i).getAttribute("data-status"), "ok", `${file}: model row ${i} OK`);
-      assert.equal((await rows.nth(i).locator("[data-testid=model-spans]").innerText()).trim(), "centre to centre", `${file}: model row ${i} centre to centre`);
+      // plan-doors (M.1c) also prints two opening widths, measured between the opening's jambs.
+      const printed = await rows.nth(i).getAttribute("data-printed");
+      const spans = t.dims.find((x) => x.text === printed)?.spans ?? "centre to centre";
+      assert.equal((await rows.nth(i).locator("[data-testid=model-spans]").innerText()).trim(), spans, `${file}: model row ${i} ${spans}`);
     }
     if (t.tracedWalls) assert.ok(approximate > 0, `${file}: rows on the traced wall say approximate`);
     else assert.equal(approximate, 0, `${file}: no approximate rows`);
@@ -211,6 +232,94 @@ async function session(browser: Browser, width: number, height: number, touch: b
     assert.ok(after?.provenance === "vector" && after.edited === true, "edited: provenance kept, marked edited");
     say.push(`${id} after a height change "Edited"`);
     return say.join(", ");
+  };
+
+  /** Step M.1c, plan-doors on the review screen: the openings line, the default heights, the boxes on the overlay. */
+  const checkDoorsReview = async (t: Truth) => {
+    const text = (await tid(page, "coverage-openings-line").innerText()).trim();
+    const m = text.match(OPENINGS);
+    assert.ok(m, `plan-doors: openings line "${text}"`);
+    const unclassified = t.planOpenings.filter((o) => o.class === "unclassified");
+    const want = [t.planOpenings.length, t.planOpenings.length, t.planOpenings.filter((o) => o.kind === "door").length - unclassified.length, t.planOpenings.filter((o) => o.kind === "window").length, unclassified.length, 0, t.decoyArcs];
+    assert.deepEqual(m.slice(1).map(Number), want, `plan-doors: openings line numbers (${text})`);
+    assert.ok((await tid(page, "coverage-heights").innerText()).includes("default height"), "plan-doors: the default heights are said");
+    assert.equal(await page.locator("[data-opening-mark=traced]").count(), 0, "plan-doors: no traced opening boxed");
+    const boxes = page.locator("[data-opening-mark=unclassified]");
+    assert.equal(await boxes.count(), unclassified.length, "plan-doors: the unclassified opening boxed on the overlay");
+    // Its box is as long as the bare gap is wide, in raster pixels.
+    const pdf = (await page.evaluate(() => (window as Win).__importPdf))!;
+    const pxPerM = pdf.pxPerPt / pdf.scale!.mPerPt!;
+    const len = await boxes.first().evaluate((l) => Math.hypot(Number(l.getAttribute("x2")) - Number(l.getAttribute("x1")), Number(l.getAttribute("y2")) - Number(l.getAttribute("y1"))));
+    const gapM = Math.hypot(unclassified[0].b.x - unclassified[0].a.x, unclassified[0].b.y - unclassified[0].a.y);
+    assert.ok(Math.abs(len - gapM * pxPerM) < 1, `plan-doors: the box is the gap (${len.toFixed(1)} px, want ${(gapM * pxPerM).toFixed(1)})`);
+    assert.ok((await tid(page, "coverage-unclassified").innerText()).includes("Opening type not drawn; assumed door"), "plan-doors: listed as an assumed door");
+    await tid(page, "coverage").scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${OUT}/pdf-openings-${touch ? 390 : 1440}.png`, fullPage: true });
+    return `"${text}", the unclassified gap boxed (${len.toFixed(1)} px), no traced boxes`;
+  };
+
+  /** Step M.1c, plan-doors in the studio: every opening against the truth, a panel, and (1440) the 3D leaves. */
+  const checkDoorsStudio = async (plan: Awaited<ReturnType<typeof buildAndOpen>>, t: Truth) => {
+    const vec = plan.walls.filter((w) => w.provenance === "vector");
+    const o = { x: Math.min(...vec.flatMap((w) => [w.a.x, w.b.x])), y: Math.min(...vec.flatMap((w) => [w.a.y, w.b.y])) }; // the page frame's origin
+    const P = (p: { x: number; y: number }) => ({ x: p.x - o.x, y: p.y - o.y });
+    const dd = (p: { x: number; y: number }, q: { x: number; y: number }) => Math.hypot(p.x - q.x, p.y - q.y);
+    let worst = 0;
+    const found: { id: string; to: Truth["planOpenings"][number]; op: Opening }[] = [];
+    for (const to of t.planOpenings) {
+      const hit = plan.openings
+        .map((op) => {
+          const w = plan.walls.find((x) => x.id === op.wallId)!;
+          const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+          const at = (s: number) => P({ x: w.a.x + ((w.b.x - w.a.x) / L) * s, y: w.a.y + ((w.b.y - w.a.y) / L) * s });
+          const [p, q] = [at(op.offset - op.width / 2), at(op.offset + op.width / 2)];
+          return { op, w, err: Math.min(Math.max(dd(p, to.a), dd(q, to.b)), Math.max(dd(p, to.b), dd(q, to.a))) };
+        })
+        .sort((x, y) => x.err - y.err)[0];
+      assert.ok(hit && hit.err <= 0.001, `plan-doors: ${to.id} within 1 mm (${hit ? (hit.err * 1000).toFixed(3) : "none"} mm)`);
+      worst = Math.max(worst, hit.err);
+      const { op, w } = hit;
+      assert.equal(op.kind, to.kind, `plan-doors: ${to.id} is a ${to.kind}`);
+      assert.ok(Math.abs(op.width - Math.hypot(to.b.x - to.a.x, to.b.y - to.a.y)) <= 0.001, `plan-doors: ${to.id} width`);
+      assert.ok(op.provenance === "vector" && op.defaultHeight === true, `plan-doors: ${to.id} read from the PDF, default height`);
+      if (to.side) {
+        const sw = doorSwing({ a: P(w.a), b: P(w.b) }, op);
+        if (to.hinge) assert.ok(dd(sw.hinge, to.hinge) <= 0.001, `plan-doors: ${to.id} hangs on the PDF's jamb (${(dd(sw.hinge, to.hinge) * 1000).toFixed(3)} mm)`);
+        assert.ok((sw.leafEnd.x - sw.hinge.x) * to.side.x + (sw.leafEnd.y - sw.hinge.y) * to.side.y > 0, `plan-doors: ${to.id} (${op.swing}) opens to the PDF's side`);
+      }
+      found.push({ id: op.id, to, op });
+    }
+    assert.equal(plan.openings.length, t.planOpenings.length, "plan-doors: exactly the drawn openings");
+    // An opening's panel says where it came from.
+    const door = found.find((f) => f.to.id === "d-bed1")!;
+    await page.evaluate((id) => (window as Win).__selectionStore!.getState().selectOpening(id), door.id);
+    if (touch && !(await tid(page, "opening-panel").isVisible())) await press(page.getByRole("button", { name: /Plan details/ }));
+    await tid(page, "opening-provenance").waitFor();
+    const said = (await tid(page, "opening-provenance").innerText()).trim();
+    assert.equal(said, "Read from PDF · Default height", "plan-doors: the opening panel's provenance");
+    let leaves = "";
+    if (!touch) {
+      // 3D: each door's frame and leaf (open about 17° towards its swing) reach out of the wall on the PDF's side only.
+      await press(tid(page, "view-3d"));
+      await page.waitForFunction(() => Boolean((window as Win).__studio3d));
+      await page.waitForTimeout(800);
+      const out: string[] = [];
+      for (const f of found.filter((x) => x.to.side && x.op.kind === "door")) {
+        const box = await page.evaluate((id) => (window as Win).__studio3d!.openingBox(id), f.id);
+        assert.ok(box, `plan-doors: ${f.to.id} drawn in 3D`);
+        const w = plan.walls.find((x) => x.id === f.op.wallId)!;
+        const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+        const c = { x: w.a.x + ((w.b.x - w.a.x) / L) * f.op.offset, y: w.a.y + ((w.b.y - w.a.y) / L) * f.op.offset };
+        // World x = plan x, world z = plan y; the box's corners along the PDF's side of the wall.
+        const along = [box.minX, box.maxX].flatMap((x) => [box.minZ, box.maxZ].map((z) => (x - c.x) * f.to.side!.x + (z - c.y) * f.to.side!.y));
+        const [far, back] = [Math.max(...along), -Math.min(...along)];
+        assert.ok(far > w.thickness / 2 + 0.1 && far > back + 0.1, `plan-doors: ${f.to.id}'s 3D leaf stands out on the PDF's side (${far.toFixed(3)} m there, ${back.toFixed(3)} m behind)`);
+        out.push(`${f.to.id} ${far.toFixed(2)}/${back.toFixed(2)} m`);
+      }
+      await page.screenshot({ path: `${OUT}/pdf-openings-3d-1440.png` });
+      leaves = `; 3D leaves out on the PDF's side (front/behind): ${out.join(", ")}`;
+    }
+    return `${found.length} openings within 1 mm (worst ${(worst * 1000).toFixed(3)} mm), every door on the PDF's jamb and side; panel "${said}"${leaves}`;
   };
 
   /** The dimension table against the truth: values within 0.1 mm, all OK. */
@@ -286,9 +395,10 @@ async function session(browser: Browser, width: number, height: number, touch: b
       } else assert.equal(await tid(page, "dimension-check").count(), 0, `${file}: no table without dimensions`);
       const cov = await checkCoverage(file, t);
       line += `; "${cov.text}" ${cov.openings}`;
+      if (file === "plan-doors.pdf") line += `; ${await checkDoorsReview(t)}`;
       if (t.dims.length) {
         const approx = await checkModel(file, t);
-        line += `; model check ${t.dims.length} rows centre to centre, ${approx ? `${approx} approximate (on traced walls), the rest OK` : "all OK"}`;
+        line += `; model check ${t.dims.length} rows ${t.dims.some((x) => x.spans) ? "centre to centre and opening widths" : "centre to centre"}, ${approx ? `${approx} approximate (on traced walls), the rest OK` : "all OK"}`;
       }
       if (!touch && file === "plan-filled.pdf") {
         await tid(page, "coverage").scrollIntoViewIfNeeded();
@@ -325,6 +435,7 @@ async function session(browser: Browser, width: number, height: number, touch: b
         const plan = await buildAndOpen();
         line += `; ${checkPlan(file, plan, t)}`;
         line += `; panel: ${await checkPanel(plan)}`;
+        if (file === "plan-doors.pdf") line += `; ${await checkDoorsStudio(plan, t)}`;
       }
     }
     report.push(`${line}; ${(ms / 1000).toFixed(1)} s`);
@@ -394,7 +505,11 @@ async function session(browser: Browser, width: number, height: number, touch: b
       const flagged2 = await page.locator(`[data-testid=model-row][data-status=flagged]`).count();
       const cov = (await tid(page, "coverage-line").count()) ? tid(page, "coverage-line") : null;
       const walls = cov ? `walls ${await cov.getAttribute("data-walls")}, exact ${await cov.getAttribute("data-exact")}, traced ${await cov.getAttribute("data-traced")}` : "walls traced (no coverage)";
-      report.push(`test-plans/${f}: ${err ? `error "${err}"` : `${pdf?.kind}, ${walls}, ${rows} dimensions read, ${flagged} flagged in the first table, ${flagged2} in the second`}, ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+      const ol = (await tid(page, "coverage-openings-line").count()) ? tid(page, "coverage-openings-line") : null;
+      const openings = ol
+        ? `openings exact ${await ol.getAttribute("data-exact")} of ${await ol.getAttribute("data-total")}, traced ${await ol.getAttribute("data-traced")}, unclassified ${await ol.getAttribute("data-unclassified")}, arcs not used ${await ol.getAttribute("data-arcs")}`
+        : "openings traced (no coverage)";
+      report.push(`test-plans/${f}: ${err ? `error "${err}"` : `${pdf?.kind}, ${walls}, ${openings}, ${rows} dimensions read, ${flagged} flagged in the first table, ${flagged2} in the second`}, ${((Date.now() - t0) / 1000).toFixed(1)} s`);
       console.log(report[report.length - 1]);
     }
   }

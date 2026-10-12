@@ -144,7 +144,7 @@ Read this before sections 18-22, which still describe the old order.
   - **NOT covered / limits:**
     - No real CAD PDF was tested: `test-plans/` has no PDFs, and every fixture is synthetic.
     - Diagonal and curved walls are only counted. Curved-wall counting is tested only by code reading; no fixture has one.
-    - Door swing sides are not read from the arcs. A door right at a corner is not bridged. Without a PDF scale, walls are traced only.
+    - Door swing sides are not read from the arcs (done in M.1c). A door right at a corner is not bridged. Without a PDF scale, walls are traced only.
     - Real outlined text is curves, not the rectangles this fixture uses.
     - Safari, Firefox and a real phone were not tested.
   - **Found and fixed on the way:**
@@ -162,6 +162,48 @@ Read this before sections 18-22, which still describe the old order.
   - **Flakes and hangs seen:**
     - Once, at 390, the "Open in studio" tap on plan-clutter did not navigate. It passed alone and in the two later full runs; maybe the known 390 timing flake (section 22).
     - Once, `e2e-import3d.ts` hung after its first dialog check while other e2e runs had just finished. A clean rerun alone passed. M.1b changes nothing it uses.
+  - **M.1c (DONE; not committed; 2026-10-12): doors, windows and door swings from the PDF's vectors.** CLAUDE.md has the rules (section "Openings from vector PDFs (step M.1c)"). Checks, all passing against `npm run dev` on port 3000 from this checkout (pid 9154, cwd `/Users/rachitmittal20/Atrium-v2`, parent `next dev` ← `npm run dev`):
+    - `npm test`, including the new `scripts/test-pdf-openings.ts`. `npx tsc --noEmit`, `npm run build`, and the dev-hook grep (`clean`).
+    - `scripts/e2e-pdf-import.ts`, `e2e-takeoff.ts`, `e2e-studio.ts`, `e2e-walk.ts`, `e2e-import3d.ts`: each exit 0, first time, no flake.
+  - **Found before designing:** M.1b bridged a doorway into ONE wall with a door span, and every gap was a door with LEGACY_SWING. The PDF worker keeps only flattened segments (`curve` and `path` per segment, no control points), so a polyline arc arrived as plain straight pieces and its leaf could pair as a wall. The plan's "left" swing is the (-dy, dx) side of a→b, which is the visual RIGHT on screen (y down). The hinge is always the a-end jamb.
+  - **What M.1c added:**
+    - `src/lib/pdf/openings.ts` (pure): chains, Kasa circle fit, swing arcs with leaves, classification (door, double, sliding, window, unclassified), and the reasons arcs go unused.
+    - `walls.ts`: arc pieces and leaves are never faces; openings are 0.45–4 m (gaps under 0.45 m are solid wall, where M.1b used 0.3 m); glazing pairs inside a gap are absorbed; each span is classified. `VectorOpening` gained `class`, `swingNormal`, `hinge` and `hingeEnd`; `VectorWalls` gained `arcs`.
+    - `snap.ts`: PDF openings are primary (snapped, replaced, added; traced ones listed). Swing is re-derived on the final wall. Walls whose doors hang on the b jamb are turned round. `openingProblem` refusals restore the traced opening. Coverage gained `openings.{replaced, exact, total, doors, windows, unclassified, arcsNotUsed}`, `tracedOpenings`, `unclassifiedOpenings` and `unusedArcs`.
+    - `Opening.provenance / edited / defaultHeight` (`plan.ts`, `planStorage`, `planStore.markEdited`). `OpeningPanel` shows the provenance line.
+    - `dimensions.ts`: a row on a traced opening's jamb is approximate.
+    - Review screen: the openings line, default heights, the lists, and the "Traced openings" and "Unclassified openings" overlay layers.
+    - Fixture `plan-doors.pdf` (SYNTHETIC, drawn by `make-pdf-fixtures.ts`): polyline swings in all four hinge/side combinations, a double door, a sliding door (staggered panels), windows with three and two glazing lines, a bare gap, two printed opening widths, and Bézier decoys (sink r 0.35 with radius lines, chair r 0.25 at 120°, stair r 1.8 with a radius line, a leafless quarter circle on the bare gap's jamb). `truth.json` gained each opening's `class`, `hinge` and `side`, `decoyArcs`, and `spans` on the two opening dimensions. Every existing fixture PDF is byte-identical (their swings are Béziers and their windows three lines, as before).
+  - **Covered by tests (Node):**
+    - FAILING FIRST 1: plan-lines' traced door is 1.540 m (M.1b kept it). Before the change the check failed ("opening d-bed1 (900.0 mm) is within 0.5 mm in the built plan"); now it is 0.9000 m.
+    - FAILING FIRST 2: a hand-checked door (leaf north on a west-to-east wall) must be "right". It failed with `'left' !== 'right'` before the derivation existed; now doorSwing draws its leaf at the PDF's tip.
+    - Arc fitting: exact quarter; 79° and 101° rejected, 80.5° and 99.5° pass; ±0.5% noise accepted, ±2% not an arc; radius 0.49 and 1.51 m rejected, 0.51 and 1.49 m pass; no leaf, or a leaf 3% too long, rejected; polyline arcs found.
+    - Swing: all four hinge × side combinations, Bézier and polyline.
+    - Classification: door, double, sliding, window (two lines in a gap; faces plus glass) and unclassified. An arc 0.15 m off the jamb is unused (0.09 m is used), a mismatched radius is unused, and both are reported. A 0.44 m gap closes; a 0.46 m one opens.
+    - Every vector fixture with a scale (filled, lines, fit, rotated, imperial, two-pages, clutter, broken-dims, single-line, no-dims, doors): every opening's jambs within 0.5 mm, kind right, "vector", default height, every door hinged on the PDF's jamb and opening to its side (through doorSwing), validator clean, the four rooms. Areas are exact wherever every wall is from the PDF.
+    - plan-doors: 6 doors, 4 windows, 1 unclassified; the 4 decoys unused with their reasons; the model check's 1000 and 1200 mm opening widths OK at 0.000 mm; traced openings make those rows approximate.
+    - Merge: 2.9 px snaps; a jamb 5 px out is replaced and noted; 3 px beside is replaced; 4 px beside stays traced and is listed; a missed opening is added; a refused PDF opening gives way to the traced one.
+    - Store: edited and default-height marks, and undo. Persistence (`test-persist.ts`): old plans' openings unchanged, the marks round-trip, unknown values are dropped.
+  - **In the browser** (plan-doors, 1440 mouse and 390 real touch, through the real file input):
+    - The openings line "11 of 11 openings read exactly (doors 6, windows 4, unclassified 1); 0 traced approximately; 4 arcs not used.", the default-height line, no traced box, and one unclassified box exactly as long as the bare gap (80.8 px).
+    - The model table's two "opening width" rows are OK.
+    - Built and opened: all 11 openings within 1 mm (worst 0.000 mm), every door on the PDF's jamb and side. The panel says "Read from PDF · Default height".
+    - 1440 only, 3D: each door's rendered frame-and-leaf box stands out on the PDF's side, in metres beyond the centre line on that side / behind it: d-front 0.29/0.11, d-bed1 0.26/0.06, d-bed2 0.26/0.06, d-bath 0.23/0.06, dd-living 0.46/0.11.
+  - **Screenshots** (`/tmp/studio/`):
+    - `pdf-openings-1440.png`: the review page. The openings line, the default heights and the unclassified list ("Opening o1, 1.00 m: Opening type not drawn; assumed door") are in the coverage panel, and both tables are all OK, with the two "opening width" rows. The plan on the overlay is small at page scale, so the orange box on the west wall is hard to see, and the free-end dots use the same orange.
+    - `pdf-openings-3d-1440.png`: the 3D model from the default camera with every door leaf standing slightly open. The panel shows d-bed1 "Read from PDF · Default height", Right, 1.10 m from its turned-round wall's start. At this angle and about 17° of opening, the leaf directions are hard to judge by eye; the assertion reads the rendered boxes.
+    - `pdf-openings-390.png`: one column, with the coverage panel and its openings line above the tables, which scroll inside their boxes.
+  - **NOT covered:**
+    - No real CAD PDF was tested: `test-plans/` has no PDFs, and every fixture is synthetic.
+    - No fixture produces a traced opening, so the gilt traced-opening box is tested only through Node merges, not seen in the browser.
+    - A wall carrying doors hung both ways (one stays mirrored, noted): Node code path only, no test.
+    - Leaves drawn as thin rectangles (CAD often does) are not leaves by the 2% rule; such doors read as unclassified.
+    - Bi-fold, pocket and arched doors; openings in diagonal or curved walls.
+    - Safari, Firefox and a real phone.
+  - **Existing test lines changed:**
+    - `test-pdf-walls.ts`: the plan-lines branch (as the prompt stated). It now expects all 9 exact, 0 traced, and the "replaced by vo… read from the PDF (0.90 m)" note, and its header says so.
+    - `e2e-pdf-import.ts`: the model check reads each row's expected "between" text from the truth (`spans`, else centre to centre, so the old fixtures check exactly as before), and plan-doors joined the 390 list.
+    - `test-persist.ts`: assertions added, none changed.
 - **M.2 (quantity takeoffs) is split in two:**
   - **M.2a (DONE; not committed; 2026-10-12): the Takeoff tool.** It measures lengths, polygon areas with cutouts, and wall faces in the 2D plan. It has units, references, discrepancy flags, overrides, a basis per row, a stale marker, totals and a CSV. CLAUDE.md has the rules (section "Quantity takeoffs (step M.2a)"). Checks, all passing against `npm run dev` on port 3000 from this checkout (pid 9154, cwd `/Users/rachitmittal20/Atrium-v2`, parent `next dev`):
     - `npm test`, including the new `scripts/test-takeoff.ts` and the assertions added to `test-persist.ts`. `npx tsc --noEmit`, `npm run build`, and the dev-hook grep (now with `__plan2d` and `__takeoffStore`) prints `clean`.
@@ -544,6 +586,5 @@ Atrium 2.0 now has the editable Plan pipeline, 2D/3D studio shell, wall selectio
 - Put the OCR language data (eng.traineddata) in `public/` so the demo works offline.
 - Test pinch zoom on a real phone after deployment, and test the import worker in Safari and Firefox.
 - Room list rounds each area to one decimal, so the rows can add to 0.1 less than the total. Fix with the schedules in 7.1.
-- M.1c: read openings and door swings from the PDF vectors (swing arcs, gaps in wall pairs).
 - Flake hunt: three unexplained one-off e2e failures (390 Open in studio tap, e2e-import3d first-step hang, 390 Delete key); warm every route and add a first-navigation timeout before rerunning blindly.
 - Decide the order after 5.3: landing page (Phase 8) before or after the catalog (Phase 6). The core editor, walkthrough, bird's-eye and recenter will be demoable by then.

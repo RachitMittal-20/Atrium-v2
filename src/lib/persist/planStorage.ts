@@ -116,8 +116,13 @@ function opening(v: unknown): Opening | null {
   // Absent is fine (older plans; loadPlan gives doors a default), present must be one of the two sides.
   if (v.swing !== undefined && v.swing !== "left" && v.swing !== "right") return null;
   const kind: OpeningKind = v.kind; // narrowed by the guard above
-  const base = { id: v.id, wallId: v.wallId, kind, offset: v.offset, width: v.width, height: v.height, sillHeight: v.sillHeight };
-  return v.swing === undefined ? base : { ...base, swing: v.swing };
+  const base: Opening = { id: v.id, wallId: v.wallId, kind, offset: v.offset, width: v.width, height: v.height, sillHeight: v.sillHeight };
+  if (v.swing !== undefined) base.swing = v.swing;
+  // Step M.1c, as walls' (M.1b): older plans have none; an unknown value is dropped, never refused.
+  if (v.provenance === "vector" || v.provenance === "traced") base.provenance = v.provenance;
+  if (v.edited === true) base.edited = true;
+  if (v.defaultHeight === true) base.defaultHeight = true;
+  return base;
 }
 
 function room(v: unknown): Room | null {

@@ -59,6 +59,15 @@ export interface Opening {
    *  opens to. Plans from before step 4.5 get "left" on load (edit.withSwingSides),
    *  which is what the 2D plan always drew. Windows have none. */
   swing?: SwingSide;
+  /** Where an imported opening came from (step M.1c), as for walls: "vector" = read
+   *  exactly from a PDF's own lines, "traced" = traced from a picture, about a pixel
+   *  out. Absent for openings placed by hand, the sample's and image imports. Editing keeps it. */
+  provenance?: "vector" | "traced";
+  /** Set by the plan store the first time an opening with a provenance changes. */
+  edited?: true;
+  /** Its height and sill are the importer's defaults, because a PDF has no heights (step
+   *  M.1c). The plan store clears it once either is changed. */
+  defaultHeight?: true;
 }
 
 /** Rooms are derived from the wall graph; only the user-authored bits are

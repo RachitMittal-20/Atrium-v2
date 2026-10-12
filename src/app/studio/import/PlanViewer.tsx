@@ -12,7 +12,10 @@
  * pans, and +, − and Fit do the same for touch and keyboard users.
  *
  * For a vector PDF (step M.1b) a "traced walls" layer marks, in gilt dashes, the
- * walls the coverage report says were traced rather than read from the PDF.
+ * walls the coverage report says were traced rather than read from the PDF, and
+ * (step M.1c) two more mark the openings to check: traced openings in gilt and
+ * unclassified ones (nothing drawn in the gap, assumed doors) in orange, each a
+ * dashed box around the gap.
  *
  * Picking: while `picking` is on, a click (a press that hardly moves) reports
  * the image pixel under it through onPick; ScalePanel.tsx uses this to set
@@ -24,7 +27,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Analysis } from "@/lib/blueprint/analyse";
 import type { Vec2 } from "@/types/plan";
 
-type Layer = "walls" | "doors" | "windows" | "ends" | "traced";
+type Layer = "walls" | "doors" | "windows" | "ends" | "traced" | "tracedOpenings" | "unclassified";
+/** A wall or an opening's gap (jambs on the centre line) in image pixels, for the PDF layers. */
+type Mark = { id: string; a: Vec2; b: Vec2; thickness: number };
 const MIN_K = 0.02;
 const MAX_K = 40;
 const CLICK_PX = 5; // a press that moves less than this is a click, not a pan
@@ -66,20 +71,23 @@ export function PlanViewer({
   points,
   onPick,
   traced,
+  openingMarks,
 }: {
   analysis: Analysis;
   picking: boolean;
   points: Vec2[];
   onPick: (p: Vec2) => void;
   /** Walls traced rather than read from the PDF, in image pixels (step M.1b). */
-  traced?: { id: string; a: Vec2; b: Vec2; thickness: number }[];
+  traced?: Mark[];
+  /** Openings to check, in image pixels (step M.1c): traced, and read from the PDF but unclassified. */
+  openingMarks?: { traced: Mark[]; unclassified: Mark[] };
 }) {
   const { width: W, height: H } = analysis.pixels;
   const url = useImageUrl(analysis);
   const boxRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [view, setView] = useState<View>({ k: 1, x: 0, y: 0 });
-  const [show, setShow] = useState<Record<Layer, boolean>>({ walls: true, doors: true, windows: true, ends: true, traced: true });
+  const [show, setShow] = useState<Record<Layer, boolean>>({ walls: true, doors: true, windows: true, ends: true, traced: true, tracedOpenings: true, unclassified: true });
   const touched = useRef(false); // once the user zooms or pans, resizing no longer refits
 
   const fit = useCallback(() => {
@@ -160,7 +168,17 @@ export function PlanViewer({
     { id: "windows", label: "Windows", count: windows.length, swatch: "bg-overlay-window" },
     { id: "ends", label: "Free ends", count: analysis.unpaired.length, swatch: "bg-overlay-end" },
     ...(traced ? [{ id: "traced" as const, label: "Traced walls", count: traced.length, swatch: "bg-gilt", hint: "Walls not read from the PDF's lines: traced from the picture, about a pixel out." }] : []),
+    ...(openingMarks
+      ? [
+          { id: "tracedOpenings" as const, label: "Traced openings", count: openingMarks.traced.length, swatch: "bg-gilt", hint: "Doors and windows not read from the PDF's lines: traced from the picture, about a pixel out." },
+          { id: "unclassified" as const, label: "Unclassified openings", count: openingMarks.unclassified.length, swatch: "bg-overlay-end", hint: "Gaps with no swing, glazing or panels drawn in them: kept as doors. Check them." },
+        ]
+      : []),
   ];
+  /** A dashed box round an opening's gap. */
+  const box = (m: Mark, kind: string) => (
+    <line key={m.id} data-opening-mark={kind} data-id={m.id} x1={m.a.x} y1={m.a.y} x2={m.b.x} y2={m.b.y} strokeWidth={Math.max(m.thickness * 2.4, 8 * px)} strokeDasharray={`${8 * px} ${5 * px}`} strokeOpacity={0.55} />
+  );
   const bar = (o: Analysis["openings"][number], i: number, kind: string) => (
     <line key={i} data-kind={kind} x1={o.a.x} y1={o.a.y} x2={o.b.x} y2={o.b.y} strokeWidth={o.wallThicknessPx * 1.2} strokeLinecap="butt" />
   );
@@ -202,6 +220,16 @@ export function PlanViewer({
                 {traced.map((w) => (
                   <line key={w.id} data-traced={w.id} x1={w.a.x} y1={w.a.y} x2={w.b.x} y2={w.b.y} strokeWidth={Math.max(w.thickness * 1.6, 6 * px)} strokeDasharray={`${12 * px} ${6 * px}`} />
                 ))}
+              </g>
+            )}
+            {openingMarks && show.tracedOpenings && (
+              <g data-layer="traced-openings" className="stroke-gilt" strokeLinecap="butt" fill="none">
+                {openingMarks.traced.map((m) => box(m, "traced"))}
+              </g>
+            )}
+            {openingMarks && show.unclassified && (
+              <g data-layer="unclassified-openings" className="stroke-overlay-end" strokeLinecap="butt" fill="none">
+                {openingMarks.unclassified.map((m) => box(m, "unclassified"))}
               </g>
             )}
             {points.length > 0 && (

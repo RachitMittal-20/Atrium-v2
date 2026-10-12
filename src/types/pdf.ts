@@ -145,6 +145,11 @@ export interface PdfInfo {
   ocrText: boolean;
 }
 
+/** What the PDF's lines say an opening is (step M.1c, openings.ts): a door with a swing arc,
+ *  a double door (two arcs), a sliding door (staggered panels), a window (glazing lines), or
+ *  nothing drawn in the gap ("unclassified", kept as a door). */
+export type OpeningClass = "door" | "double" | "sliding" | "window" | "unclassified";
+
 /** A door or window found in the PDF's lines (walls.ts), on a VectorWalls wall. */
 export interface VectorOpening {
   id: string;
@@ -153,10 +158,28 @@ export interface VectorOpening {
   /** From the wall's a end to the opening's centre, m. */
   offset: number;
   width: number;
+  /** Doors: the side the leaf opens to on THIS wall (from its arc; LEGACY_SWING without one). */
   swing?: SwingSide;
   /** The two jambs on the centre line, page metres (a nearer the wall's a). */
   a: Vec2;
   b: Vec2;
+  /** Step M.1c. Absent on readings made before it (M.1b read every gap as a door). */
+  class?: OpeningClass;
+  /** Doors read from an arc: the leaf's side as a unit vector, page frame (snap.ts re-derives the
+   *  swing on the final wall from it). */
+  swingNormal?: Vec2;
+  /** Single doors read from an arc: the jamb the leaf hangs on (on the centre line, page metres)
+   *  and which end of this wall it is. */
+  hinge?: Vec2;
+  hingeEnd?: "a" | "b";
+}
+
+/** An arc in the PDF's lines that no opening used (step M.1c), page metres, and why. */
+export interface UnusedArc {
+  centre: Vec2;
+  r: number;
+  sweep: number;
+  why: string;
 }
 
 /** Walls read exactly from a vector page by face pairing (walls.ts), in PAGE
@@ -173,6 +196,9 @@ export interface VectorWalls {
   /** The clutter pieces themselves (centre line and thickness, page metres): a
    *  traced wall lying on one is furniture or a text box too (snap.ts drops it). */
   clutter: { a: Vec2; b: Vec2; thickness: number }[];
+  /** Step M.1c: arcs found (fitted circles, 0.2 m and 30° or more), how many became door
+   *  swings, and the rest with why. Absent on readings made before it. */
+  arcs?: { found: number; used: number; notUsed: UnusedArc[] };
 }
 
 /** One row of the dimension check (src/lib/pdf/dimensions.ts), or of the

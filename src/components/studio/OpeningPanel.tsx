@@ -15,6 +15,10 @@
  * planStore.updateOpening — one undo step per edit. A value that had to be
  * clamped says why underneath. Replaces the Summary in PlanPanel.tsx, the same
  * way WallPanel.tsx does for a wall, and reuses its NumberField.
+ * An opening imported from a PDF (step M.1c) says where its numbers came from,
+ * as a wall does: "Read from PDF", "Traced, approximate" or, once changed,
+ * "Edited"; and "Default height" while its height and sill are the importer's
+ * defaults (a PDF has no heights).
  * Connects to: src/store/{planStore,selectionStore}.ts, src/lib/plan/edit.ts.
  */
 import { useState } from "react";
@@ -103,6 +107,12 @@ export function OpeningPanel({ unit }: { unit: Unit }) {
           </button>
         </dd>
       </dl>
+
+      {(opening.provenance || opening.defaultHeight) && (
+        <p data-testid="opening-provenance" data-provenance={opening.provenance} data-edited={opening.edited ? "true" : undefined} data-default-height={opening.defaultHeight ? "true" : undefined} className="mb-2 text-xs text-smoke">
+          {[opening.provenance && (opening.edited ? "Edited" : opening.provenance === "vector" ? "Read from PDF" : "Traced, approximate"), opening.defaultHeight && "Default height"].filter(Boolean).join(" · ")}
+        </p>
+      )}
 
       <div className="flex flex-col gap-1">
         <NumberField label="Width" value={formatLength(opening.width, unit)} testId="opening-width" onCommit={say(setWidth)} />

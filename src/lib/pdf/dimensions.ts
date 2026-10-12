@@ -58,8 +58,10 @@ export function dimensionRows(matches: DimensionMatch[], mPerPt: number, overrid
  * "inside faces" (the faces of two walls that look at each other: a room's
  * span), "outside faces", "opening width" (two jambs of one opening), or a mix
  * ("centre to face", "face to face", "to a jamb"). A dimension with an end
- * on nothing is left out. A row whose walls include a traced one is
- * `approximate`. Rows carry their match's index (`index`) for overrides.
+ * on nothing is left out. A row whose walls include a traced one, or that lands
+ * on a traced opening's jamb (step M.1c), is `approximate`. A printed opening
+ * width lands on both jambs of the door or window ("opening width"). Rows carry
+ * their match's index (`index`) for overrides.
  */
 export function modelRows(matches: DimensionMatch[], plan: Pick<Plan, "walls" | "openings">, toPlan: (x: number, y: number) => Vec2, tol: number, overrides: Overrides = {}): (DimensionRow & { index: number })[] {
   const out: (DimensionRow & { index: number })[] = [];
@@ -72,7 +74,7 @@ export function modelRows(matches: DimensionMatch[], plan: Pick<Plan, "walls" | 
     const u = { x: (e2.x - e1.x) / L, y: (e2.y - e1.y) / L };
     const along = (p: Vec2) => p.x * u.x + p.y * u.y;
     const acrossOf = (p: Vec2) => p.x * -u.y + p.y * u.x;
-    type Hit = { s: number; kind: "centre" | "face" | "jamb"; side: -1 | 0 | 1; wall: Wall; opening?: string; far: number };
+    type Hit = { s: number; kind: "centre" | "face" | "jamb"; side: -1 | 0 | 1; wall: Wall; opening?: string; traced?: boolean; far: number };
     const hits: Omit<Hit, "far">[] = [];
     for (const w of plan.walls) {
       const len = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
@@ -84,7 +86,7 @@ export function modelRows(matches: DimensionMatch[], plan: Pick<Plan, "walls" | 
         hits.push({ s, kind: "centre", side: 0, wall: w }, { s: s - w.thickness / 2, kind: "face", side: -1, wall: w }, { s: s + w.thickness / 2, kind: "face", side: 1, wall: w });
       } else if (cross <= PAR)
         for (const o of plan.openings.filter((o) => o.wallId === w.id))
-          for (const k of [-1, 1] as const) hits.push({ s: along({ x: w.a.x + d.x * (o.offset + (k * o.width) / 2), y: w.a.y + d.y * (o.offset + (k * o.width) / 2) }), kind: "jamb", side: 0, wall: w, opening: o.id });
+          for (const k of [-1, 1] as const) hits.push({ s: along({ x: w.a.x + d.x * (o.offset + (k * o.width) / 2), y: w.a.y + d.y * (o.offset + (k * o.width) / 2) }), kind: "jamb", side: 0, wall: w, opening: o.id, traced: o.provenance === "traced" });
     }
     const land = (e: Vec2): Hit | null => {
       let best: Hit | null = null;
@@ -117,7 +119,7 @@ export function modelRows(matches: DimensionMatch[], plan: Pick<Plan, "walls" | 
             : kinds === "centre+face"
               ? "centre to face"
               : `${p.kind === "jamb" ? q.kind : p.kind} to a jamb`;
-    const approximate = p.wall.provenance === "traced" || q.wall.provenance === "traced" || !p.wall.provenance || !q.wall.provenance;
+    const approximate = p.wall.provenance === "traced" || q.wall.provenance === "traced" || !p.wall.provenance || !q.wall.provenance || Boolean(p.traced || q.traced);
     out.push({ ...row(m, q.s - p.s, overrides[index] ?? null, { spans, approximate }), index });
   });
   return out;

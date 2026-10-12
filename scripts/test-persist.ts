@@ -451,6 +451,29 @@ async function checkWiring() {
   console.log("takeoffs: old plans unchanged, takeoffs round-trip, malformed ones refused");
 }
 
+// ---- step M.1c: opening provenance, as walls' (M.1b). Old plans' openings load unchanged and gain no field;
+// provenance, edited and defaultHeight survive a save and reload; anything else in them is dropped, not refused.
+{
+  const old = serializePlan(samplePlan);
+  assert.ok(!old.includes("defaultHeight"), "the sample stores no default-height mark");
+  const back = parseStoredPlan(old)!;
+  assert.deepEqual(back.openings, samplePlan.openings, "an old plan's openings load exactly as they were");
+  assert.ok(back.openings.every((o) => !("provenance" in o) && !("edited" in o) && !("defaultHeight" in o)), "and gain no provenance, edited or defaultHeight field");
+  const marked: Plan = {
+    ...samplePlan,
+    openings: samplePlan.openings.map((o, i) => ({ ...o, provenance: i % 2 ? "traced" : "vector", ...(i === 0 ? { edited: true as const } : {}), ...(i < 3 ? { defaultHeight: true as const } : {}) })),
+  };
+  const round = parseStoredPlan(serializePlan(marked))!;
+  assert.deepEqual(round.openings, marked.openings, "opening provenance, edited and defaultHeight survive a save and reload");
+  const odd = JSON.parse(serializePlan(marked));
+  Object.assign(odd.plan.openings[0], { provenance: "guessed", edited: "yes", defaultHeight: 1 });
+  const cleaned = parseStoredPlan(JSON.stringify(odd))!;
+  assert.ok(cleaned, "unknown values do not refuse the plan");
+  assert.ok(!("provenance" in cleaned.openings[0]) && !("edited" in cleaned.openings[0]) && !("defaultHeight" in cleaned.openings[0]), "they are dropped instead");
+  assert.equal(cleaned.openings[0].swing, samplePlan.openings[0].swing, "and the door keeps its swing");
+  console.log("opening provenance: old plans unchanged, provenance / edited / defaultHeight round-trip, unknown values dropped");
+}
+
 // (async because the debounce is waited out in real time; the CJS test runner has no top-level await)
 checkWiring().then(
   () => console.log("OK"),

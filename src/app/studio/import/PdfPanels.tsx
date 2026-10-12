@@ -16,10 +16,14 @@
  *     (X% of wall length); K walls are traced approximately (about Y mm)", the
  *     traced walls (also drawn in gilt dashes on the overlay) with why, the
  *     diagonal and curved walls skipped, openings snapped, traced and added,
- *     and any fallback.
+ *     and any fallback. Step M.1c adds the openings line ("A of B openings read
+ *     exactly (doors D, windows W, unclassified U); C traced approximately; K
+ *     arcs not used"), the default heights, and lists of the unclassified
+ *     openings (assumed doors), the traced ones and the arcs not used, with why.
  * Connects to: src/types/pdf.ts (PdfInfo), src/lib/pdf/extract.ts (paperName),
  * src/lib/pdf/snap.ts (Coverage).
  */
+import { DOOR_SIZE, WINDOW_SIZE } from "@/data/samplePlan";
 import { paperName } from "@/lib/pdf/extract";
 import type { Coverage } from "@/lib/pdf/snap";
 import type { PdfInfo } from "@/types/pdf";
@@ -128,6 +132,12 @@ export function coverageLine(c: Coverage): string {
   return `${c.exact} of ${c.walls} walls read exactly from the PDF (${pct}% of wall length); ${count(c.traced, "wall is", "walls are")} traced approximately (about ${Math.round(c.traceMm)} mm).`;
 }
 
+/** The openings line (step M.1c), as the review screen and the tests read it. */
+export function openingsLine(c: Coverage): string {
+  const o = c.openings;
+  return `${o.exact} of ${o.total} openings read exactly (doors ${o.doors}, windows ${o.windows}, unclassified ${o.unclassified}); ${o.traced} traced approximately; ${count(o.arcsNotUsed, "arc", "arcs")} not used.`;
+}
+
 export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
   const len = (w: Coverage["tracedWalls"][number]) => Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
   return (
@@ -138,6 +148,62 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
       <p data-testid="coverage-line" data-exact={c.exact} data-walls={c.walls} data-traced={c.traced}>
         {coverageLine(c)}
       </p>
+      <p data-testid="coverage-openings-line" data-exact={c.openings.exact} data-total={c.openings.total} data-traced={c.openings.traced} data-unclassified={c.openings.unclassified} data-arcs={c.openings.arcsNotUsed}>
+        {openingsLine(c)}
+      </p>
+      {c.openings.total > 0 && (
+        <p className="text-sm text-smoke" data-testid="coverage-heights">
+          Heights are not in a PDF: doors are {DOOR_SIZE.height.toFixed(2)} m and windows {WINDOW_SIZE.height.toFixed(2)} m on a {WINDOW_SIZE.sillHeight.toFixed(2)} m sill (default height). Change them in the studio.
+        </p>
+      )}
+      {c.unclassifiedOpenings.length > 0 && (
+        <details className="text-sm" open={c.unclassifiedOpenings.length <= 6}>
+          <summary className="cursor-pointer">
+            <span aria-hidden className="mr-2 inline-block h-2.5 w-4 border-2 border-dashed border-overlay-end align-middle" />
+            Unclassified openings, boxed on the plan
+          </summary>
+          <ul className="mt-1 list-disc pl-5 text-smoke" data-testid="coverage-unclassified">
+            {c.unclassifiedOpenings.map((o) => (
+              <li key={o.id} data-opening={o.id}>
+                <span className="text-iron">
+                  Opening {o.id}, {Math.hypot(o.b.x - o.a.x, o.b.y - o.a.y).toFixed(2)} m
+                </span>
+                : Opening type not drawn; assumed door
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {c.tracedOpenings.length > 0 && (
+        <details className="text-sm" open={c.tracedOpenings.length <= 6}>
+          <summary className="cursor-pointer">
+            <span aria-hidden className="mr-2 inline-block h-2.5 w-4 border-2 border-dashed border-gilt align-middle" />
+            Traced openings, boxed on the plan
+          </summary>
+          <ul className="mt-1 list-disc pl-5 text-smoke" data-testid="coverage-traced-openings">
+            {c.tracedOpenings.map((o) => (
+              <li key={o.id} data-opening={o.id}>
+                <span className="text-iron">
+                  Opening {o.id}, {Math.hypot(o.b.x - o.a.x, o.b.y - o.a.y).toFixed(2)} m
+                </span>
+                : {o.reason}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {c.unusedArcs.length > 0 && (
+        <details className="text-sm text-smoke">
+          <summary className="cursor-pointer text-iron">Arcs not used as door swings</summary>
+          <ul className="mt-1 list-disc pl-5" data-testid="coverage-arcs">
+            {c.unusedArcs.map((a, i) => (
+              <li key={i}>
+                Radius {a.r.toFixed(2)} m, {Math.round(a.sweep)}°: {a.why}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
       {c.traced > 0 && (
         <details className="text-sm" open={c.traced <= 6}>
           <summary className="cursor-pointer">
@@ -161,7 +227,7 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
           {count(c.skipped.diagonal, "diagonal wall", "diagonal walls")} and {count(c.skipped.curved, "curved wall", "curved walls")} skipped (not read yet)
         </li>
         <li data-testid="coverage-openings">
-          Doors and windows: {c.openings.snapped} snapped to the PDF, {c.openings.traced} traced, {c.openings.added} added from the PDF
+          Doors and windows: {c.openings.snapped} snapped to the PDF, {count(c.openings.replaced, "traced one", "traced ones")} replaced by the PDF&apos;s, {c.openings.traced} traced, {c.openings.added} added from the PDF
         </li>
         {c.added > 0 && <li>{count(c.added, "wall the tracing missed was", "walls the tracing missed were")} added from the PDF</li>}
       </ul>

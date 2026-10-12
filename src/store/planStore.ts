@@ -12,7 +12,9 @@
  * 3D model and hide, delete or restore its parts (step I.1), and `setNodeTransform`
  * moves, turns or scales one part (step I.1b), one undo step each; imported models
  * never touch walls or rooms. A wall imported from a PDF keeps its provenance
- * through edits; `edit()` marks it `edited` once its shape changes (step M.1b).
+ * through edits; `edit()` marks it `edited` once its shape changes (step M.1b),
+ * and does the same for a door or window imported from a PDF (step M.1c: its wall,
+ * kind, place, size or swing), clearing `defaultHeight` once its height or sill changes.
  * `addTakeoff`, `updateTakeoff`, `deleteTakeoff` and `markTakeoffCurrent` keep the
  * quantity takeoffs (step M.2a), one undo step each; takeoffs are annotations and
  * never touch walls, rooms or openings. Connects to:
@@ -420,6 +422,14 @@ function markEdited(d: Draft<Plan>, before: Plan) {
     if (!w.provenance || w.edited) continue;
     const was = before.walls.find((p) => p.id === w.id);
     if (!was || was.a.x !== w.a.x || was.a.y !== w.a.y || was.b.x !== w.b.x || was.b.y !== w.b.y || was.thickness !== w.thickness || was.height !== w.height) w.edited = true;
+  }
+  // Openings from a PDF (step M.1c): the same rule, and the default-height mark goes once a height is typed.
+  for (const o of d.openings) {
+    if (!o.provenance) continue;
+    const was = before.openings.find((p) => p.id === o.id);
+    if (o.defaultHeight && (!was || was.height !== o.height || was.sillHeight !== o.sillHeight)) delete o.defaultHeight;
+    if (o.edited) continue;
+    if (!was || (["wallId", "kind", "offset", "width", "height", "sillHeight", "swing"] as const).some((k) => was[k] !== o[k])) o.edited = true;
   }
 }
 

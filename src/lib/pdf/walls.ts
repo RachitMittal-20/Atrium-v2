@@ -23,12 +23,12 @@
  *     frame line, an inner hatch line) is dropped: the widest wins. Filled
  *     rectangles come first.
  *  4. Merging and openings. Pieces on one line with the same thickness (centre and
- *     thickness within 1 mm) that overlap or are under 0.3 m apart (a face broken
- *     where another wall meets it) merge. Pieces on one line 0.3–4 m apart with
+ *     thickness within 1 mm) that overlap or are under 0.45 m apart (a face broken
+ *     where another wall meets it) merge. Pieces on one line 0.45–4 m apart with
  *     no other piece crossing the gap are bridged into one wall with a DOOR in
  *     the gap (toPlan.ts's 4 m limit). A face inside a wall's band, away from
- *     both faces, 0.3–4 m long and within the wall's span, is a window's glass
- *     line: a WINDOW over its span.
+ *     both faces, 0.45–4 m long and within the wall's span, is a window's glass
+ *     line: a WINDOW over its span. (M.1b used 0.3 m; M.1c's openings start at 0.45.)
  *  5. Clutter. A piece with no other piece within 0.3 m of either end AND shorter
  *     than 1.5 m is dropped (furniture, text boxes, a stray pair of lines); the
  *     dropped pieces are returned (`clutter`) so a traced wall on one is dropped too.
@@ -44,14 +44,26 @@
  *     toPlan.ts), and two walls crossing are both split. An opening goes with the
  *     piece holding its centre; one a split would cut is dropped and counted.
  *
+ * Step M.1c (openings.ts): arcs are found first (Bézier pieces and polyline arcs
+ * alike) and their pieces and leaves are never faces, so a polyline door's leaf
+ * can't pair as a wall. Openings are 0.45–4 m: pieces on one line closer than
+ * 0.45 m merge as solid wall. A thinner pair lying wholly inside a door gap's
+ * band (two glazing lines in a real gap) neither blocks the bridge nor stays a
+ * wall. Every opening span is then classified by openings.classifyOpening (door
+ * from a swing arc at a jamb, double door, sliding door, window from glazing lines,
+ * or "unclassified", kept as a door), with its swing side read from the arc; the
+ * arcs no opening used are reported with why (`arcs`).
+ *
  * Output ids are "v1", "v2", ... ; a is the end with the smaller x (horizontal
- * walls) or y (vertical ones). Doors get LEGACY_SWING, as buildPlan's do.
- * Connects to: extract.ts (VectorPage, `path` and `curve` on segments),
- * snap.ts, analysePdf.ts; tested by scripts/test-pdf-walls.ts.
+ * walls) or y (vertical ones). Doors without an arc get LEGACY_SWING, as
+ * buildPlan's do. Connects to: extract.ts (VectorPage, `path` and `curve` on
+ * segments), openings.ts, snap.ts, analysePdf.ts; tested by
+ * scripts/test-pdf-walls.ts and scripts/test-pdf-openings.ts.
  */
-import { LEGACY_SWING, WALL_HEIGHT } from "@/data/samplePlan";
+import { WALL_HEIGHT } from "@/data/samplePlan";
 import type { OpeningKind, Vec2, Wall } from "@/types/plan";
 import type { PdfSegment, VectorOpening, VectorPage, VectorWalls } from "@/types/pdf";
+import { classifyOpening, findArcs, OPENING_WIDTH, unusedWhy, type Span as OpeningSpan } from "./openings";
 
 export const WALL_RULES = {
   minFace: 0.3,
@@ -61,7 +73,7 @@ export const WALL_RULES = {
   jointReach: 0.3,
   clutterLength: 1.5,
   meet: 0.15,
-  opening: [0.3, 4] as const,
+  opening: OPENING_WIDTH,
   maxLeaf: 1.5,
 };
 /** Two lines, ends or thicknesses this close (m) are the same. */
@@ -196,10 +208,15 @@ function mergeLines(pieces: Piece[]): Piece[] {
       } else merged.push((cur = { ...p, openings: [...p.openings] }));
     }
   }
-  // Doors: consecutive pieces on one line 0.3–4 m apart, with no other piece crossing the gap.
+  // Doors: consecutive pieces on one line 0.45–4 m apart, with no other piece crossing the gap. A
+  // thinner pair wholly inside the gap and inside the walls' band is two glazing lines (a window in a
+  // real gap, step M.1c): it doesn't block the bridge, and it is no wall (openings.ts reads its lines).
+  const glazing = (w: Piece, gap: Face, host: Piece) =>
+    w.axis === gap.axis && w.t < host.t - SAME && Math.abs(w.c - host.c) + w.t / 2 <= host.t / 2 + SAME && w.s0 >= gap.s0 - SAME && w.s1 <= gap.s1 + SAME;
+  const absorbed = new Set<Piece>();
   const crosses = (gap: Face, skip: Piece[]) =>
     merged.some((w) => {
-      if (skip.includes(w)) return false;
+      if (skip.includes(w) || glazing(w, gap, skip[0])) return false;
       if (w.axis === gap.axis) return Math.abs(w.c - gap.c) < w.t / 2 && overlapOf(w, gap) > SAME;
       const s = w.c; // a perpendicular piece crosses the gap's line at s = its offset
       return s > gap.s0 + SAME && s < gap.s1 - SAME && gap.c >= w.s0 - w.t / 2 && gap.c <= w.s1 + w.t / 2;
@@ -212,12 +229,13 @@ function mergeLines(pieces: Piece[]): Piece[] {
       const gap = cur ? p.s0 - cur.s1 : -1;
       const door = cur && { axis: cur.axis, c: cur.c, s0: cur.s1, s1: p.s0 };
       if (cur && door && gap >= WALL_RULES.opening[0] - EPS && gap <= WALL_RULES.opening[1] + EPS && !crosses(door, [cur, p])) {
+        for (const w of merged) if (glazing(w, door, cur)) absorbed.add(w);
         cur.openings.push({ kind: "door", s0: cur.s1, s1: p.s0 }, ...p.openings);
         cur.s1 = p.s1;
       } else out.push((cur = p));
     }
   }
-  return out;
+  return out.filter((p) => !absorbed.has(p));
 }
 
 /** Rule 4's windows: glass lines inside a wall's band. */
@@ -382,7 +400,10 @@ export function readVectorWalls(page: Pick<VectorPage, "segments">, mPerPt: numb
     for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) if (count.get(`${i + di},${j + dj}`) === 1) return true;
     return false;
   };
-  const straight = segs.filter((s) => !s.src.curve && !(len(s) <= WALL_RULES.maxLeaf && (arcEnd(s.x1, s.y1) || arcEnd(s.x2, s.y2))));
+  // Step M.1c: arcs (Bézier or polyline); their pieces and leaves are never faces.
+  const arcs = findArcs(segs.map((s) => ({ x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, curve: s.src.curve })));
+  const notFace = new Set(arcs.flatMap((a) => [...a.pieces, ...(a.leaf === null ? [] : [a.leaf])]).map((i) => segs[i]));
+  const straight = segs.filter((s) => !s.src.curve && !notFace.has(s) && !(len(s) <= WALL_RULES.maxLeaf && (arcEnd(s.x1, s.y1) || arcEnd(s.x2, s.y2))));
 
   // Rule 2: filled rectangles are pairs as they stand.
   const rects: Piece[] = [];
@@ -424,24 +445,41 @@ export function readVectorWalls(page: Pick<VectorPage, "segments">, mPerPt: numb
 
   // Rule 7: joints.
   const joined = joinWalls(pieces, dropped);
+  // Openings, classified from the lines and arcs in and around each gap (step M.1c).
   const walls: Wall[] = [];
   const openings: VectorOpening[] = [];
+  const spans: OpeningSpan[] = joined.flatMap((p) => p.openings.map((o) => ({ axis: p.axis, c: p.c, t: p.t, s0: o.s0, s1: o.s1 })));
+  const arcsUsed = new Set<number>();
   joined.forEach((p, i) => {
     const id = `v${i + 1}`;
     const wall: Wall = { id, a: at(p.axis, p.s0, p.c), b: at(p.axis, p.s1, p.c), thickness: p.t, height: WALL_HEIGHT, provenance: "vector" };
     walls.push(wall);
-    for (const o of p.openings.sort((q, r) => q.s0 - r.s0))
+    for (const o of p.openings.sort((q, r) => q.s0 - r.s0)) {
+      const c = classifyOpening({ axis: p.axis, c: p.c, t: p.t, s0: o.s0, s1: o.s1 }, straight, arcs, arcsUsed);
       openings.push({
         id: `vo${openings.length + 1}`,
         wallId: id,
-        kind: o.kind,
+        kind: c.kind,
         offset: (o.s0 + o.s1) / 2 - p.s0,
         width: o.s1 - o.s0,
-        ...(o.kind === "door" ? { swing: LEGACY_SWING } : {}),
+        ...(c.swing ? { swing: c.swing } : {}),
         a: at(p.axis, o.s0, p.c),
         b: at(p.axis, o.s1, p.c),
+        class: c.class,
+        ...(c.swingNormal ? { swingNormal: c.swingNormal } : {}),
+        ...(c.hinge ? { hinge: c.hinge, hingeEnd: c.hingeEnd } : {}),
       });
+    }
   });
+  const notUsed = arcs.flatMap((a, i) => (arcsUsed.has(i) ? [] : [{ centre: a.centre, r: a.r, sweep: a.sweep, why: unusedWhy(a, spans) }]));
 
-  return { mPerPt, walls, openings, skipped: { diagonal: countDiagonal(diagonal, pieces), curved: countCurved(curves) }, dropped, clutter };
+  return {
+    mPerPt,
+    walls,
+    openings,
+    skipped: { diagonal: countDiagonal(diagonal, pieces), curved: countCurved(curves) },
+    dropped,
+    clutter,
+    arcs: { found: arcs.length, used: arcsUsed.size, notUsed },
+  };
 }

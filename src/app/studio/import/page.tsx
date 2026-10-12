@@ -24,7 +24,8 @@
  * (walls read exactly from the PDF's lines, merged with the traced ones)
  * instead of buildFromAnalysis. Once a scale is in use (the chosen one, else
  * the PDF's), that build is made at review time too, so the screen shows its
- * coverage (CoveragePanel, with the traced walls dashed on the overlay) and a
+ * coverage (CoveragePanel, with the traced walls dashed on the overlay and, since
+ * step M.1c, the traced and unclassified openings boxed) and a
  * second table, "Model versus printed". The layout is a grid: on a phone the
  * plan, then the side panels (PDF, coverage, scale, Build), then the tables;
  * from lg the tables sit under the plan beside the panels.
@@ -329,6 +330,15 @@ export default function ImportPage() {
                       const px = planToPixels(review.coverage, scaleInUse.pxPerM);
                       return { id: w.id, a: px(w.a), b: px(w.b), thickness: w.thickness * scaleInUse.pxPerM };
                     })
+                  : undefined
+              }
+              openingMarks={
+                review && scaleInUse
+                  ? (() => {
+                      const px = planToPixels(review.coverage, scaleInUse.pxPerM);
+                      const toPx = (m: { id: string; a: Vec2; b: Vec2; thickness: number }) => ({ id: m.id, a: px(m.a), b: px(m.b), thickness: m.thickness * scaleInUse.pxPerM });
+                      return { traced: review.coverage.tracedOpenings.map(toPx), unclassified: review.coverage.unclassifiedOpenings.map(toPx) };
+                    })()
                   : undefined
               }
             />

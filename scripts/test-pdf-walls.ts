@@ -12,7 +12,8 @@
  *     (both ends) and thickness within 0.5 mm of the truth in the page's frame, coverage
  *     100% (by count and by length), validatePlan clean, room areas equal to the
  *     truth's within 1e-6 m², and openings' widths and offsets within 0.5 mm (plan-lines:
- *     the one door the tracing made 1.54 m wide stays traced and is reported);
+ *     the one door the tracing made 1.54 m wide is replaced by the PDF's since step M.1c,
+ *     and reported);
  *   - plan-clutter: exactly the 14 real walls, the diagonal wall counted, the table and
  *     the two tag boxes dropped as clutter; and with Chromium's noisy trace of the same
  *     page (tests/fixtures/pdf/clutter-chromium-trace.json, from the browser test) still
@@ -157,10 +158,11 @@ async function main() {
       if (hit) exact++;
     }
     if (file === "plan-lines.pdf") {
-      // The tracing made one door 1.54 m wide (a jamb absorbed into the T at I): snapping it would move a jamb 647 mm, so it stays traced, reported.
-      assert.equal(exact, t.planOpenings.length - 1, `${file}: all openings but the traced one exact`);
-      assert.equal(c.openings.traced, 1, `${file}: one opening traced`);
-      assert.ok(c.notes.some((n) => /kept as traced: the PDF's jambs are \d+ mm away, more than 3 px/.test(n)), `${file}: and reported`);
+      // The tracing made one door 1.54 m wide (a jamb absorbed into the T at I). Step M.1c: the PDF's openings are
+      // primary, so the PDF's door replaces it (scripts/test-pdf-openings.ts shows it before and after), reported.
+      assert.equal(exact, t.planOpenings.length, `${file}: every opening exact, the 1.54 m traced door replaced`);
+      assert.equal(c.openings.traced, 0, `${file}: no opening traced`);
+      assert.ok(c.notes.some((n) => /replaced by vo\d+ read from the PDF \(0\.90 m\): the traced jambs were up to \d+ mm out, more than 3 px/.test(n)), `${file}: and reported`);
     } else {
       assert.equal(exact, t.planOpenings.length, `${file}: every opening within 0.5 mm (${exact} of ${t.planOpenings.length})`);
       assert.equal(c.openings.snapped, t.planOpenings.length, `${file}: every traced opening snapped`);
