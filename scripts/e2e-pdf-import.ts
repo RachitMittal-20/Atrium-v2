@@ -104,6 +104,9 @@ const report: string[] = [];
 
 async function session(browser: Browser, width: number, height: number, touch: boolean) {
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: touch, isMobile: touch, acceptDownloads: true });
+  // Step U.1: the dimension tables follow the ONE units setting, whose default is metres. These checks read
+  // millimetres to 0.1 mm, so this browser starts with the setting a user who works in mm would have saved.
+  await context.addInitScript(() => window.localStorage.setItem("atrium.units", JSON.stringify({ length: "mm", area: "m2" })));
   const page = await context.newPage();
   const tag = `${width}`;
   page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));

@@ -7,8 +7,8 @@
  * (PlanCanvas); walls, doors and windows are edited and placed in 2D. Choosing
  * the Wall, Door, Window or Measure tool while only 3D is showing opens the 2D
  * plan beside it (Split), or instead of it on a phone, since they work there.
- * Reads the area unit from src/store/unitsStore.ts (step M.2a; persisted, never in the plan) so the
- * panel and the 2D labels agree. Takeoff (step M.2a, key K) is a 2D-plan tool: it steps back to
+ * Every length and area follows the one units setting (src/store/unitsStore.ts, step U.1): the panel,
+ * the 2D plan and the tool labels read it themselves, so this page passes no unit down. Takeoff (step M.2a, key K) is a 2D-plan tool: it steps back to
  * Select when the 2D plan goes away and when a walk starts. Mounts the undo/redo and Escape shortcuts. Starts
  * autosave and restores the last saved plan before the views mount
  * (src/store/persistence.ts), so both cameras fit the restored plan. Walking
@@ -33,7 +33,6 @@ import { installPlanShortcuts } from "@/store/planStore";
 import { usePersistenceReady } from "@/store/persistence";
 import { installSelectionShortcuts } from "@/store/selectionStore";
 import { installToolShortcuts, is3dTool, TOOL_SHORTCUTS, useToolStore, type Tool } from "@/store/toolStore";
-import { useUnitsStore } from "@/store/unitsStore";
 import { useViewStore } from "@/store/viewStore";
 
 const SPLIT_QUERY = "(min-width: 640px)"; // Split is offered from here up (see TopBar)
@@ -46,9 +45,6 @@ const watchWide = (cb: () => void) => {
 export default function Studio() {
   const [view, setView] = useState<View>("3d");
   const [ceiling, setCeiling] = useState(false);
-  const area = useUnitsStore((s) => s.area);
-  const setArea = useUnitsStore((s) => s.setArea);
-  const unit = area === "sqft" ? "sqft" : "m2"; // the room list and the wall, opening and item panels know m² and sq ft (mm² shows as m² there)
   useEffect(() => installPlanShortcuts(), []);
   useEffect(() => installSelectionShortcuts(), []); // Escape clears the selection from anywhere
   useEffect(() => installToolShortcuts(), []); // Escape cancels a measurement first
@@ -121,11 +117,11 @@ export default function Studio() {
           )}
           {shown !== "3d" && (
             <div className="relative min-h-0 min-w-0 flex-1 md:border-l md:border-stone max-md:border-t max-md:border-stone" data-testid="pane-2d">
-              <PlanCanvas unit={unit} />
+              <PlanCanvas />
             </div>
           )}
         </main>
-        <PlanPanel unit={unit} setUnit={setArea} />
+        <PlanPanel />
       </div>
       <ImportModelDialog />
     </div>

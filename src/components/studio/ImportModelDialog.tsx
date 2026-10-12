@@ -24,6 +24,7 @@
  * The body scrolls and the buttons stay in a footer, so it works at 390 px.
  * Mounted once by src/app/studio/page.tsx.
  */
+import { lenText, planExtentText } from "@/lib/units/current";
 import { OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -108,7 +109,7 @@ function ReviewForm({ review, busy, error }: { review: Review; busy: boolean; er
     if (walls.length === 0) return null;
     const xs = walls.flatMap((w) => [w.a.x, w.b.x]);
     const ys = walls.flatMap((w) => [w.a.y, w.b.y]);
-    return `${(Math.max(...xs) - Math.min(...xs)).toFixed(1)} × ${(Math.max(...ys) - Math.min(...ys)).toFixed(1)} m`;
+    return planExtentText(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
   }, [walls]);
   const { close, confirm } = useImportStore.getState();
   const stats: [string, string][] = [
@@ -137,7 +138,7 @@ function ReviewForm({ review, busy, error }: { review: Review; busy: boolean; er
         </label>
 
         <Preview model={model} up={up} toMetres={chosen.toMetres} />
-        <p className="-mt-2 text-xs text-smoke">The figure beside it is 1.8 m tall.</p>
+        <p className="-mt-2 text-xs text-smoke">The figure beside it is {lenText(1.8)} tall.</p>
 
         <fieldset>
           <legend className="mb-1 text-smoke">Unit the file was drawn in</legend>
@@ -168,7 +169,7 @@ function ReviewForm({ review, busy, error }: { review: Review; busy: boolean; er
           )}
           {guess.ambiguous && (
             <p className="mt-1 text-gilt" role="note" data-testid="import-ambiguous">
-              Several sizes are possible. Compare with the 1.8 m figure.
+              Several sizes are possible. Compare with the {lenText(1.8)} figure.
             </p>
           )}
         </fieldset>

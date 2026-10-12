@@ -28,6 +28,7 @@
  * src/components/studio/PushPullOverlay.tsx and src/components/three/PlanModel.tsx.
  * The dev-only window.__pushPullDebug is set up in src/store/toolStore.ts.
  */
+import { currentUnits } from "@/lib/units/current";
 import { create } from "zustand";
 import {
   dragCorner,
@@ -149,7 +150,9 @@ interface PushPullState {
   cancel: () => void;
 }
 
-export const TYPE_HINT = "Type a distance like 0.3, 30 cm or 1 ft, then Enter.";
+/** What to type, in the display unit (a bare number is in it). */
+export const typeHint = () => `Type a distance like ${{ m: "0.3, 30 cm or 1 ft", mm: "300, 30 cm or 1 ft", ftin: "1, 6 in or 0.3 m" }[currentUnits().length]}, then Enter.`;
+export const TYPE_HINT = typeHint(); // the default (metres), for the tests
 export const CORNER_TYPE_HINT = "Type exact lengths in the wall panel";
 
 // The history entry the live preview made (module-level: nothing renders from it). A rollback is only done
@@ -358,7 +361,7 @@ export const usePushPullStore = create<PushPullState>((set, get) => {
       if (pull?.corner) return false;
       const m = parseSignedDistance(typed);
       if (m === null) {
-        set({ message: TYPE_HINT });
+        set({ message: typeHint() });
         return false;
       }
       if (!pull) {

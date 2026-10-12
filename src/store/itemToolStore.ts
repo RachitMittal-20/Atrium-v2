@@ -29,6 +29,7 @@
  */
 import { create } from "zustand";
 import { useAssetCache } from "@/lib/import/assetCache";
+import { lenText, signedLenText } from "@/lib/units/current";
 import { ancestorTransforms, formatSize, modelFrame, partBox, partPivotNow, partTransformAfter, type PartChange } from "@/lib/import/model";
 import { itemPoint, liftItem, moveItemFloor, parseDegrees, parsePercent, rotateItem, ROTATE_STEP_DEG, scaleItem, scaleToPercent, turnDegrees, worldToModelDelta, wrapAngle, type Result } from "@/lib/import/transform";
 import type { Item, PartTransform, Vec2, Vec3 } from "@/types/plan";
@@ -116,7 +117,7 @@ export const ROTATE_TYPE_HINT = "Type degrees like 30 or -45, then Enter.";
 export const SCALE_TYPE_HINT = "Type a percentage like 150, then Enter.";
 const PART_NOT_LOADED = "This model's file isn't loaded, so its parts can't be moved.";
 
-const signed = (m: number, unit = " m") => `${m < 0 ? "-" : "+"}${Math.abs(m).toFixed(2)}${unit}`;
+const signed = (m: number) => signedLenText(m);
 const deg = (rad: number) => turnDegrees(0, rad);
 const pct = (k: number) => `${Number((k * 100).toFixed(1))}%`;
 
@@ -209,13 +210,13 @@ export const useItemToolStore = create<ItemToolState>((set, get) => {
       const d = { x: r.value.x - start.position.x, y: 0, z: r.value.y - start.position.z };
       if (part) part$ = partAfter({ kind: "move", d: worldToModelDelta(item, d) });
       else item$ = { position: { x: r.value.x, y: start.position.y, z: r.value.y } };
-      label = { distance: `${signed(d.x)}, ${signed(d.z)}`, value: `${part ? "Part at" : "At"} x ${r.value.x.toFixed(2)} m, y ${r.value.y.toFixed(2)} m`, note: r.reason };
+      label = { distance: `${signed(d.x)}, ${signed(d.z)}`, value: `${part ? "Part at" : "At"} x ${lenText(r.value.x, 2)}, y ${lenText(r.value.y, 2)}`, note: r.reason };
     } else if (input.kind === "lift") {
       const r = liftItem(start, input.t, { snap });
       const dy = r.value - start.position.y;
       if (part) part$ = partAfter({ kind: "move", d: worldToModelDelta(item, { x: 0, y: dy, z: 0 }) });
       else item$ = { position: { ...start.position, y: r.value } };
-      label = { distance: signed(dy), value: `${part ? "Part height" : "Height"} ${r.value.toFixed(2)} m`, note: r.reason };
+      label = { distance: signed(dy), value: `${part ? "Part height" : "Height"} ${lenText(r.value, 2)}`, note: r.reason };
     } else if (drag.kind === "rotate") {
       const r: Result<number> = input.kind === "rotate" ? rotateItem(start, input.a0, input.a1, { snapDeg: snap ? ROTATE_STEP_DEG : null }) : rotateItem(start, 0, (input.kind === "typed" ? input.value : 0) * (Math.PI / 180), { snapDeg: null });
       if (part && pivot0) part$ = partAfter({ kind: "turn", angle: wrapAngle(r.value - start.rotationY), about: pivot0 }); // about the pivot where it is now

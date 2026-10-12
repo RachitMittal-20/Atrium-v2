@@ -39,7 +39,8 @@
  * limits and edits, roundTo), src/lib/plan/meshBuilders.ts (FaceRole),
  * src/lib/plan/geometry.ts, src/app/studio/import/importFile.ts (parseTypedLength).
  */
-import { parseTypedLength } from "@/app/studio/import/importFile";
+import { areaText, currentUnits, lenText } from "@/lib/units/current";
+import { parseTypedLength } from "@/lib/units/typed";
 import type { EdgeRole } from "@/lib/handles3d/edges";
 import type { Opening, Plan, Vec2, Vec3, Wall } from "@/types/plan";
 import {
@@ -121,6 +122,11 @@ export function parseSignedDistance(raw: string): number | null {
   if (inches) return sign * Number(inches[1]) * INCH;
   const feet = lower.match(/^(\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')$/);
   if (feet) return sign * Number(feet[1]) * FOOT;
+  // A bare number is in the display unit (step U.1): metres, millimetres, or decimal feet.
+  if (/^(\d+(?:\.\d+)?|\.\d+)$/.test(s)) {
+    const unit = currentUnits().length;
+    return sign * Number(s) * (unit === "mm" ? 0.001 : unit === "ftin" ? FOOT : 1);
+  }
   const m = parseTypedLength(s);
   return m === null ? null : sign * m;
 }
@@ -178,7 +184,7 @@ export function pullWallTop(plan: Plan, wallId: string, distance: number, opts: 
     const tallestNeed = Math.max(0, ...own.filter((o) => o.kind === "door").map(() => DOOR_HEIGHT_MIN));
     if (height < tallestNeed) {
       height = tallestNeed; // a door needs a wall at least this tall
-      why = `A door in this wall needs it at least ${DOOR_HEIGHT_MIN} m tall, so it's ${DOOR_HEIGHT_MIN} m.`;
+      why = `A door in this wall needs it at least ${lenText(DOOR_HEIGHT_MIN)} tall, so it's ${lenText(DOOR_HEIGHT_MIN)}.`;
     }
     if (id === wallId) {
       pickedHeight = height;
@@ -253,23 +259,23 @@ export function pullOpening(plan: Plan, openingId: string, role: EdgeRole | "mov
       const r = role === "jambA" ? resizeOpeningEdge(plan, o.id, "A", lo - distance) : resizeOpeningEdge(plan, o.id, "B", hi + distance);
       if (!r.ok) return no(r.reason);
       const fixed = role === "jambA" ? "Fixed: the side nearer the wall's end" : "Fixed: the side nearer the wall's start";
-      return done(r.value.width - o.width, r.value, `Width ${r.value.width.toFixed(2)} m`, fixed, r.reason);
+      return done(r.value.width - o.width, r.value, `Width ${lenText(r.value.width, 2)}`, fixed, r.reason);
     }
     case "head": {
       const r = resizeOpeningHead(plan, o.id, o.sillHeight + o.height + distance);
       if (!r.ok) return no(r.reason);
-      return done(r.value.height - o.height, r.value, `Height ${r.value.height.toFixed(2)} m`, o.kind === "door" ? "Fixed: the floor" : "Fixed: the sill", r.reason);
+      return done(r.value.height - o.height, r.value, `Height ${lenText(r.value.height, 2)}`, o.kind === "door" ? "Fixed: the floor" : "Fixed: the sill", r.reason);
     }
     case "sill": {
       const r = resizeOpeningSill(plan, o.id, o.sillHeight - distance);
       if (!r.ok) return no(r.reason);
-      return done(o.sillHeight - r.value.sillHeight, r.value, `Sill ${r.value.sillHeight.toFixed(2)} m`, "Fixed: the top", r.reason);
+      return done(o.sillHeight - r.value.sillHeight, r.value, `Sill ${lenText(r.value.sillHeight, 2)}`, "Fixed: the top", r.reason);
     }
     case "move": {
       const r = moveOpening(plan, o.id, o.offset + distance, { radius: opts.radius ?? 0, free: opts.free });
       if (!r.ok) return no(r.reason);
       const at = r.value.snap === "midpoint" ? "At the middle of the wall" : "Along its wall only";
-      return done(r.value.offset - o.offset, { offset: r.value.offset }, `Centre ${r.value.offset.toFixed(2)} m from the wall start`, at, r.reason);
+      return done(r.value.offset - o.offset, { offset: r.value.offset }, `Centre ${lenText(r.value.offset, 2)} from the wall start`, at, r.reason);
     }
   }
 }
@@ -379,7 +385,7 @@ export interface WallPull {
   refused: string | null;
 }
 
-const fmt = (m: number) => `${m.toFixed(2)} m`;
+const fmt = (m: number) => `${lenText(m, 2)}`;
 /** Round towards zero to 1 cm: a distance a limit cut short, kept on whole centimetres and still inside the limit. */
 const towardZero = (v: number) => roundTo(Math.trunc(roundTo(v, 1e-6) / 0.01) * 0.01, 0.01);
 
@@ -390,7 +396,7 @@ export function roomChanges(plan: Plan, walls: Wall[]): string | null {
   for (const r of deriveRooms({ ...plan, walls }, plan)) {
     const old = before.get(r.id);
     if (!old || Math.abs(r.area - old.area) < 0.005) continue;
-    out.push(`${r.name} ${r.area < old.area ? "shrinks" : "grows"} to ${r.area.toFixed(1)} m²`);
+    out.push(`${r.name} ${r.area < old.area ? "shrinks" : "grows"} to ${areaText(r.area)}`);
   }
   if (out.length > 2) return `${out.slice(0, 2).join("; ")}; ${out.length - 2} more room${out.length > 3 ? "s" : ""} change${out.length > 3 ? "" : "s"}`;
   return out.length ? out.join("; ") : null;
@@ -503,7 +509,7 @@ export function pullWallEnd(plan: Plan, wallId: string, end: EndRole, distance: 
   let note: string | null = null;
   if (length < MIN_WALL_LENGTH) {
     length = MIN_WALL_LENGTH;
-    note = `Stopped here: walls can't be shorter than ${MIN_WALL_LENGTH.toFixed(2)} m.`;
+    note = `Stopped here: walls can't be shorter than ${lenText(MIN_WALL_LENGTH, 2)}.`;
   }
   const fixed = key === "a" ? wall.b : wall.a;
   const u = { x: (wall[key].x - fixed.x) / len, y: (wall[key].y - fixed.y) / len }; // out of the pulled end

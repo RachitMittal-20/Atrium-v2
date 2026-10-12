@@ -154,16 +154,8 @@ export function runPdf(
   };
 }
 
-/** A typed length in metres: "3.8", "3.8 m", "380 cm", "12'6\"", "12 ft 6 in",
- *  "12 ft". A bare number is metres. Null when it isn't one length. */
-export function parseTypedLength(raw: string): number | null {
-  const s = raw
-    .trim()
-    .toLowerCase()
-    .replace(/\s*(?:feet|foot|ft)\.?(?![a-z])/g, "'")
-    .replace(/\s*(?:inches|inch|in)\.?(?![a-z])/g, '"');
-  return parseLength(/^\d+(?:\.\d+)?$/.test(s) ? `${s} m` : s);
-}
+// parseTypedLength lives in src/lib/units/typed.ts (it must not sit beside the Worker constructors below: see there); re-exported for the import screen and its tests.
+export { parseTypedLength } from "@/lib/units/typed";
 
 /** Width and depth in metres of the walls' extent (centre lines) at `pxPerM`. */
 export function planSize(analysis: Analysis, pxPerM: number): { width: number; depth: number } {
@@ -173,5 +165,3 @@ export function planSize(analysis: Analysis, pxPerM: number): { width: number; d
   return { width: (Math.max(...xs) - Math.min(...xs)) / pxPerM, depth: (Math.max(...ys) - Math.min(...ys)) / pxPerM };
 }
 
-/** "10.2 m × 8.2 m" */
-export const formatSize = ({ width, depth }: { width: number; depth: number }) => `${width.toFixed(1)} m × ${depth.toFixed(1)} m`;

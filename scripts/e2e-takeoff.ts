@@ -17,6 +17,11 @@
  *   - units: mm and ft-in in the table; a reference that differs is Flagged; an override shows both
  *     values; Delete and Ctrl+Z; reload keeps every takeoff and the units; the CSV downloads and parses;
  *   - Walk switches the tool to Select and disables Takeoff ("Exit Walk to use Takeoff").
+ *   - step U.1, two cases the M.2a run did not cover: the mm² area unit (an area row reads
+ *     "13,822,500 mm²", whole and grouped, and the room list follows because the unit is the ONE
+ *     setting), and the stale marker: a takeoff measured on the partition, the partition dragged
+ *     with the real mouse, "Walls have moved since this was measured" shown on the takeoff rows,
+ *     "Mark as current" clears that row's marker only.
  * At 390×844 with real touch (Chromium's own touch input): in 2D, a Length with taps, Undo point
  * and Finish; Cancel leaves history unchanged; an Area with taps and Finish; a Wall face through the
  * Left toggle; the page is exactly 390 px wide with the table scrolling inside its own box.
@@ -186,6 +191,12 @@ async function desktop() {
   await tid(page, "takeoff-unit-mm").click();
   await tid(page, "takeoff-unit-sqft").click();
   assert.match(await row(area.id).getByTestId("takeoff-measured").innerText(), /^148\.\d{3} sq ft$/, `${tag}: sq ft`); // 13.8225 m² × 10.764 = 148.78
+  // step U.1: mm², whole square millimetres, grouped by thousands; the room list is a view of the same setting
+  await tid(page, "takeoff-unit-mm2").click();
+  assert.equal(await row(area.id).getByTestId("takeoff-measured").innerText(), `${Math.round((shoelace(area.points) - 1) * 1e6).toLocaleString("en-US")} mm²`, `${tag}: mm²`);
+  assert.equal(await row(area.id).getByTestId("takeoff-measured").innerText(), "13,822,500 mm²", `${tag}: Bedroom 1 less the 1 m² cutout, in mm²`);
+  assert.ok((await page.locator('[data-testid^="room-area-"]').allInnerTexts()).every((t) => /^[\d,]+ mm²$/.test(t)), `${tag}: the room list shows mm² too (one setting)`);
+  assert.match(await tid(page, "takeoff-total-area").innerText(), /mm² measured · .* mm² effective/, `${tag}: and the totals`);
   await tid(page, "takeoff-unit-m2").click();
   // a reference that differs by 50 mm (more than max(2 mm, 0.2% = 20.3 mm)): Flagged
   const ref = row(len.id).getByTestId("takeoff-ref");
@@ -252,6 +263,44 @@ async function desktop() {
   await tid(page, "view-3d").click();
   assert.equal(await tid(page, "tool-takeoff").getAttribute("aria-disabled"), "true");
   console.log(`${tag}: delete + Ctrl+Z, CSV, reload, K, Walk and 3D only: ok`);
+
+  // ---- step U.1: the stale marker. Measure the partition, then move it with the real mouse.
+  await tid(page, "view-split").click();
+  await tid(page, "plan-svg").waitFor();
+  await page.waitForTimeout(600);
+  await tid(page, "tool-takeoff").click();
+  await tid(page, "takeoff-mode-wall").click();
+  await tid(page, "takeoff-side-centre").click();
+  const mid2 = await at(2, 4);
+  await click(mid2);
+  const measured = await newest(page);
+  assert.match(measured.name, /centre line$/, `${tag}: the partition's centre line measured`);
+  const stale = page.locator('[data-testid="takeoff-stale"]');
+  assert.equal(await stale.count(), 0, `${tag}: nothing is stale yet`);
+  await tid(page, "tool-select").click();
+  const hBefore = await history(page);
+  await page.mouse.move(mid2.x, mid2.y);
+  await page.mouse.down();
+  await page.mouse.move(mid2.x, mid2.y + 0.15 * (await scale(page)), { steps: 4 });
+  await page.mouse.move(mid2.x, mid2.y + 0.3 * (await scale(page)), { steps: 4 });
+  await page.mouse.up();
+  assert.ok((await history(page)) > hBefore, `${tag}: the wall really moved (one undo step more)`);
+  const moved = (await plan(page)).walls.find((w) => w.id === "w-HI")!;
+  near(moved.a.y, 4.3, 0.05, `${tag}: the partition is about 0.3 m south`);
+  await tid(page, "takeoff-toggle").evaluate((b) => b.getAttribute("aria-expanded") === "false" && (b as HTMLElement).click());
+  const rowOf = (id: string) => page.locator(`[data-testid="takeoff-row"][data-takeoff="${id}"]`);
+  await rowOf(measured.id).scrollIntoViewIfNeeded();
+  assert.equal(await rowOf(measured.id).getByTestId("takeoff-stale").count(), 1, `${tag}: the measured takeoff is marked`);
+  assert.equal((await rowOf(measured.id).getByTestId("takeoff-stale").innerText()).split("\n")[0], "Walls have moved since this was measured", `${tag}: with the words`);
+  const staleBefore = await stale.count();
+  await page.screenshot({ path: `${OUT}/takeoff-stale-1440.png` });
+  await rowOf(measured.id).getByTestId("takeoff-mark-current").click();
+  assert.equal(await rowOf(measured.id).getByTestId("takeoff-stale").count(), 0, `${tag}: Mark as current clears that row`);
+  assert.equal(await stale.count(), staleBefore - 1, `${tag}: and only that row (${staleBefore} → ${await stale.count()})`);
+  const now = (await plan(page)).takeoffs!.find((t) => t.id === measured.id)!;
+  assert.deepEqual(now.points, measured.points, `${tag}: the points did not move (absolute)`);
+  assert.notEqual(now.wallsHash, measured.wallsHash, `${tag}: only its walls hash was updated`);
+  console.log(`${tag}: stale marker: the partition dragged 0.3 m, ${staleBefore} rows marked, Mark as current cleared the measured one`);
   await browser.close();
 }
 

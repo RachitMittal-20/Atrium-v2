@@ -22,18 +22,19 @@
  * Connects to: src/store/{planStore,selectionStore}.ts, src/lib/plan/edit.ts.
  */
 import { useState } from "react";
-import { parseTypedLength } from "@/app/studio/import/importFile";
 import { openingSize, resizeOpening, roundTo, slideOpening } from "@/lib/plan/edit";
 import { wallLength } from "@/lib/plan/geometry";
 import { usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
 import type { SwingSide } from "@/types/plan";
-import { formatLength, type Unit } from "./PlanPanel";
+import { lengthHint } from "@/lib/units/format";
+import { same, useUnitFormat } from "./useUnitFormat";
 import { NumberField } from "./WallPanel";
 
 const SIDE_WORDS: Record<SwingSide, string> = { left: "Left", right: "Right" };
 
-export function OpeningPanel({ unit }: { unit: Unit }) {
+export function OpeningPanel() {
+  const fmt = useUnitFormat();
   const plan = usePlanStore((s) => s.plan);
   const openingId = useSelectionStore((s) => s.openingId);
   const select = useSelectionStore((s) => s.select);
@@ -48,13 +49,14 @@ export function OpeningPanel({ unit }: { unit: Unit }) {
 
   /** Metres from what was typed, rounded to 1 cm, or a note saying why it wasn't read. */
   const metres = (raw: string): number | string => {
-    const m = parseTypedLength(raw);
-    return m === null ? `"${raw.trim()}" isn't a length. Try 0.9, 0.9 m, 90 cm or 3'.` : roundTo(m);
+    const m = fmt.parseLen(raw);
+    return m === null ? `"${raw.trim()}" isn't a length. ${lengthHint(fmt.length)}` : roundTo(m);
   };
 
   const setWidth = (raw: string) => {
     const m = metres(raw);
     if (typeof m === "string") return m;
+    if (same(m, opening.width)) return null; // unchanged: no edit, no undo step
     const r = resizeOpening(usePlanStore.getState().plan, id, m);
     if ("error" in r) return r.error;
     usePlanStore.getState().updateOpening(id, { width: r.width, offset: r.offset }); // one step, even when the centre shifts
@@ -63,6 +65,7 @@ export function OpeningPanel({ unit }: { unit: Unit }) {
   const setOffset = (raw: string) => {
     const m = metres(raw);
     if (typeof m === "string") return m;
+    if (same(m, opening.offset)) return null;
     const r = slideOpening(usePlanStore.getState().plan, id, m);
     usePlanStore.getState().updateOpening(id, { offset: r.offset });
     return r.limited ?? null;
@@ -70,6 +73,7 @@ export function OpeningPanel({ unit }: { unit: Unit }) {
   const setSize = (key: "height" | "sillHeight") => (raw: string) => {
     const m = metres(raw);
     if (typeof m === "string") return m;
+    if (same(m, opening[key])) return null;
     const r = openingSize(usePlanStore.getState().plan, id, key, m);
     if ("error" in r) return r.error;
     usePlanStore.getState().updateOpening(id, { [key]: r.value });
@@ -103,7 +107,7 @@ export function OpeningPanel({ unit }: { unit: Unit }) {
         <dd className="text-right">
           {/* Selecting the wall swaps this panel for the wall's own. */}
           <button type="button" data-testid="opening-wall" onClick={() => select(wall.id)} className="min-h-9 rounded px-1 text-gilt underline hover:bg-limestone">
-            {formatLength(wallLength(wall), unit)} wall
+            {fmt.len(wallLength(wall))} wall
           </button>
         </dd>
       </dl>
@@ -115,10 +119,10 @@ export function OpeningPanel({ unit }: { unit: Unit }) {
       )}
 
       <div className="flex flex-col gap-1">
-        <NumberField label="Width" value={formatLength(opening.width, unit)} testId="opening-width" onCommit={say(setWidth)} />
-        <NumberField label="Height" value={formatLength(opening.height, unit)} testId="opening-height" onCommit={say(setSize("height"))} />
-        {!door && <NumberField label="Sill" value={formatLength(opening.sillHeight, unit)} testId="opening-sill" onCommit={say(setSize("sillHeight"))} />}
-        <NumberField label="Centre from wall start" value={formatLength(opening.offset, unit)} testId="opening-offset" onCommit={say(setOffset)} />
+        <NumberField label="Width" value={fmt.len(opening.width)} testId="opening-width" onCommit={say(setWidth)} />
+        <NumberField label="Height" value={fmt.len(opening.height)} testId="opening-height" onCommit={say(setSize("height"))} />
+        {!door && <NumberField label="Sill" value={fmt.len(opening.sillHeight)} testId="opening-sill" onCommit={say(setSize("sillHeight"))} />}
+        <NumberField label="Centre from wall start" value={fmt.len(opening.offset)} testId="opening-offset" onCommit={say(setOffset)} />
       </div>
 
       {door && (

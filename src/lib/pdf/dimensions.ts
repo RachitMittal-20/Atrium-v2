@@ -134,6 +134,9 @@ export function fixed(v: number, digits: number, signed = false): string {
 /** "3800.0 mm" (signed: "+1.2 mm"). */
 export const formatMm = (m: number, signed = false) => `${fixed(m * 1000, 1, signed)} mm`;
 
+/** "4.0000 m": metres to 0.1 mm, for the tables when metres is the display unit. */
+export const formatMetres4 = (m: number, signed = false) => `${fixed(m, 4, signed)} m`;
+
 /** Feet and inches to the nearest 1/16": 12' 6 3/16", 0", 1/16" (signed: "+1/16"). */
 export function formatFeetInches(m: number, signed = false): string {
   const total = Math.round((Math.abs(m) / 0.0254) * 16); // sixteenths of an inch

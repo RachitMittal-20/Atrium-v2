@@ -20,13 +20,14 @@
  * Connects to: src/store/{planStore,selectionStore}.ts, src/lib/plan/edit.ts.
  */
 import { useState } from "react";
-import { parseTypedLength } from "@/app/studio/import/importFile";
 import { clampField, dragEndpoint, HEIGHT_RANGE, lengthTarget, MIN_WALL_LENGTH, newProblems, THICKNESS_RANGE } from "@/lib/plan/edit";
 import { wallLength } from "@/lib/plan/geometry";
 import { validatePlan } from "@/lib/plan/validate";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { useSelectedRun, useSelectionStore } from "@/store/selectionStore";
-import { formatLength, type Unit } from "./PlanPanel";
+import { lengthHint, shouldCommit } from "@/lib/units/format";
+import { lenText } from "@/lib/units/current";
+import { same, useUnitFormat } from "./useUnitFormat";
 
 /** A text field holding one number. The field always goes back to the stored
  *  value after a commit, so an invalid entry simply reappears as it was and the
@@ -48,7 +49,7 @@ export function NumberField({ label, value, testId, onCommit }: { label: string;
         }}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => {
-          if (draft !== null && draft.trim() && draft !== value) onCommit(draft);
+          if (shouldCommit(draft, value) && draft !== null) onCommit(draft);
           setDraft(null);
         }}
         onKeyDown={(e) => {
@@ -64,7 +65,8 @@ export function NumberField({ label, value, testId, onCommit }: { label: string;
   );
 }
 
-export function WallPanel({ unit }: { unit: Unit }) {
+export function WallPanel() {
+  const fmt = useUnitFormat();
   const plan = usePlanStore((s) => s.plan);
   const rooms = useDerivedRooms();
   const selectedId = useSelectionStore((s) => s.selectedId);
@@ -84,12 +86,13 @@ export function WallPanel({ unit }: { unit: Unit }) {
   const windows = on.length - doors;
 
   /** Metres from what the user typed, or a note saying why it wasn't read. */
-  const metres = (raw: string): number | string => parseTypedLength(raw) ?? `"${raw.trim()}" isn't a length. Try 2.4, 2.4 m, 240 cm or 7'10".`;
+  const metres = (raw: string): number | string => fmt.parseLen(raw) ?? `"${raw.trim()}" isn't a length. ${lengthHint(fmt.length)}`;
 
   const setLength = (raw: string) => {
     const m = metres(raw);
     if (typeof m === "string") return m;
-    if (m < MIN_WALL_LENGTH) return `Walls can't be shorter than ${MIN_WALL_LENGTH.toFixed(2)} m.`;
+    if (same(m, wallLength(wall))) return null; // the same length typed again: no edit, no undo step
+    if (m < MIN_WALL_LENGTH) return `Walls can't be shorter than ${lenText(MIN_WALL_LENGTH, 2)}.`;
     // The same move as dragging the b handle: the b end slides along the wall's direction.
     const baseline = validatePlan(plan);
     const out = dragEndpoint(plan.walls, wall.id, "b", lengthTarget(wall, m));
@@ -102,6 +105,7 @@ export function WallPanel({ unit }: { unit: Unit }) {
     const m = metres(raw);
     if (typeof m === "string") return m;
     const { value, note: why } = clampField(m, range, label);
+    if (same(value, wall[key]) && !why) return null; // unchanged: no edit, no undo step
     usePlanStore.getState().updateWall(wall.id, { [key]: value });
     return why ?? null;
   };
@@ -126,9 +130,9 @@ export function WallPanel({ unit }: { unit: Unit }) {
       )}
 
       <div className="flex flex-col gap-1">
-        <NumberField label="Length" value={formatLength(wallLength(wall), unit)} testId="wall-length" onCommit={say(setLength)} />
-        <NumberField label="Thickness" value={formatLength(wall.thickness, unit)} testId="wall-thickness" onCommit={say(setSize("thickness", THICKNESS_RANGE, "Thickness"))} />
-        <NumberField label="Height" value={formatLength(wall.height, unit)} testId="wall-height" onCommit={say(setSize("height", HEIGHT_RANGE, "Height"))} />
+        <NumberField label="Length" value={fmt.len(wallLength(wall))} testId="wall-length" onCommit={say(setLength)} />
+        <NumberField label="Thickness" value={fmt.len(wall.thickness)} testId="wall-thickness" onCommit={say(setSize("thickness", THICKNESS_RANGE, "Thickness"))} />
+        <NumberField label="Height" value={fmt.len(wall.height)} testId="wall-height" onCommit={say(setSize("height", HEIGHT_RANGE, "Height"))} />
       </div>
 
       {note && (
@@ -139,7 +143,7 @@ export function WallPanel({ unit }: { unit: Unit }) {
 
       {run.length > 1 && (
         <p data-testid="wall-run" className="mt-2 text-xs text-smoke">
-          Part of a straight wall of {run.length} pieces, {formatLength(runLength, unit)}.
+          Part of a straight wall of {run.length} pieces, {fmt.len(runLength)}.
         </p>
       )}
 

@@ -76,9 +76,9 @@
  * Mounted by src/app/studio/page.tsx (2D view and the 2D half of Split).
  */
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { formatArea, formatLength, type Unit } from "@/components/studio/PlanPanel";
+import { lengthHint, niceScaleBarFor } from "@/lib/units/format";
+import { useUnitFormat } from "@/components/studio/useUnitFormat";
 import { floorColor } from "@/data/materials";
-import { parseTypedLength } from "@/app/studio/import/importFile";
 import {
   DRAW_THICKNESS,
   dragEndpoint,
@@ -121,7 +121,7 @@ import {
 } from "@/lib/plan2d/measure";
 import { validatePlan } from "@/lib/plan/validate";
 import { doorSwing, openingFrame } from "@/lib/plan2d/openings";
-import { fitView, niceScaleBar, screenToWorld, worldToScreen, zoomAt, type Bounds, type View } from "@/lib/plan2d/view";
+import { fitView, screenToWorld, worldToScreen, zoomAt, type Bounds, type View } from "@/lib/plan2d/view";
 import { PLACEHOLDER_BOX, useImportedAssets } from "@/lib/import/assetCache";
 import { footprint, itemLocalBox } from "@/lib/import/model";
 import { pointInPolygon } from "@/lib/plan/rooms";
@@ -207,7 +207,8 @@ function outlinesOf(walls: Wall[]) {
   return { outlines, bounds: outlines.size > 0 ? b : { x0: 0, y0: 0, x1: 10, y1: 10 } };
 }
 
-export function PlanCanvas({ unit }: { unit: Unit }) {
+export function PlanCanvas() {
+  const fmt = useUnitFormat(); // every length and area drawn here follows the one units setting
   const plan = usePlanStore((s) => s.plan);
   const rooms = useDerivedRooms();
   const { outlines } = useMemo(() => outlinesOf(plan.walls), [plan.walls]);
@@ -337,7 +338,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
     const out = dragEndpoint(restart(), d.wallId, d.end, to);
     commit(() => usePlanStore.getState().moveWallEndpoint(d.wallId, d.end, out.point));
     const wall = out.walls.find((w) => w.id === d.wallId)!;
-    setHud({ at: out.point, snap, text: formatLength(wallLength(wall), unit), message: out.limited });
+    setHud({ at: out.point, snap, text: fmt.len(wallLength(wall)), message: out.limited });
   };
 
   /** Slide a wall — and the rest of its straight run — sideways by `offset` metres
@@ -354,7 +355,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
     setHud({
       at: { x: (out.a.x + out.b.x) / 2, y: (out.a.y + out.b.y) / 2 },
       snap,
-      text: `${formatLength(Math.abs(out.offset), unit)} across`,
+      text: `${fmt.len(Math.abs(out.offset))} across`,
       message: out.limited,
     });
   };
@@ -442,10 +443,10 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
   const commitTyped = () => {
     const c = chainRef.current;
     if (!c) return;
-    const len = parseTypedLength(typed.replace(",", "."));
+    const len = fmt.parseLen(typed.replace(",", "."));
     setTyped("");
     if (len === null) {
-      setDrawMsg(`"${typed}" isn't a length. Try 3.5, 350 cm or 11' 6".`);
+      setDrawMsg(`"${typed}" isn't a length. ${lengthHint(fmt.length)}`);
       return;
     }
     const to = ghost ? typedTarget(c.last, ghost.snap.point, len) : null;
@@ -465,7 +466,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
     commit(() => usePlanStore.getState().updateOpening(d.id, { offset: out.offset }));
     const o = usePlanStore.getState().plan.openings.find((x) => x.id === d.id);
     const at = o ? openingFrame(d.wall, o).centre : d.wall.a;
-    setHud({ at, snap: null, text: `${formatLength(out.offset, unit)} from the wall's start`, message: out.limited });
+    setHud({ at, snap: null, text: `${fmt.len(out.offset)} from the wall's start`, message: out.limited });
   };
 
   const placeKind: OpeningKind = tool === "window" ? "window" : "door";
@@ -844,7 +845,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
       ? { id: "draw-ghost", a: chain.last, b: ghost.snap.point, thickness: DRAW_THICKNESS, height: 0 }
       : null;
   const ghostOutline = ghostWall ? wallOutline(ghostWall, [...plan.walls, ghostWall]) : [];
-  const drawLength = typed ? `${typed}…` : ghostWall ? formatLength(wallLength(ghostWall), unit) : "";
+  const drawLength = typed ? `${typed}…` : ghostWall ? fmt.len(wallLength(ghostWall)) : "";
   /** The 45°/90° guide: a dashed line through the chain's last point, along the snapped angle. */
   const guide = (() => {
     if (!ghostWall || ghost?.snap.kind !== "angle") return null;
@@ -900,7 +901,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
     );
   };
 
-  const barMetres = niceScaleBar(view.scale);
+  const { metres: barMetres, label: barLabel } = niceScaleBarFor(view.scale, fmt.length); // a nice length in the chosen unit
   const barPx = barMetres * view.scale;
 
   return (
@@ -1072,7 +1073,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
                         </g>
                       );
                     })()}
-                  {readout(openingFrame(placeWall, place.opening).centre, null, `${place.kind === "door" ? "Door" : "Window"} ${formatLength(place.opening.width, unit)}`)}
+                  {readout(openingFrame(placeWall, place.opening).centre, null, `${place.kind === "door" ? "Door" : "Window"} ${fmt.len(place.opening.width)}`)}
                 </>
               ) : (
                 (() => {
@@ -1118,7 +1119,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
             const ys = r.polygon.map((p) => p.y);
             const wPx = (Math.max(...xs) - Math.min(...xs)) * view.scale;
             const hPx = (Math.max(...ys) - Math.min(...ys)) * view.scale;
-            const area = formatArea(r.area, unit);
+            const area = fmt.area(r.area);
             const textW = Math.max(r.name.length * NAME_PX, area.length * AREA_PX) * GLYPH;
             if (wPx < textW || hPx < NAME_PX + AREA_PX + 8) return null;
             const p = S(r.labelPoint);
@@ -1174,7 +1175,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
           <g data-testid="plan-scalebar" className="font-sans" transform={`translate(16 ${size.height - 16})`}>
             <path d={`M0,-6V0H${barPx}V-6`} fill="none" className="stroke-iron" strokeWidth={1.5} />
             <text x={0} y={-10} className="fill-iron stroke-limestone text-xs" style={{ paintOrder: "stroke", strokeWidth: 3, strokeLinejoin: "round" }}>
-              {`${+barMetres.toFixed(3)} m`}
+              {barLabel}
             </text>
           </g>
         </svg>
@@ -1191,7 +1192,7 @@ export function PlanCanvas({ unit }: { unit: Unit }) {
       {(tool === "door" || tool === "window") && (
         <div data-testid="place-bar" className="absolute left-2 right-14 top-2 flex flex-wrap items-center gap-2">
           <p className="rounded border border-stone bg-vellum px-2 py-1 text-xs text-iron shadow">
-            Click a wall to place a {tool} ({formatLength(OPENING_DEFAULTS[tool].width, unit)} wide)
+            Click a wall to place a {tool} ({fmt.len(OPENING_DEFAULTS[tool].width)} wide)
           </p>
         </div>
       )}

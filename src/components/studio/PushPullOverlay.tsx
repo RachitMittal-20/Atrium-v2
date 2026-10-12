@@ -24,6 +24,7 @@
  * active and the 3D pane is not walking. Reads src/store/pushPullStore.ts and the
  * plan; pointer events pass through it except on the "123" button and its field.
  */
+import { distancePlaceholder, gridText, lenText, signedLenText } from "@/lib/units/current";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { SCENE_COLORS } from "@/data/materials";
 import { roleName, scopeLabel } from "@/lib/plan/pushpull";
@@ -39,14 +40,13 @@ const watchCoarse = (cb: () => void) => {
   mq.addEventListener("change", cb);
   return () => mq.removeEventListener("change", cb);
 };
-const signed = (m: number) => `${m < 0 ? "-" : "+"}${Math.abs(m).toFixed(2)} m`;
 const OFFSET = 18; // px between the pointer and the label
 
 export const STATUS_IDLE = "Click a face to push or pull it. Type a distance and press Enter.";
 export const STATUS_MOVE_IDLE = "Drag a door, a window, a wall's side, a corner or an imported model. Type a distance and press Enter.";
 const STATUS_PULL = "Move and click to finish, or type a distance and press Enter. Escape cancels.";
 const STATUS_CORNER = "Drag the corner on the floor. Type exact lengths in the wall panel. Escape cancels.";
-const SNAP_WORDS: Record<string, string> = { endpoint: "Snap: a wall end", midpoint: "Snap: a wall's middle", angle: "Snap: 45° / 90°", grid: "Snap: 5 cm grid", wall: "Snap: on a wall" };
+const SNAP_WORDS = (): Record<string, string> => ({ grid: `Snap: ${gridText()}`, endpoint: "Snap: a wall end", midpoint: "Snap: a wall's middle", angle: "Snap: 45° / 90°", wall: "Snap: on a wall" });
 
 export function PushPullOverlay() {
   const tool = useToolStore((s) => s.tool);
@@ -88,24 +88,24 @@ export function PushPullOverlay() {
   const kindOf = (id: string | null) => openings.find((o) => o.id === id)?.kind ?? "opening";
   const lines: { id: string; text: string; tone?: "note" | "soft" }[] = [];
   if (pull && result) {
-    lines.push({ id: "distance", text: signed(result.distance) });
-    lines.push({ id: "height", text: `Height ${result.height.toFixed(2)} m` });
+    lines.push({ id: "distance", text: signedLenText(result.distance) });
+    lines.push({ id: "height", text: `Height ${lenText(result.height, 2)}` });
     lines.push({ id: "scope", text: scopeLabel(result), tone: "soft" });
     if (result.note) lines.push({ id: "note", text: result.note, tone: "note" });
   } else if (pull && opening && !opening.refused) {
-    lines.push({ id: "distance", text: signed(opening.distance) });
+    lines.push({ id: "distance", text: signedLenText(opening.distance) });
     lines.push({ id: "value", text: opening.value });
     lines.push({ id: "fixed", text: opening.fixed, tone: "soft" });
     if (opening.note) lines.push({ id: "note", text: opening.note, tone: "note" });
   } else if (pull && wall && !wall.refused) {
-    lines.push({ id: "distance", text: signed(wall.distance) });
+    lines.push({ id: "distance", text: signedLenText(wall.distance) });
     lines.push({ id: "value", text: wall.value });
     if (wall.mode !== "end") lines.push({ id: "scope", text: wall.pieceIds.length > 1 ? `Wall of ${wall.pieceIds.length} pieces` : "This wall", tone: "soft" });
     if (wall.rooms) lines.push({ id: "rooms", text: wall.rooms, tone: "soft" });
     if (wall.note) lines.push({ id: "note", text: wall.note, tone: "note" });
   } else if (pull && cornerPull) {
-    lines.push({ id: "snap", text: cornerPull.snap ? (SNAP_WORDS[cornerPull.snap] ?? `Snap: ${cornerPull.snap}`) : "Snap off (Alt)" });
-    lines.push({ id: "lengths", text: `Walls here: ${cornerPull.lengths.map((l) => `${l.length.toFixed(2)} m`).join(" · ")}`, tone: "soft" });
+    lines.push({ id: "snap", text: cornerPull.snap ? (SNAP_WORDS()[cornerPull.snap] ?? `Snap: ${cornerPull.snap}`) : "Snap off (Alt)" });
+    lines.push({ id: "lengths", text: `Walls here: ${cornerPull.lengths.map((l) => lenText(l.length, 2)).join(" · ")}`, tone: "soft" });
     if (cornerPull.note) lines.push({ id: "note", text: cornerPull.note, tone: "note" });
   } else if (pull) {
     lines.push({ id: "scope", text: pull.corner ? "Move the pointer to drag the corner" : "Move the pointer to pull", tone: "soft" });
@@ -166,7 +166,7 @@ export function PushPullOverlay() {
                   data-testid="pushpull-input"
                   inputMode="decimal"
                   aria-label="Distance, then Enter"
-                  placeholder="0.3 or 30 cm"
+                  placeholder={distancePlaceholder()}
                   value={typed}
                   onChange={(e) => usePushPullStore.getState().setTyped(e.target.value.slice(0, 24))}
                   onKeyDown={(e) => {

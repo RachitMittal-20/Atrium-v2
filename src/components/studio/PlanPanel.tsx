@@ -8,31 +8,26 @@
  * replaced by WallPanel.tsx, while a door or window is selected by
  * OpeningPanel.tsx, and while an imported 3D model is selected by ItemPanel.tsx. Anything an edit broke is listed underneath as a
  * warning, never silently. A right column at 768 px and wider; below that a
- * collapsible sheet under the canvas. The unit comes from the studio page (which reads
- * src/store/unitsStore.ts), so the 2D plan's area labels follow the same toggle. The
+ * collapsible sheet under the canvas. Every length and area here follows the one units
+ * setting (src/store/unitsStore.ts, step U.1) through useUnitFormat; the area switch below
+ * the summary is a view of that setting (m², mm², sq ft). Room rows are rounded for display
+ * and the total is summed from the exact areas, which the note under the list says. The
  * Takeoff section (TakeoffPanel.tsx, step M.2a) sits at the bottom, under Rooms.
  * Mounted by src/app/studio/page.tsx.
  */
 import { useState } from "react";
+import { AREA_LABEL, AREA_UNITS } from "@/lib/units/format";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
+import { useUnitsStore } from "@/store/unitsStore";
 import { EditableText } from "./EditableText";
 import { ItemPanel } from "./ItemPanel";
 import { OpeningPanel } from "./OpeningPanel";
 import { TakeoffPanel } from "./TakeoffPanel";
+import { useUnitFormat } from "./useUnitFormat";
 import { WallPanel } from "./WallPanel";
 
-const SQFT_PER_M2 = 10.7639;
-const FEET_PER_M = 3.28084;
-export type Unit = "m2" | "sqft";
-
-/** An area in m² as text in the chosen unit; shared with the 2D plan's labels. */
-export const formatArea = (m2: number, unit: Unit) => (unit === "m2" ? `${m2.toFixed(1)} m²` : `${(m2 * SQFT_PER_M2).toFixed(1)} sq ft`);
-
-/** A length in metres as text; feet when the panel is showing imperial areas. */
-export const formatLength = (m: number, unit: Unit) => (unit === "m2" ? `${m.toFixed(2)} m` : `${(m * FEET_PER_M).toFixed(2)} ft`);
-
-export function PlanPanel({ unit, setUnit }: { unit: Unit; setUnit: (u: Unit) => void }) {
+export function PlanPanel() {
   const plan = usePlanStore((s) => s.plan);
   const renameRoom = usePlanStore((s) => s.renameRoom);
   const rooms = useDerivedRooms();
@@ -42,7 +37,11 @@ export function PlanPanel({ unit, setUnit }: { unit: Unit; setUnit: (u: Unit) =>
   const warnings = useSelectionStore((s) => s.warnings);
   const [open, setOpen] = useState(false); // the phone sheet; ignored at md and wider
 
-  const area = (m2: number) => formatArea(m2, unit);
+  const fmt = useUnitFormat();
+  const areaUnit = useUnitsStore((s) => s.area);
+  const setAreaUnit = useUnitsStore((s) => s.setArea);
+  const area = fmt.area;
+  // Summed from the exact areas and rounded once; the rows are each rounded on their own.
   const total = rooms.reduce((sum, r) => sum + r.area, 0);
   const doors = plan.openings.filter((o) => o.kind === "door").length;
   const windows = plan.openings.filter((o) => o.kind === "window").length;
@@ -65,11 +64,11 @@ export function PlanPanel({ unit, setUnit }: { unit: Unit; setUnit: (u: Unit) =>
       <div id="plan-details" data-lenis-prevent className={`min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-4 max-md:border-t max-md:border-stone md:flex ${open ? "flex" : "hidden"}`}>
         {/* A selected wall takes the Summary's place; "Back to summary" clears the selection. */}
         {selectedId ? (
-          <WallPanel unit={unit} />
+          <WallPanel />
         ) : openingId ? (
-          <OpeningPanel key={openingId} unit={unit} /> // keyed: a note about one opening never shows on the next
+          <OpeningPanel key={openingId} /> // keyed: a note about one opening never shows on the next
         ) : itemId ? (
-          <ItemPanel key={itemId} unit={unit} />
+          <ItemPanel key={itemId} />
         ) : (
           <section aria-labelledby="summary-h">
             <h2 id="summary-h" className="mb-2 text-sm font-medium">
@@ -105,16 +104,16 @@ export function PlanPanel({ unit, setUnit }: { unit: Unit; setUnit: (u: Unit) =>
         )}
 
         <div role="group" aria-label="Area units" className="flex w-fit rounded border border-stone p-0.5 text-sm">
-          {(["m2", "sqft"] as const).map((u) => (
+          {AREA_UNITS.map((u) => (
             <button
               key={u}
               type="button"
               data-testid={`units-${u}`}
-              aria-pressed={unit === u}
-              onClick={() => setUnit(u)}
-              className={`min-h-9 rounded-sm px-3 ${unit === u ? "bg-cyanotype text-vellum" : "text-smoke hover:bg-limestone"}`}
+              aria-pressed={areaUnit === u}
+              onClick={() => setAreaUnit(u)}
+              className={`min-h-9 rounded-sm px-3 ${areaUnit === u ? "bg-cyanotype text-vellum" : "text-smoke hover:bg-limestone"}`}
             >
-              {u === "m2" ? "m²" : "sq ft"}
+              {AREA_LABEL[u]}
             </button>
           ))}
         </div>
@@ -141,6 +140,11 @@ export function PlanPanel({ unit, setUnit }: { unit: Unit; setUnit: (u: Unit) =>
                 </li>
               ))}
             </ul>
+          )}
+          {rooms.length > 1 && (
+            <p className="mt-2 text-xs text-smoke" data-testid="rooms-note">
+              Rows are rounded; the total is summed from exact values.
+            </p>
           )}
         </section>
 

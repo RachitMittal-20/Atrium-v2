@@ -5,6 +5,7 @@
  * door) carries an explicit swing side. Connects to:
  * src/types/plan.ts; run on the sample by scripts/validate-sample.ts.
  */
+import { lenText, rangeText } from "@/lib/units/current";
 import type { Plan } from "@/types/plan";
 import { dist, JOINT_EPS as EPS, pointToWallDistance, wallLength } from "./geometry";
 
@@ -45,7 +46,7 @@ export function validatePlan(plan: Plan): string[] {
     const len = wallLength(w);
     if (start < -EPS || end > len + EPS) {
       problems.push(
-        `Opening ${o.id} spans ${start.toFixed(2)}–${end.toFixed(2)} m but wall ${w.id} is ${len.toFixed(2)} m long.`,
+        `Opening ${o.id} spans ${rangeText(start, end)} but wall ${w.id} is ${lenText(len, 2)} long.`,
       );
     }
     byWall.set(w.id, [...(byWall.get(w.id) ?? []), { id: o.id, start, end }]);

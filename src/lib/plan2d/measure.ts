@@ -6,6 +6,7 @@
  * Connects to: src/store/toolStore.ts (holds it), src/components/plan2d/PlanCanvas.tsx
  * (draws it), scripts/test-measure.ts.
  */
+import { lenText } from "@/lib/units/current";
 import type { Vec2, Wall } from "@/types/plan";
 
 /** First point placed, second not yet (`b` null), or both placed. */
@@ -29,12 +30,12 @@ const SNAP_MAX_TOUCH_M = 0.75;
 export const measureDistance = (a: Vec2, b: Vec2) => Math.hypot(b.x - a.x, b.y - a.y);
 
 /**
- * A distance in metres as text: centimetres up to 100 m, then decimetres. The
- * measurement is always shown in metres, whatever unit the area panel uses.
+ * A distance in metres as text in the display unit (step U.1): in metres centimetres up to
+ * 100 m, then decimetres; in mm whole millimetres; in ft-in the nearest 1/16".
  */
 export function formatMeasure(metres: number): string {
   if (!Number.isFinite(metres)) return "–";
-  return `${metres.toFixed(Math.abs(metres) < 100 ? 2 : 1)} m`;
+  return lenText(metres, Math.abs(metres) < 100 ? 2 : 1);
 }
 
 /**

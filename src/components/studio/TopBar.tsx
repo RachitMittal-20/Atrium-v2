@@ -8,14 +8,18 @@
  * src/store/importStore.ts, step I.1), an Export menu whose formats are all
  * "Coming soon" (so there is no project file yet to warn about imported models),
  * and a quiet autosave status (src/store/persistence.ts). Split is hidden below 640 px.
+ * The Units menu (step U.1) holds the one display setting, a Length and an Area radio
+ * group over src/store/unitsStore.ts: real radios, so the arrow keys move within a group.
  * Mounted by src/app/studio/page.tsx.
  */
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ACCEPT } from "@/lib/import/loadModel";
+import { AREA_LABEL, AREA_UNITS, LENGTH_LABEL, LENGTH_UNITS } from "@/lib/units/format";
 import { useImportStore } from "@/store/importStore";
 import { useCanRedo, useCanUndo, usePlanStore } from "@/store/planStore";
 import { useSaveStatus } from "@/store/persistence";
+import { useUnitsStore } from "@/store/unitsStore";
 import { EditableText } from "./EditableText";
 
 export type View = "3d" | "2d" | "split";
@@ -61,6 +65,23 @@ function Popover({ label, shortLabel, glyph, testId, children }: { label: string
   );
 }
 
+/** One radio group of the Units menu: real radios in a fieldset, named so a screen reader hears "Length, mm". */
+function UnitGroup<T extends string>({ legend, name, values, labels, value, set }: { legend: string; name: string; values: readonly T[]; labels: Record<T, string>; value: T; set: (v: T) => void }) {
+  return (
+    <fieldset className="mb-1">
+      <legend className="px-1 text-xs text-smoke">{legend}</legend>
+      <div className="flex flex-wrap gap-x-1">
+        {values.map((u) => (
+          <label key={u} className="flex min-h-10 cursor-pointer items-center gap-1.5 rounded px-2 hover:bg-limestone has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-gilt">
+            <input type="radio" name={name} data-testid={`${name}-${u}`} checked={value === u} onChange={() => set(u)} className="h-4 w-4 accent-cyanotype" />
+            {labels[u]}
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
 export function TopBar({ view, setView, showCeiling, setShowCeiling }: { view: View; setView: (v: View) => void; showCeiling: boolean; setShowCeiling: (v: boolean) => void }) {
   const name = usePlanStore((s) => s.plan.name);
   const { renamePlan, undo, redo } = usePlanStore.getState();
@@ -68,6 +89,7 @@ export function TopBar({ view, setView, showCeiling, setShowCeiling }: { view: V
   const canRedo = useCanRedo();
   const saveStatus = useSaveStatus((s) => s.status);
   const picker = useRef<HTMLInputElement>(null);
+  const units = useUnitsStore();
 
   const views: { id: View; label: string; cls?: string }[] = [
     { id: "3d", label: "3D" },
@@ -114,6 +136,11 @@ export function TopBar({ view, setView, showCeiling, setShowCeiling }: { view: V
             <input type="checkbox" data-testid="show-ceilings" checked={showCeiling} onChange={(e) => setShowCeiling(e.target.checked)} className="h-4 w-4 accent-cyanotype" />
             Show ceilings
           </label>
+        </Popover>
+
+        <Popover label="Units" shortLabel="Units" testId="units-menu" glyph={icon(<path d="M3 17L17 3l4 4L7 21zM8 12l2 2M11 9l2 2M14 6l2 2" />)}>
+          <UnitGroup legend="Length" name="topbar-length" values={LENGTH_UNITS} labels={LENGTH_LABEL} value={units.length} set={units.setLength} />
+          <UnitGroup legend="Area" name="topbar-area" values={AREA_UNITS} labels={AREA_LABEL} value={units.area} set={units.setArea} />
         </Popover>
 
         <Popover label="Import" shortLabel="Import" testId="import-menu" glyph={icon(<path d="M12 15V4M7 9l5-5 5 5M5 20h14" />)}>

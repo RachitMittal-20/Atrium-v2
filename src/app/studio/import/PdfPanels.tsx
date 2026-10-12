@@ -26,6 +26,8 @@
 import { DOOR_SIZE, WINDOW_SIZE } from "@/data/samplePlan";
 import { paperName } from "@/lib/pdf/extract";
 import type { Coverage } from "@/lib/pdf/snap";
+import { formatLength, STUDIO_DP, type LengthUnit } from "@/lib/units/format";
+import { useUnitsStore } from "@/store/unitsStore";
 import type { PdfInfo } from "@/types/pdf";
 import type { PdfPageSize } from "./importFile";
 
@@ -127,9 +129,9 @@ export function PdfPanel({ pdf }: { pdf: PdfInfo }) {
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** The coverage line, as the review screen and the tests read it. */
-export function coverageLine(c: Coverage): string {
+export function coverageLine(c: Coverage, unit: LengthUnit = "mm"): string {
   const pct = c.lengthM > 0 ? Math.round((100 * c.exactLengthM) / c.lengthM) : 0;
-  return `${c.exact} of ${c.walls} walls read exactly from the PDF (${pct}% of wall length); ${count(c.traced, "wall is", "walls are")} traced approximately (about ${Math.round(c.traceMm)} mm).`;
+  return `${c.exact} of ${c.walls} walls read exactly from the PDF (${pct}% of wall length); ${count(c.traced, "wall is", "walls are")} traced approximately (about ${formatLength(c.traceMm / 1000, unit)}).`;
 }
 
 /** The openings line (step M.1c), as the review screen and the tests read it. */
@@ -139,21 +141,23 @@ export function openingsLine(c: Coverage): string {
 }
 
 export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
-  const len = (w: Coverage["tracedWalls"][number]) => Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+  const unit = useUnitsStore((st) => st.length); // the one units setting (step U.1)
+  const len = (m: number) => formatLength(m, unit, STUDIO_DP.length);
+  const wallLen = (w: Coverage["tracedWalls"][number]) => Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
   return (
     <section aria-labelledby="coverage-heading" className="flex flex-col gap-2 rounded border border-stone bg-vellum p-4" data-testid="coverage">
       <h2 id="coverage-heading" className="font-display text-lg">
         Read from the PDF
       </h2>
       <p data-testid="coverage-line" data-exact={c.exact} data-walls={c.walls} data-traced={c.traced}>
-        {coverageLine(c)}
+        {coverageLine(c, unit)}
       </p>
       <p data-testid="coverage-openings-line" data-exact={c.openings.exact} data-total={c.openings.total} data-traced={c.openings.traced} data-unclassified={c.openings.unclassified} data-arcs={c.openings.arcsNotUsed}>
         {openingsLine(c)}
       </p>
       {c.openings.total > 0 && (
         <p className="text-sm text-smoke" data-testid="coverage-heights">
-          Heights are not in a PDF: doors are {DOOR_SIZE.height.toFixed(2)} m and windows {WINDOW_SIZE.height.toFixed(2)} m on a {WINDOW_SIZE.sillHeight.toFixed(2)} m sill (default height). Change them in the studio.
+          Heights are not in a PDF: doors are {len(DOOR_SIZE.height)} and windows {len(WINDOW_SIZE.height)} on a {len(WINDOW_SIZE.sillHeight)} sill (default height). Change them in the studio.
         </p>
       )}
       {c.unclassifiedOpenings.length > 0 && (
@@ -166,7 +170,7 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
             {c.unclassifiedOpenings.map((o) => (
               <li key={o.id} data-opening={o.id}>
                 <span className="text-iron">
-                  Opening {o.id}, {Math.hypot(o.b.x - o.a.x, o.b.y - o.a.y).toFixed(2)} m
+                  Opening {o.id}, {len(Math.hypot(o.b.x - o.a.x, o.b.y - o.a.y))}
                 </span>
                 : Opening type not drawn; assumed door
               </li>
@@ -184,7 +188,7 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
             {c.tracedOpenings.map((o) => (
               <li key={o.id} data-opening={o.id}>
                 <span className="text-iron">
-                  Opening {o.id}, {Math.hypot(o.b.x - o.a.x, o.b.y - o.a.y).toFixed(2)} m
+                  Opening {o.id}, {len(Math.hypot(o.b.x - o.a.x, o.b.y - o.a.y))}
                 </span>
                 : {o.reason}
               </li>
@@ -198,7 +202,7 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
           <ul className="mt-1 list-disc pl-5" data-testid="coverage-arcs">
             {c.unusedArcs.map((a, i) => (
               <li key={i}>
-                Radius {a.r.toFixed(2)} m, {Math.round(a.sweep)}°: {a.why}
+                Radius {len(a.r)}, {Math.round(a.sweep)}°: {a.why}
               </li>
             ))}
           </ul>
@@ -214,7 +218,7 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
             {c.tracedWalls.map((w) => (
               <li key={w.id} data-wall={w.id}>
                 <span className="text-iron">
-                  Wall {w.id}, {len(w).toFixed(2)} m
+                  Wall {w.id}, {len(wallLen(w))}
                 </span>
                 : {w.reason}
               </li>

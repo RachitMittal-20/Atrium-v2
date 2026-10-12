@@ -19,6 +19,7 @@
  *          3.8, 3.8 m, 12'6", 12 ft 6 in), and scaleFromPoints gives pxPerM,
  *          shown with the whole plan's implied size as a sanity check.
  *
+ * A bare number typed for the wall's length is in the unit chosen for the studio (src/store/unitsStore.ts).
  * Connects to: scale.ts (ScaleEstimate, scaleFromPoints), importFile.ts.
  */
 import { useId, useState } from "react";
@@ -26,7 +27,10 @@ import type { Analysis } from "@/lib/blueprint/analyse";
 import { scaleFromPoints } from "@/lib/blueprint/scale";
 import type { PlanScale } from "@/types/blueprint";
 import type { Vec2 } from "@/types/plan";
-import { formatSize, parseTypedLength, planSize } from "./importFile";
+import { planSizeText } from "@/lib/units/current";
+import { lengthHint, parseLengthInput } from "@/lib/units/format";
+import { useUnitsStore } from "@/store/unitsStore";
+import { planSize } from "./importFile";
 
 const SOURCE_TEXT: Record<PlanScale["source"], string> = {
   ocr: "from the printed sizes",
@@ -57,7 +61,10 @@ export function ScalePanel({ analysis, chosen, onChoose, picking, setPicking, po
   const { scale } = analysis;
   const [typed, setTyped] = useState("");
   const lengthId = useId();
-  const size = (pxPerM: number) => formatSize(planSize(analysis, pxPerM));
+  const size = (pxPerM: number) => {
+    const p = planSize(analysis, pxPerM);
+    return planSizeText(p.width, p.depth); // "10.2 m × 8.2 m", in the display unit
+  };
   const same = (s: PlanScale) => chosen?.source === s.source && Math.abs(chosen.pxPerM - s.pxPerM) < 1e-9;
 
   /** A "Use" button that turns into a note once its scale is chosen. */
@@ -71,11 +78,12 @@ export function ScalePanel({ analysis, chosen, onChoose, picking, setPicking, po
     );
 
   // The manual measurement, once both points and a length are in.
-  const metres = parseTypedLength(typed);
+  const unit = useUnitsStore((st) => st.length); // a bare number is in the unit chosen for the studio
+  const metres = parseLengthInput(typed, unit);
   let manual: PlanScale | null = null;
   let manualError: string | null = null;
   if (points.length === 2 && typed.trim()) {
-    if (metres === null) manualError = "Type one length, like 3.8, 3.8 m, 12'6\" or 12 ft 6 in.";
+    if (metres === null) manualError = `Type one length. ${lengthHint(unit)}`;
     else
       try {
         manual = { pxPerM: scaleFromPoints(points[0], points[1], metres), source: "manual" };
@@ -144,7 +152,7 @@ export function ScalePanel({ analysis, chosen, onChoose, picking, setPicking, po
           ).map(([label, s, fp]) => (
             <div key={label} className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-sm">
-                {label}: the plan would be {fp.width.toFixed(1)} m × {fp.depth.toFixed(1)} m
+                {label}: the plan would be {planSizeText(fp.width, fp.depth)}
               </span>
               {use(s, label)}
             </div>
@@ -173,7 +181,7 @@ export function ScalePanel({ analysis, chosen, onChoose, picking, setPicking, po
               value={typed}
               onChange={(e) => setTyped(e.target.value)}
               inputMode="text"
-              placeholder="3.8 m or 12'6&quot;"
+              placeholder={lengthHint(unit).replace(/^Try /, "").replace(/\.$/, "")}
               className="min-h-11 rounded border border-stone bg-limestone px-3 text-iron"
             />
             {manualError && <p className="text-sm text-iron">{manualError}</p>}

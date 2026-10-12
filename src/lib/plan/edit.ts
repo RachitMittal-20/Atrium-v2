@@ -14,6 +14,7 @@
  *
  * Plan space: x → east, y → south. A wall's normal is the left of a→b.
  */
+import { lenText } from "@/lib/units/current";
 import { DOOR_SIZE, LEGACY_SWING, WALL_HEIGHT, WINDOW_SIZE } from "@/data/samplePlan";
 import { doorSwing, openingFrame } from "@/lib/plan2d/openings";
 import type { Opening, OpeningKind, Plan, SwingSide, Vec2, Wall } from "@/types/plan";
@@ -169,7 +170,7 @@ export function dragEndpoint(walls: Wall[], wallId: string, end: "a" | "b", to: 
     for (const o of fixed) {
       const d = dist(point, o);
       if (d >= MIN_WALL_LENGTH) continue;
-      limited = `Stopped here: walls can't be shorter than ${MIN_WALL_LENGTH.toFixed(2)} m.`;
+      limited = `Stopped here: walls can't be shorter than ${lenText(MIN_WALL_LENGTH, 2)}.`;
       const u = d < 1e-9 ? { x: 1, y: 0 } : { x: (point.x - o.x) / d, y: (point.y - o.y) / d }; // on top of the far end: any direction will do
       point = { x: clean(o.x + u.x * MIN_WALL_LENGTH), y: clean(o.y + u.y * MIN_WALL_LENGTH) };
     }
@@ -364,7 +365,7 @@ export function dragWallBody(walls: Wall[], wallId: string, offset: number): Bod
     ...slide(walls, wall, run, lo),
     offset: lo,
     run,
-    limited: `Stopped here: going further would make a joining wall shorter than ${MIN_WALL_LENGTH.toFixed(2)} m.`,
+    limited: `Stopped here: going further would make a joining wall shorter than ${lenText(MIN_WALL_LENGTH, 2)}.`,
   };
 }
 
@@ -378,8 +379,8 @@ export function lengthTarget(wall: Wall, length: number): Vec2 {
 
 /** Clamp a typed field, with plain words when the value didn't fit. */
 export function clampField(value: number, [min, max]: readonly [number, number], label: string): { value: number; note?: string } {
-  if (value < min) return { value: min, note: `${label} can't be under ${min} m, so it's ${min} m.` };
-  if (value > max) return { value: max, note: `${label} can't be over ${max} m, so it's ${max} m.` };
+  if (value < min) return { value: min, note: `${label} can't be under ${lenText(min)}, so it's ${lenText(min)}.` };
+  if (value > max) return { value: max, note: `${label} can't be over ${lenText(max)}, so it's ${lenText(max)}.` };
   return { value };
 }
 
@@ -490,7 +491,7 @@ export function splitWallAt(plan: Pick<Plan, "walls" | "openings">, wallId: stri
   const u = wallDirection(wall);
   const t = dotOf(sub(at, wall.a), u); // distance from a along the wall
   if (t < MIN_WALL_LENGTH - 1e-9 || len - t < MIN_WALL_LENGTH - 1e-9) {
-    return { error: `Too close to the end of a wall: each part must be at least ${MIN_WALL_LENGTH.toFixed(2)} m.` };
+    return { error: `Too close to the end of a wall: each part must be at least ${lenText(MIN_WALL_LENGTH, 2)}.` };
   }
   const moved: WallSplit["moved"] = [];
   for (const o of plan.openings) {
@@ -519,7 +520,7 @@ export function splitWallAt(plan: Pick<Plan, "walls" | "openings">, wallId: stri
  */
 export function drawProblem(plan: Pick<Plan, "walls" | "openings">, a: Vec2, b: Vec2): string | null {
   const len = dist(a, b);
-  if (len < MIN_WALL_LENGTH - 1e-9) return `Walls can't be shorter than ${MIN_WALL_LENGTH.toFixed(2)} m.`; // 1e-9: 1.2 - 1 is 0.1999…
+  if (len < MIN_WALL_LENGTH - 1e-9) return `Walls can't be shorter than ${lenText(MIN_WALL_LENGTH, 2)}.`; // 1e-9: 1.2 - 1 is 0.1999…
   for (const p of [a, b]) {
     const host = hostAt(plan.walls, p);
     if (!host) continue;
@@ -648,20 +649,20 @@ const edges = (o: Pick<Opening, "offset" | "width">) => [o.offset - o.width / 2,
 export function openingProblem(plan: Openings, o: NewOpening): string | null {
   const wall = plan.walls.find((w) => w.id === o.wallId);
   if (!wall) return "That wall is no longer in the plan.";
-  if (o.width < OPENING_WIDTH_RANGE[0] - 1e-9) return `Openings can't be narrower than ${OPENING_WIDTH_RANGE[0]} m.`;
+  if (o.width < OPENING_WIDTH_RANGE[0] - 1e-9) return `Openings can't be narrower than ${lenText(OPENING_WIDTH_RANGE[0])}.`;
   const span = usableSpan(plan.walls, wall.id)!;
   const [start, end] = edges(o);
   if (start < span.start - 1e-9 || end > span.end + 1e-9) {
     const room = Math.max(0, span.end - span.start);
     return room < o.width - 1e-9
-      ? `This wall only has room for an opening ${room.toFixed(2)} m wide.`
+      ? `This wall only has room for an opening ${lenText(room, 2)} wide.`
       : `A ${o.kind} must sit fully inside its wall, clear of the walls at its ends.`;
   }
   for (const x of onWall(plan, wall.id, o.id)) {
     const [xs, xe] = edges(x);
     if (start < xe - 1e-9 && xs < end - 1e-9) return `It would overlap the ${x.kind} already on this wall.`;
   }
-  if (o.sillHeight < -1e-9 || o.sillHeight + o.height > wall.height + 1e-9) return `A ${o.kind} can't reach above the top of its wall (${wall.height} m).`;
+  if (o.sillHeight < -1e-9 || o.sillHeight + o.height > wall.height + 1e-9) return `A ${o.kind} can't reach above the top of its wall (${lenText(wall.height)}).`;
   return null;
 }
 
@@ -706,7 +707,7 @@ export function placeOpening(plan: Openings, kind: OpeningKind, wallId: string, 
   if (!span) return { error: "That wall is no longer in the plan." };
   const d = OPENING_DEFAULTS[kind];
   const room = span.end - span.start;
-  if (room < d.width - 1e-9) return { error: `This wall is too short for a ${d.width.toFixed(2)} m ${kind}: it has room for ${Math.max(0, room).toFixed(2)} m.` };
+  if (room < d.width - 1e-9) return { error: `This wall is too short for a ${lenText(d.width, 2)} ${kind}: it has room for ${lenText(Math.max(0, room), 2)}.` };
   if (centre < span.start || centre > span.end) return { error: `Too close to the end of the wall: a ${kind} has to sit clear of the corner.` };
   const offset = clean(Math.min(span.end - d.width / 2, Math.max(span.start + d.width / 2, centre)));
   const opening: Omit<Opening, "id"> = { wallId, kind, offset, width: d.width, height: d.height, sillHeight: d.sillHeight, ...(kind === "door" ? { swing: LEGACY_SWING } : {}) };
@@ -766,9 +767,9 @@ export function resizeOpening(plan: Openings, id: string, width: number): { widt
   if (room < min - 1e-9) return { error: "There's no room for it to be any wider here." };
   let w = width;
   let note: string | undefined;
-  if (w < min) [w, note] = [min, `Openings can't be narrower than ${min} m, so it's ${min} m.`];
-  if (w > max) [w, note] = [max, `Openings can't be wider than ${max} m, so it's ${max} m.`];
-  if (w > room + 1e-9) [w, note] = [room, `Only ${room.toFixed(2)} m fits here, between ${r.loBy} and ${r.hiBy}.`];
+  if (w < min) [w, note] = [min, `Openings can't be narrower than ${lenText(min)}, so it's ${lenText(min)}.`];
+  if (w > max) [w, note] = [max, `Openings can't be wider than ${lenText(max)}, so it's ${lenText(max)}.`];
+  if (w > room + 1e-9) [w, note] = [room, `Only ${lenText(room, 2)} fits here, between ${r.loBy} and ${r.hiBy}.`];
   const offset = Math.min(r.hiEdge - w / 2, Math.max(r.loEdge + w / 2, o.offset));
   return { width: clean(w), offset: clean(offset), ...(note ? { note } : {}) };
 }
@@ -786,14 +787,14 @@ export function openingSize(plan: Openings, id: string, key: "height" | "sillHei
   if (key === "sillHeight") {
     if (o.kind === "door") return { error: "Doors start at the floor, so they have no sill." };
     const max = wall.height - o.height;
-    if (value < 0) return { value: 0, note: "The sill can't be below the floor, so it's 0 m." };
-    if (value > max) return { value: clean(max), note: `With a ${o.height} m window the sill can't be over ${max.toFixed(2)} m, or it would pass the top of the wall.` };
+    if (value < 0) return { value: 0, note: `The sill can't be below the floor, so it's ${lenText(0)}.` };
+    if (value > max) return { value: clean(max), note: `With a ${lenText(o.height)} window the sill can't be over ${lenText(max, 2)}, or it would pass the top of the wall.` };
     return { value };
   }
   const min = o.kind === "door" ? DOOR_HEIGHT_MIN : WINDOW_HEIGHT_MIN;
   const max = wall.height - o.sillHeight;
-  if (value < min) return { value: min, note: `A ${o.kind} can't be under ${min} m tall, so it's ${min} m.` };
-  if (value > max) return { value: clean(max), note: `It can't reach past the top of its ${wall.height} m wall, so it's ${max.toFixed(2)} m.` };
+  if (value < min) return { value: min, note: `A ${o.kind} can't be under ${lenText(min)} tall, so it's ${lenText(min)}.` };
+  if (value > max) return { value: clean(max), note: `It can't reach past the top of its ${lenText(wall.height)} wall, so it's ${lenText(max, 2)}.` };
   return { value };
 }
 
@@ -896,8 +897,8 @@ export function resizeOpeningEdge(plan: Openings, id: string, edge: "A" | "B", e
   if (room < min - 1e-9) return { ok: true, value: { offset: o.offset, width: o.width }, reason: "There's no room for it to be any wider here." };
   let width = roundTo(edge === "B" ? edgeOffset - lo : hi - edgeOffset);
   let reason: string | null = null;
-  if (width < min) [width, reason] = [min, `Openings can't be narrower than ${min} m, so it's ${min} m.`];
-  if (width > max) [width, reason] = [max, `Openings can't be wider than ${max} m, so it's ${max} m.`];
+  if (width < min) [width, reason] = [min, `Openings can't be narrower than ${lenText(min)}, so it's ${lenText(min)}.`];
+  if (width > max) [width, reason] = [max, `Openings can't be wider than ${lenText(max)}, so it's ${lenText(max)}.`];
   if (width > room + 1e-9) [width, reason] = [clean(room), by === "the end of the wall" ? "Stopped at the end of the wall" : NEXT_TO_OPENING];
   return { ok: true, value: { offset: clean(edge === "B" ? lo + width / 2 : hi - width / 2), width }, reason };
 }
@@ -916,8 +917,8 @@ export function resizeOpeningHead(plan: Openings, id: string, top: number): Face
   const max = wall.height - o.sillHeight;
   let height = roundTo(top - o.sillHeight);
   let reason: string | null = null;
-  if (height < min) [height, reason] = [min, `A ${o.kind} can't be under ${min} m tall, so it's ${min} m.`];
-  if (height > max + 1e-9) [height, reason] = [clean(max), `Wall is ${wall.height.toFixed(2)} m high`];
+  if (height < min) [height, reason] = [min, `A ${o.kind} can't be under ${lenText(min)} tall, so it's ${lenText(min)}.`];
+  if (height > max + 1e-9) [height, reason] = [clean(max), `Wall is ${lenText(wall.height, 2)} high`];
   return { ok: true, value: { height }, reason };
 }
 
@@ -935,8 +936,8 @@ export function resizeOpeningSill(plan: Openings, id: string, sill: number): Fac
   const highest = top - WINDOW_HEIGHT_MIN;
   let s = roundTo(sill);
   let reason: string | null = null;
-  if (s < 0) [s, reason] = [0, "The sill can't be below the floor, so it's 0 m."];
-  if (s > highest + 1e-9) [s, reason] = [clean(highest), `A window can't be under ${WINDOW_HEIGHT_MIN} m tall, so the sill stops at ${highest.toFixed(2)} m.`];
+  if (s < 0) [s, reason] = [0, `The sill can't be below the floor, so it's ${lenText(0)}.`];
+  if (s > highest + 1e-9) [s, reason] = [clean(highest), `A window can't be under ${lenText(WINDOW_HEIGHT_MIN)} tall, so the sill stops at ${lenText(highest, 2)}.`];
   return { ok: true, value: { sillHeight: s, height: clean(top - s) }, reason };
 }
 

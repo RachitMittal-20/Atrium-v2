@@ -34,6 +34,8 @@
  * the browser (src/store/persistence.ts). Editing walls
  * here is a later piece; this screen only reviews.
  */
+import { lenText } from "@/lib/units/current";
+import { useUnitsStore } from "@/store/unitsStore";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
@@ -414,14 +416,15 @@ function Tables(p: { pdf: PdfInfo; chosen: PlanScale | null; review: PdfBuild | 
 /** What the build made, in plain words, and the way into the studio. */
 function Summary({ built, onOpen }: { built: Built; onOpen: () => void }) {
   const { plan, report } = built;
+  useUnitsStore((st) => st.length); // re-render when the display unit changes (the notes below quote lengths)
   const count = (k: string) => plan.openings.filter((o) => o.kind === k).length;
   const n = (v: number, one: string, many: string) => `${v} ${v === 1 ? one : many}`;
   // Free ends are listed as their own line, so their validator messages are left out here.
   const problems = report.problems.filter((p) => !p.includes("isn't shared with any other wall"));
   const notes = [
     report.freeEnds.length > 0 && `${n(report.freeEnds.length, "wall end doesn't", "wall ends don't")} meet another wall.`,
-    report.wideOpenings.length > 0 && `${n(report.wideOpenings.length, "wide opening", "wide openings")} (over 2.4 m) kept as ${report.wideOpenings.length === 1 ? "a door" : "doors"}.`,
-    report.droppedPairs.length > 0 && `${n(report.droppedPairs.length, "gap", "gaps")} over 4 m left open rather than made into a door.`,
+    report.wideOpenings.length > 0 && `${n(report.wideOpenings.length, "wide opening", "wide openings")} (over ${lenText(2.4)}) kept as ${report.wideOpenings.length === 1 ? "a door" : "doors"}.`,
+    report.droppedPairs.length > 0 && `${n(report.droppedPairs.length, "gap", "gaps")} over ${lenText(4)} left open rather than made into a door.`,
     report.unbridged.length > 0 && `${n(report.unbridged.length, "opening", "openings")} couldn't be placed on a wall.`,
     report.removedWalls.length > 0 && `${n(report.removedWalls.length, "very short wall", "very short walls")} removed.`,
   ].filter(Boolean) as string[];

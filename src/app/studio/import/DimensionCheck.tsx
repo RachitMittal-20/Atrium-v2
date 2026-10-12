@@ -22,17 +22,21 @@
  * Overrides live in the page's state only and change nothing else.
  *
  * The table scrolls sideways inside its own container, so the page never does
- * at 390 px. "Download CSV" saves both tables in millimetres (`csv`). Test ids:
+ * at 390 px. "Download CSV" saves both tables in millimetres (`csv`). The unit switch is a
+ * view of the ONE units setting (src/store/unitsStore.ts, step U.1: mm, m or ft-in; the
+ * area unit has no use here), so changing it here changes the whole studio. mm shows
+ * 0.1 mm, m four decimals and ft-in 1/16", because these tables compare to a fraction of
+ * a millimetre. A bare number typed as an override is in the unit chosen. Test ids:
  * the first table keeps M.1a's (dimension-check, dim-row, dims-csv, …); the
  * second uses "model-" ones (model-check, model-row, model-csv, …).
  */
 import { Fragment, useId, useState } from "react";
-import { fixed, formatFeetInches, formatMm, statusText, type Overrides } from "@/lib/pdf/dimensions";
+import { fixed, formatFeetInches, formatMetres4, formatMm, OK_MM, statusText, type Overrides } from "@/lib/pdf/dimensions";
+import { LENGTH_LABEL, LENGTH_UNITS, lengthHint, parseLengthInput } from "@/lib/units/format";
+import { useUnitsStore } from "@/store/unitsStore";
 import type { DimensionRow } from "@/types/pdf";
-import { parseTypedLength } from "./importFile";
 import { primaryBtn, secondaryBtn } from "./ScalePanel";
 
-type Units = "mm" | "ftin";
 type Row = DimensionRow & { index?: number };
 
 interface Props {
@@ -58,7 +62,8 @@ export function DimensionCheck({ kind, rows, measuredAt, overrides, setOverrides
     table: (s: string) => (model ? `model-${s}` : `dims-${s}`),
     input: (s: string) => (model ? `model-${s}` : s),
   };
-  const [units, setUnits] = useState<Units>("mm");
+  const units = useUnitsStore((st) => st.length);
+  const setUnits = useUnitsStore((st) => st.setLength);
   const [editing, setEditing] = useState<number | null>(null);
   const [value, setValue] = useState("");
   const [note, setNote] = useState("");
@@ -66,7 +71,7 @@ export function DimensionCheck({ kind, rows, measuredAt, overrides, setOverrides
   const valueId = useId();
   const noteId = useId();
   const headingId = useId();
-  const fmt = (m: number, signed = false) => (units === "mm" ? formatMm(m, signed) : formatFeetInches(m, signed));
+  const fmt = (m: number, signed = false) => (units === "mm" ? formatMm(m, signed) : units === "m" ? formatMetres4(m, signed) : formatFeetInches(m, signed));
   const flagged = rows.filter((r) => r.status === "flagged").length;
   const overridden = rows.filter((r) => r.status === "overridden").length;
   const approximate = rows.filter((r) => r.approximate).length;
@@ -79,8 +84,8 @@ export function DimensionCheck({ kind, rows, measuredAt, overrides, setOverrides
     setError(null);
   };
   const save = (k: number) => {
-    const m = parseTypedLength(value);
-    if (m === null || m <= 0) return setError("Type one length, like 4000 mm, 4 m or 13' 1\".");
+    const m = parseLengthInput(value, units);
+    if (m === null || m <= 0) return setError(`Type one length. ${lengthHint(units)}`);
     if (!note.trim()) return setError("Add a note saying why, so the change is on record.");
     setOverrides({ ...overrides, [k]: { valueM: m, note: note.trim() } });
     setEditing(null);
@@ -107,14 +112,9 @@ export function DimensionCheck({ kind, rows, measuredAt, overrides, setOverrides
           {model ? "Model versus printed" : "Dimension check"}
         </h2>
         <div role="group" aria-label="Units" className="flex rounded-full border border-stone">
-          {(
-            [
-              ["mm", "mm"],
-              ["ftin", "ft-in"],
-            ] as const
-          ).map(([u, label]) => (
+          {LENGTH_UNITS.map((u) => (
             <button key={u} type="button" aria-pressed={units === u} data-testid={tid.input(`units-${u}`)} onClick={() => setUnits(u)} className={`${small} ${units === u ? "bg-cyanotype text-vellum" : "text-iron hover:bg-limestone"}`}>
-              {label}
+              {LENGTH_LABEL[u]}
             </button>
           ))}
         </div>
@@ -125,7 +125,7 @@ export function DimensionCheck({ kind, rows, measuredAt, overrides, setOverrides
         {approximate > 0 && `; ${approximate} on traced walls, so approximate`}.
       </p>
       <p className="-mt-2 text-xs text-smoke">
-        OK means within 2 mm or 0.2%, whichever is larger.
+        OK means within {fmt(OK_MM / 1000)} or 0.2%, whichever is larger.
         {model && " The model length runs between the places the dimension's ends land: wall centre lines, faces or door and window jambs."}
       </p>
 
@@ -202,7 +202,7 @@ export function DimensionCheck({ kind, rows, measuredAt, overrides, setOverrides
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
                           <label htmlFor={valueId} className="flex flex-col gap-1 text-sm text-smoke">
                             Correct value
-                            <input id={valueId} data-testid={tid.input("override-value")} value={value} onChange={(e) => setValue(e.target.value)} placeholder="4000 mm" className="min-h-11 rounded border border-stone bg-limestone px-3 text-iron" />
+                            <input id={valueId} data-testid={tid.input("override-value")} value={value} onChange={(e) => setValue(e.target.value)} placeholder={fmt(4)} className="min-h-11 rounded border border-stone bg-limestone px-3 text-iron" />
                           </label>
                           <label htmlFor={noteId} className="flex flex-1 flex-col gap-1 text-sm text-smoke">
                             Note

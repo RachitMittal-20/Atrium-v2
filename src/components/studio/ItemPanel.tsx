@@ -31,7 +31,6 @@
  * src/lib/import/{assetCache,model,transform}.ts.
  */
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { parseTypedLength } from "@/app/studio/import/importFile";
 import { useAsset } from "@/lib/import/assetCache";
 import { FORMAT_LABEL } from "@/lib/import/loadModel";
 import { formatSize, frameBox, itemLocalBox, modelFrame, nodePaths, partBox, pivotOf, type NodeEntry } from "@/lib/import/model";
@@ -44,7 +43,8 @@ import { useSelectionStore } from "@/store/selectionStore";
 import { useViewStore } from "@/store/viewStore";
 import type { Item, NodeOverride, PartTransform } from "@/types/plan";
 import { EditableText } from "./EditableText";
-import { formatLength, type Unit } from "./PlanPanel";
+import { lengthHint } from "@/lib/units/format";
+import { same, useUnitFormat } from "./useUnitFormat";
 import { NumberField } from "./WallPanel";
 
 export const SCALE_RANGE: [number, number] = [1, 10000]; // percent
@@ -187,7 +187,8 @@ function ObjectList({ item, nodes }: { item: Item; nodes: NodeEntry[] }) {
 }
 
 /** The active part's own rows: its pivot's place relative to the model's base point, its turn and scale (model frame). */
-function PartFields({ item, model, path, label, unit, setNote, length }: { item: Item; model: LoadedModel; path: string; label: string; unit: Unit; setNote: (n: string | null) => void; length: (raw: string, apply: (m: number) => void) => void }) {
+function PartFields({ item, model, path, label, setNote, length }: { item: Item; model: LoadedModel; path: string; label: string; setNote: (n: string | null) => void; length: (raw: string, apply: (m: number) => void, current: number) => void }) {
+  const fmt = useUnitFormat();
   const info = item.import!;
   const frame = { unitToMetres: info.unitToMetres, upAxis: info.upAxis };
   const box = partBox(model.root, path, frame);
@@ -208,9 +209,9 @@ function PartFields({ item, model, path, label, unit, setNote, length }: { item:
         Part: <span data-testid="part-name">{label}</span>
       </h3>
       <div className="flex flex-col gap-1">
-        <NumberField label="Part x" value={formatLength(at.x + tr.t[0], unit)} testId="part-x" onCommit={(raw) => length(raw, axis(0, at.x))} />
-        <NumberField label="Part y" value={formatLength(at.z + tr.t[2], unit)} testId="part-y" onCommit={(raw) => length(raw, axis(2, at.z))} />
-        <NumberField label="Part height" value={formatLength(at.y + tr.t[1], unit)} testId="part-height" onCommit={(raw) => length(raw, axis(1, at.y))} />
+        <NumberField label="Part x" value={fmt.len(at.x + tr.t[0])} testId="part-x" onCommit={(raw) => length(raw, axis(0, at.x), at.x + tr.t[0])} />
+        <NumberField label="Part y" value={fmt.len(at.z + tr.t[2])} testId="part-y" onCommit={(raw) => length(raw, axis(2, at.z), at.z + tr.t[2])} />
+        <NumberField label="Part height" value={fmt.len(at.y + tr.t[1])} testId="part-height" onCommit={(raw) => length(raw, axis(1, at.y), at.y + tr.t[1])} />
         <NumberField
           label="Part rotation"
           value={`${degrees(tr.rotY)}°`}
@@ -243,7 +244,8 @@ function PartFields({ item, model, path, label, unit, setNote, length }: { item:
   );
 }
 
-export function ItemPanel({ unit }: { unit: Unit }) {
+export function ItemPanel() {
+  const fmt = useUnitFormat();
   const itemId = useSelectionStore((s) => s.itemId);
   const item = usePlanStore((s) => s.plan.items.find((i) => i.id === itemId));
   const select = useSelectionStore((s) => s.select);
@@ -259,11 +261,12 @@ export function ItemPanel({ unit }: { unit: Unit }) {
   const update = (changes: Partial<Omit<Item, "id">>) => usePlanStore.getState().updateItem(id, changes);
 
   /** Metres from what was typed, rounded to 1 cm, or why not. */
-  const length = (raw: string, apply: (m: number) => void) => {
+  const length = (raw: string, apply: (m: number) => void, current: number) => {
     const negative = /^\s*[-−]/.test(raw); // positions can be negative; the length parser reads sizes only
-    const m = parseTypedLength(raw.replace(/^\s*[-−+]/, ""));
-    if (m === null) return setNote(`"${raw.trim()}" isn't a length. Try 1.2, 120 cm or 4'.`);
-    apply(roundTo(negative ? -m : m));
+    const m = fmt.parseLen(raw.replace(/^\s*[-−+]/, ""));
+    if (m === null) return setNote(`"${raw.trim()}" isn't a length. ${lengthHint(fmt.length)}`);
+    const value = roundTo(negative ? -m : m);
+    if (!same(value, current)) apply(value); // the same value typed again: no edit, no undo step
     setNote(null);
   };
   const number = (raw: string) => {
@@ -327,9 +330,9 @@ export function ItemPanel({ unit }: { unit: Unit }) {
       {editParts && partPath === null && <p className="mb-2 text-xs text-smoke">Click a part in 3D, or a name in the list. Alt-click picks the smallest piece.</p>}
 
       <div className="flex flex-col gap-1">
-        <NumberField label="Position x" value={formatLength(item.position.x, unit)} testId="item-x" onCommit={(raw) => length(raw, (x) => update({ position: { ...item.position, x } }))} />
-        <NumberField label="Position y" value={formatLength(item.position.z, unit)} testId="item-y" onCommit={(raw) => length(raw, (z) => update({ position: { ...item.position, z } }))} />
-        <NumberField label="Height" value={formatLength(item.position.y, unit)} testId="item-height" onCommit={(raw) => length(raw, (y) => update({ position: { ...item.position, y } }))} />
+        <NumberField label="Position x" value={fmt.len(item.position.x)} testId="item-x" onCommit={(raw) => length(raw, (x) => update({ position: { ...item.position, x } }), item.position.x)} />
+        <NumberField label="Position y" value={fmt.len(item.position.z)} testId="item-y" onCommit={(raw) => length(raw, (z) => update({ position: { ...item.position, z } }), item.position.z)} />
+        <NumberField label="Height" value={fmt.len(item.position.y)} testId="item-height" onCommit={(raw) => length(raw, (y) => update({ position: { ...item.position, y } }), item.position.y)} />
         <NumberField
           label="Rotation"
           value={`${degrees(item.rotationY)}°`}
@@ -363,7 +366,7 @@ export function ItemPanel({ unit }: { unit: Unit }) {
       )}
 
       {model && partPath !== null && (
-        <PartFields item={item} model={model} path={partPath} label={nodes.find((n) => n.path === partPath)?.label ?? partPath} unit={unit} setNote={setNote} length={length} />
+        <PartFields item={item} model={model} path={partPath} label={nodes.find((n) => n.path === partPath)?.label ?? partPath} setNote={setNote} length={length} />
       )}
 
       {model && <ObjectList key={model.root.uuid} item={item} nodes={nodes} />}

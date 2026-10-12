@@ -28,6 +28,7 @@
  * (produces the scenes), src/lib/import/assetCache.ts, src/components/three/ImportedItems.tsx,
  * src/components/plan2d/PlanCanvas.tsx, src/components/studio/{ItemPanel,ImportModelDialog}.tsx.
  */
+import { sizeText } from "@/lib/units/current";
 import * as THREE from "three";
 import type { Item, NodeOverride, PartTransform, Vec2, Vec3 } from "@/types/plan";
 import { isIdentityTransform } from "./transform";
@@ -420,11 +421,8 @@ export function guessUnit(size: Vec3, detected: number | null, lastUnit: UnitId 
   return { chosen, candidates, ambiguous: fits.length >= 2 && Math.max(...sizes) > AMBIGUOUS_RATIO * Math.min(...sizes) };
 }
 
-/** "3.2 × 2.1 × 0.8 m": width × depth × height, in the plan's Y-up frame. */
-export function formatSize(width: number, depth: number, height: number): string {
-  const n = (v: number) => String(Number(v.toPrecision(3)));
-  return `${n(width)} × ${n(depth)} × ${n(height)} m`;
-}
+/** "3.2 × 2.1 × 0.8 m": width × depth × height, in the plan's Y-up frame, in the display unit (src/lib/units/current.ts). */
+export const formatSize = (width: number, depth: number, height: number): string => sizeText(width, depth, height);
 
 // ---------------------------------------------------------------- placement
 
