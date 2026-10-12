@@ -40,8 +40,12 @@ export interface Wall {
 export type OpeningKind = "door" | "window";
 
 /** Which side of its wall a door's leaf opens to, looking from the wall's a end
- *  to its b end. The hinge is always the gap end nearer a. */
+ *  to its b end. Which JAMB it pivots on is `Opening.hinge`, a separate thing. */
 export type SwingSide = "left" | "right";
+
+/** Which jamb a door's leaf pivots on: the gap end nearer the wall's a end, or the one
+ *  nearer b (step M.1d). Absent means "a", which is what every door did before. */
+export type HingeEnd = "a" | "b";
 
 /** A hole cut in a wall. Position is stored relative to the wall, so moving or
  *  resizing the wall carries its openings along. */
@@ -59,6 +63,11 @@ export interface Opening {
    *  opens to. Plans from before step 4.5 get "left" on load (edit.withSwingSides),
    *  which is what the 2D plan always drew. Windows have none. */
   swing?: SwingSide;
+  /** Doors only (step M.1d): the jamb the leaf pivots on. Absent means "a", the only
+   *  thing the plan could hold before, so old plans draw exactly as they did. With
+   *  `swing` it makes four storable door states. Rooms, collision and validatePlan
+   *  ignore it; a flip of the swing never changes it. */
+  hinge?: HingeEnd;
   /** Where an imported opening came from (step M.1c), as for walls: "vector" = read
    *  exactly from a PDF's own lines, "traced" = traced from a picture, about a pixel
    *  out. Absent for openings placed by hand, the sample's and image imports. Editing keeps it. */

@@ -12,6 +12,9 @@
  *   - a field never writes what did not change: leaving it untouched, retyping its own text, and
  *     typing the same value another way (2.7 for 2.70 m) add no undo step, in the same helpers the
  *     panels use; a rounded display never drifts the stored value;
+ *   - step M.1d, FAILING FIRST: a typed value is kept as typed to 0.1 mm — 13'6" in a wall length
+ *     stores 4.1148 m (it was 4.11) and 2'7" in an opening's width 0.7874 m, while 3800 mm is exactly
+ *     3.8 m and drags and snaps keep their 1 cm and 5 cm steps;
  *   - the scale bar's steps for each unit, every scale from 5 to 500 px/m between 60 and 140 px;
  *   - the room list: rows rounded on their own, the total summed from the exact areas and
  *     rounded once (the sample's rows add to 74.6, its total is 74.7).
@@ -21,6 +24,8 @@ import assert from "node:assert/strict";
 import { currentUnits, gridText, lenText, planExtentText, rangeText, setCurrentUnits, signedLenText } from "../src/lib/units/current";
 import { areaValue, formatArea, formatAreaTotal, formatLength, lengthValue, niceScaleBarFor, parseAreaInput, parseLengthInput, sameLength, shouldCommit, STUDIO_DP, type AreaUnit, type LengthUnit } from "../src/lib/units/format";
 import { parseSignedDistance } from "../src/lib/plan/pushpull";
+import { dragEndpoint, lengthTarget, resizeOpening, roundTo, ROUND_STEP, TYPED_STEP } from "../src/lib/plan/edit";
+import { wallLength } from "../src/lib/plan/geometry";
 import { samplePlan } from "../src/data/samplePlan";
 import { deriveRooms } from "../src/lib/plan/rooms";
 import { serializePlan } from "../src/lib/persist/planStorage";
@@ -184,6 +189,39 @@ async function main() {
     assert.ok(sameLength(3, 3 + 1e-10) && !sameLength(3, 3 + 2e-9), "same within 1e-9");
     st().loadPlan(samplePlan);
     console.log("fields: untouched, emptied and same-valued entries add no undo step; the unrounded stored value never drifts; a real edit is one step");
+  }
+
+  // ------------------------------------------------------------ typed values keep 0.1 mm (step M.1d)
+  // FAILING FIRST: every typed field rounded to 1 cm, so 13'6" (4.1148 m) was stored as 4.11 m.
+  {
+    const st = usePlanStore.getState;
+    st().loadPlan(structuredClone(samplePlan));
+    const wall = () => st().plan.walls.find((w) => w.id === "w-AB")!;
+    // WallPanel.setLength's own path: parse in the field's unit, then lengthTarget + dragEndpoint.
+    const typeLength = (raw: string, unit: LengthUnit) => {
+      const m = parseLengthInput(raw, unit)!;
+      const out = dragEndpoint(st().plan.walls, "w-AB", "b", lengthTarget(wall(), m));
+      st().transaction(() => st().moveWallEndpoint("w-AB", "b", out.point));
+      return wallLength(wall());
+    };
+    close(typeLength(`13'6"`, "m"), 4.1148, 1e-4, `13'6" stores 4.1148 m, not 4.11`);
+    close(typeLength("3800", "mm"), 3.8, 1e-12, "3800 mm stores exactly 3.8 m");
+    close(typeLength("4", "m"), 4, 1e-12, "and a round number is still round");
+    // OpeningPanel's own path: the typed metres rounded, then resizeOpening.
+    const op = () => st().plan.openings.find((o) => o.id === "d-front")!;
+    const typeWidth = (raw: string, unit: LengthUnit) => {
+      const m = roundTo(parseLengthInput(raw, unit)!, TYPED_STEP);
+      const r = resizeOpening(st().plan, "d-front", m);
+      assert.ok(!("error" in r), "the width is allowed");
+      if (!("error" in r)) st().updateOpening("d-front", { width: r.width, offset: r.offset });
+      return op().width;
+    };
+    close(typeWidth(`2'7"`, "m"), 0.7874, 1e-4, `2'7" stores 0.7874 m, not 0.79`);
+    close(typeWidth("905", "mm"), 0.905, 1e-12, "905 mm stores exactly 0.905 m");
+    assert.equal(TYPED_STEP, 1e-4, "typed values round to 0.1 mm");
+    assert.equal(ROUND_STEP, 0.01, "drags and snaps still work to 1 cm");
+    st().loadPlan(samplePlan);
+    console.log(`typed precision: 13'6" is ${(4.1148).toFixed(4)} m and 2'7" is 0.7874 m in the plan (0.1 mm), while drags and snaps keep their 1 cm and 5 cm steps`);
   }
 
   // ------------------------------------------------------------ the scale bar

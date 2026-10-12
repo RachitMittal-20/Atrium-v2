@@ -36,7 +36,7 @@ import { FORMAT_LABEL } from "@/lib/import/loadModel";
 import { formatSize, frameBox, itemLocalBox, modelFrame, nodePaths, partBox, pivotOf, type NodeEntry } from "@/lib/import/model";
 import { parseDegrees, parsePercent, scaleToPercent, wrapAngle } from "@/lib/import/transform";
 import type { LoadedModel } from "@/lib/import/loadModel";
-import { roundTo } from "@/lib/plan/edit";
+import { roundTo, TYPED_STEP } from "@/lib/plan/edit";
 import { useImportStore } from "@/store/importStore";
 import { usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
@@ -260,12 +260,12 @@ export function ItemPanel() {
   const id = item.id;
   const update = (changes: Partial<Omit<Item, "id">>) => usePlanStore.getState().updateItem(id, changes);
 
-  /** Metres from what was typed, rounded to 1 cm, or why not. */
+  /** Metres from what was typed, rounded to 0.1 mm (step M.1d: kept as typed), or why not. */
   const length = (raw: string, apply: (m: number) => void, current: number) => {
     const negative = /^\s*[-−]/.test(raw); // positions can be negative; the length parser reads sizes only
     const m = fmt.parseLen(raw.replace(/^\s*[-−+]/, ""));
     if (m === null) return setNote(`"${raw.trim()}" isn't a length. ${lengthHint(fmt.length)}`);
-    const value = roundTo(negative ? -m : m);
+    const value = roundTo(negative ? -m : m, TYPED_STEP);
     if (!same(value, current)) apply(value); // the same value typed again: no edit, no undo step
     setNote(null);
   };

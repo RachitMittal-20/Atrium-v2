@@ -134,9 +134,14 @@ export interface Truth {
     /** Doors with a swing: the hinge jamb (on the centre line) and the leaf's side (unit vector), page frame. */
     hinge?: { x: number; y: number };
     side?: { x: number; y: number };
+    /** Step M.1d: which jamb of the BUILT wall the leaf must pivot on ("a" is nearer its a end). */
+    hingeEnd?: "a" | "b";
   }[];
   /** Step M.1c: decoy arcs drawn (never swings). */
   decoyArcs?: number;
+  /** Step M.1d: the sizes (m) of the collinear gaps drawn OUTSIDE 0.45–4 m, in the order
+   *  walls.ts reads them (along each wall, walls in reading order). They are not openings. */
+  outOfRangeGaps?: number[];
   /** plan-clutter: diagonal walls drawn (never read, counted). */
   diagonal?: number;
   /** plan-single-line: walls that can only be traced (the sample's ids). */
@@ -310,6 +315,9 @@ interface Options {
   /** Step M.1c (plan-doors): these openings in place of the sample's, swings as polyline arcs,
    *  the decoy arcs, and two printed opening widths (the north dimensions move out to make room). */
   doors?: FixtureOpening[];
+  /** Step M.1d: draw the four decoy arcs. Defaults to true whenever `doors` is given; plan-gaps
+   *  turns them off, because it is about gaps, not arcs. */
+  decoys?: boolean;
 }
 
 /**
@@ -322,9 +330,14 @@ interface FixtureOpening {
   wallId: string;
   offset: number;
   width: number;
-  style: "door" | "double" | "sliding" | "window3" | "window2" | "gap";
+  /** "oddgap" (step M.1d) is a bare gap drawn OUTSIDE 0.45–4 m: never an opening, only reported. */
+  style: "door" | "double" | "sliding" | "window3" | "window2" | "gap" | "oddgap";
   hinge?: "a" | "b";
   side?: 1 | -1;
+  /** Step M.1d: how the swing arc is drawn (default a polyline), and the leaf as a thin
+   *  closed rectangle 60 mm across instead of one line (plan-doors-rect). */
+  arc?: "poly" | "bezier";
+  leaf?: "line" | "rect";
 }
 
 /** plan-doors' openings (step M.1c). The sample's a→b: BC east, BI / IF / KL / CM south, LF west, HA / GH north, EL west. */
@@ -341,7 +354,39 @@ const DOOR_FIXTURE: FixtureOpening[] = [
   { id: "gap-bed2", wallId: "w-GH", offset: 2, width: 1, style: "gap" },
   { id: "win-bath", wallId: "w-EL", offset: 1.5, width: 0.6, style: "window3" },
 ];
-const CLASS_OF = { door: "door", double: "double", sliding: "sliding", window3: "window", window2: "window", gap: "unclassified" } as const;
+const CLASS_OF = { door: "door", double: "double", sliding: "sliding", window3: "window", window2: "window", gap: "unclassified", oddgap: "unclassified" } as const;
+/** plan-doors-rect (step M.1d): the same house with every leaf drawn as a thin closed
+ *  rectangle, Bézier arcs on some doors and polyline arcs on others, and TWO doors on the
+ *  north wall (w-BC) hinged at opposite jambs and opening to opposite sides. */
+const RECT_FIXTURE: FixtureOpening[] = [
+  { id: "dr-a", wallId: "w-BC", offset: 1.5, width: 0.9, style: "door", hinge: "a", side: 1, arc: "bezier", leaf: "rect" }, // hinge at w-BC's a jamb, into the living room
+  { id: "dr-b", wallId: "w-BC", offset: 4.4, width: 0.9, style: "door", hinge: "b", side: -1, arc: "poly", leaf: "rect" }, // the SAME wall, the other jamb and the other side
+  { id: "dr-bed1", wallId: "w-BI", offset: 2.9, width: 0.9, style: "door", hinge: "b", side: 1, arc: "bezier", leaf: "rect" },
+  { id: "dr-bed2", wallId: "w-IF", offset: 2, width: 0.9, style: "door", hinge: "a", side: -1, arc: "poly", leaf: "rect" },
+  { id: "dr-bath", wallId: "w-KL", offset: 1.5, width: 0.8, style: "door", hinge: "b", side: -1, arc: "bezier", leaf: "rect" },
+  { id: "ddr-living", wallId: "w-LF", offset: 1.5, width: 1.6, style: "double", side: 1, arc: "poly", leaf: "rect" },
+  { id: "slr-living", wallId: "w-CM", offset: 1.2, width: 1.6, style: "sliding" },
+  { id: "winr-living-e", wallId: "w-CM", offset: 3.6, width: 1.2, style: "window3" },
+  { id: "winr-bed1", wallId: "w-HA", offset: 2, width: 1.2, style: "window2" },
+  { id: "gapr-bed2", wallId: "w-GH", offset: 2, width: 1, style: "gap" }, // the leafless decoy arc is centred on this jamb
+  { id: "winr-bath", wallId: "w-EL", offset: 1.5, width: 0.6, style: "window3" },
+];
+/** plan-gaps (step M.1d): the sample's openings, plus a 0.30 m gap (closed as wall) and a
+ *  4.60 m gap (too wide to bridge) on walls long enough to hold them. No decoy arcs. */
+const GAP_FIXTURE: FixtureOpening[] = [
+  { id: "gap-wide", wallId: "w-BC", offset: 3, width: 4.6, style: "oddgap" },
+  { id: "gap-narrow", wallId: "w-BI", offset: 1, width: 0.3, style: "oddgap" },
+  { id: "dg-bed1", wallId: "w-BI", offset: 2.9, width: 0.9, style: "door", hinge: "a", side: 1, arc: "poly", leaf: "line" },
+  { id: "dg-bed2", wallId: "w-IF", offset: 2, width: 0.9, style: "door", hinge: "a", side: 1, arc: "poly", leaf: "line" },
+  { id: "dg-bath", wallId: "w-KL", offset: 1.5, width: 0.8, style: "door", hinge: "a", side: 1, arc: "poly", leaf: "line" },
+  { id: "wing-bed1", wallId: "w-HA", offset: 2, width: 1.2, style: "window3" },
+  { id: "wing-bed2", wallId: "w-GH", offset: 2, width: 1.2, style: "window3" },
+  { id: "wing-living-e", wallId: "w-CM", offset: 2.5, width: 1.2, style: "window3" },
+  { id: "wing-bath", wallId: "w-EL", offset: 1.5, width: 0.6, style: "window3" },
+];
+/** A rectangle leaf's thickness (m). Inside walls.ts's 0.05–0.6 m pairing range on purpose:
+ *  it would pair into a thin 0.9 m "wall" if openings.ts did not keep all four sides out. */
+const LEAF_T = 0.06;
 
 const fmtImperial = (ft: number, i: number) => {
   const whole = Math.floor(ft + 1e-9);
@@ -386,14 +431,20 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
       pen.line(at(-t / 2, 0), at(L + t / 2, 0), t * s); // one line as thick as the wall (butt caps)
       continue;
     }
-    /** A swing about the hinge at u = h, leaf r long to side sd, arc to the wall line at u = to. */
-    const swing = (h: number, to: number, r: number, sd: number) => {
-      pen.line(at(h, 0), at(h, sd * r), 0.35);
+    /** A swing about the hinge at u = h, leaf r long to side sd, arc to the wall line at u = to.
+     *  Step M.1d: the leaf is one line or a thin closed rectangle, and the arc a polyline (16
+     *  straight pieces) or one cubic Bézier. */
+    const swing = (h: number, to: number, r: number, sd: number, fo?: FixtureOpening | null) => {
+      if (fo?.leaf === "rect") {
+        // The hinge end's midpoint is the arc's centre and the far end's its tip, as openings.ts needs.
+        pen.poly([at(h - LEAF_T / 2, 0), at(h + LEAF_T / 2, 0), at(h + LEAF_T / 2, sd * r), at(h - LEAF_T / 2, sd * r)], "stroke", 0.35);
+      } else pen.line(at(h, 0), at(h, sd * r), 0.35);
       const [c, tip, end] = [at(h, 0), at(h, sd * r), at(to, 0)];
       const a0 = Math.atan2(tip[1] - c[1], tip[0] - c[0]);
       let sweep = Math.atan2(end[1] - c[1], end[0] - c[0]) - a0;
       sweep -= 2 * Math.PI * Math.round(sweep / (2 * Math.PI));
-      pen.polyArc(c, r * s, a0, sweep, 16, 0.35);
+      if (fo?.arc === "bezier") pen.bezArc(c, r * s, a0, sweep, 0.35);
+      else pen.polyArc(c, r * s, a0, sweep, 16, 0.35);
     };
     let from = -t / 2;
     for (const [g0, g1, op] of gaps) {
@@ -410,9 +461,9 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
         pen.poly([at(g1 - pw, 0.02), at(g1, 0.02), at(g1, 0.06), at(g1 - pw, 0.06)], "stroke", 0.35);
       } else if (style === "double") {
         const r = (g1 - g0) / 2;
-        swing(g0, g0 + r, r, fo!.side!);
-        swing(g1, g1 - r, r, fo!.side!);
-      } else if (style === "door" && fo) swing(fo.hinge === "b" ? g1 : g0, fo.hinge === "b" ? g0 : g1, g1 - g0, fo.side!);
+        swing(g0, g0 + r, r, fo!.side!, fo);
+        swing(g1, g1 - r, r, fo!.side!, fo);
+      } else if (style === "door" && fo) swing(fo.hinge === "b" ? g1 : g0, fo.hinge === "b" ? g0 : g1, g1 - g0, fo.side!, fo);
       else if (style === "door") {
         // Door: hinge at the gap end nearer a, leaf to the left of a->b, arc to the far end.
         const r = op.width;
@@ -433,7 +484,8 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
       for (const [p0, p1] of pieces) for (let u = p0 + 0.05; u + t <= p1; u += 0.15) pen.line(at(u, -t / 2), at(u + t, t / 2), 0.18);
     }
   }
-  if (o.doors) {
+  const drawDecoys = o.decoys ?? Boolean(o.doors);
+  if (drawDecoys) {
     // Decoy arcs (Béziers), none of them a swing: a quarter-round sink with its radius lines (r 0.35 m),
     // a chair back (r 0.25 m, 120°), a stair's walking line with a radius line (r 1.8 m), and a
     // quarter circle with NO leaf whose centre sits on the bare gap's jamb (w-GH at y 6.5), radius its width.
@@ -536,9 +588,10 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
     dimH(4, 7, 9);
     dimH(7, 10, 9);
     if (o.doors) {
-      dimH(6.5, 7.5, -0.75, 6); // the front door's width
-      dimH(8.4, 9.6, -0.75, 6); // the north window's width
-      for (const dm of dims.slice(-2)) dm.spans = "opening width"; // what the model check measures them between
+      // The first two openings on the north wall (w-BC runs from B at x = 4), printed at their jambs.
+      const onBC = o.doors.filter((op) => op.wallId === "w-BC" && op.style !== "oddgap").slice(0, 2);
+      for (const op of onBC) dimH(4 + op.offset - op.width / 2, 4 + op.offset + op.width / 2, -0.75, 6);
+      for (const dm of dims.slice(-onBC.length)) dm.spans = "opening width"; // what the model check measures them between
     }
   }
 
@@ -588,7 +641,9 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
     rooms: NAMES.map((n) => n[0]),
     walls: samplePlan.walls.map((w) => ({ id: w.id, a: { x: w.a.x * unit, y: w.a.y * unit }, b: { x: w.b.x * unit, y: w.b.y * unit }, thickness: w.thickness * unit })),
     planWalls: raw.map((w) => ({ ...w, a: shift(w.a), b: shift(w.b) })),
-    planOpenings: (o.doors ?? samplePlan.openings).map((op) => {
+    // Step M.1d: an "oddgap" is drawn but never read as an opening, so it is reported, not listed here.
+    outOfRangeGaps: (o.doors ?? []).filter((op) => "style" in op && op.style === "oddgap").map((op) => op.width),
+    planOpenings: (o.doors ?? samplePlan.openings).filter((op) => !("style" in op) || op.style !== "oddgap").map((op) => {
       const style = "style" in op ? op.style : op.kind === "window" ? "window3" : "door";
       const fo = "style" in op ? op : null;
       const kind = style === "window3" || style === "window2" ? ("window" as const) : ("door" as const);
@@ -601,11 +656,18 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
       const p0 = inView(w.a);
       const p1 = inView({ x: w.a.x + n.x * sd, y: w.a.y + n.y * sd });
       const side = { x: (p1.x - p0.x) / Math.hypot(p1.x - p0.x, p1.y - p0.y), y: (p1.y - p0.y) / Math.hypot(p1.x - p0.x, p1.y - p0.y) };
-      const swingInfo = style === "door" ? { hinge: jamb(op.wallId, fo?.hinge === "b" ? s1 : s0), side } : style === "double" ? { side } : {};
+      // The jamb the leaf pivots on, as a point AND (step M.1d) as which end of the BUILT wall
+      // it is: walls.ts always reads a as the smaller coordinate, so compare the two jambs there.
+      const atB = fo?.hinge === "b";
+      const jambs = [jamb(op.wallId, s0), jamb(op.wallId, s1)] as const;
+      const hingeJamb = atB ? jambs[1] : jambs[0];
+      const far = atB ? jambs[0] : jambs[1];
+      const hingeEnd: "a" | "b" = hingeJamb.x < far.x - 1e-9 || (Math.abs(hingeJamb.x - far.x) < 1e-9 && hingeJamb.y < far.y - 1e-9) ? "a" : "b";
+      const swingInfo = style === "door" ? { hinge: hingeJamb, side, hingeEnd } : style === "double" ? { side } : {};
       return { id: op.id, kind, wallId: op.wallId, a: jamb(op.wallId, s0), b: jamb(op.wallId, s1), class: CLASS_OF[style], ...swingInfo };
     }),
     ...(o.clutter ? { diagonal: 1 } : {}),
-    ...(o.doors ? { decoyArcs: 4 } : {}),
+    ...(drawDecoys ? { decoyArcs: 4 } : {}),
   };
 }
 
@@ -649,6 +711,8 @@ export async function writePdfFixtures(): Promise<Truth[]> {
   truths.push(await make("plan-outlined.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", outlined: true })), texts: [] })));
   truths.push(await make("plan-single-line.pdf", async (d, f) => ({ ...plain, expectedScale: "good", tracedWalls: ["w-KM"], ...(await drawPlan(d, f, { walls: "fill", dims: "mm", singleLine: ["w-KM"] })) })));
   truths.push(await make("plan-doors.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", doors: DOOR_FIXTURE })) })));
+  truths.push(await make("plan-doors-rect.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", doors: RECT_FIXTURE })) })));
+  truths.push(await make("plan-gaps.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", doors: GAP_FIXTURE, decoys: false })) })));
   truths.push(await make("plan-no-dims.pdf", async (d, f) => ({ ...plain, expectedScale: "check", ...await drawPlan(d, f, { walls: "fill", dims: null }), dims: [] })));
   // The scan: plan-filled rendered at 150 dpi, embedded as one grey PNG filling the page.
   const { file: _file, pages: _pages, ...filled } = truths[0];

@@ -24,8 +24,11 @@ import { dist, JOINT_EPS, pointToWallDistance, snapPoint, wallDirection, wallLen
 
 /** No edit may leave a wall shorter than this (metres). */
 export const MIN_WALL_LENGTH = 0.2;
-/** Coordinates round to this on release and on a typed edit (1 cm). */
+/** Coordinates round to this on release of a drag (1 cm). */
 export const ROUND_STEP = 0.01;
+/** A TYPED value rounds to this (0.1 mm), so it is kept as typed: 13'6" stores 4.1148 m,
+ *  not 4.11 (step M.1d). Drags and snaps keep ROUND_STEP and the 5 cm grids. */
+export const TYPED_STEP = 1e-4;
 
 /** Hit-test distances, in screen pixels: the canvas divides by the view scale. */
 export const PICK_TOL_PX = 8;
@@ -371,10 +374,11 @@ export function dragWallBody(walls: Wall[], wallId: string, offset: number): Bod
 
 // ---------------------------------------------------------------- typed edits
 
-/** Where the b end goes for a typed length: along the wall's direction from a. */
+/** Where the b end goes for a typed length: along the wall's direction from a. Rounded to
+ *  TYPED_STEP, not the 1 cm a drag uses, so an exact typed length is stored exactly. */
 export function lengthTarget(wall: Wall, length: number): Vec2 {
   const d = wallDirection(wall);
-  return roundPoint({ x: wall.a.x + d.x * length, y: wall.a.y + d.y * length });
+  return roundPoint({ x: wall.a.x + d.x * length, y: wall.a.y + d.y * length }, TYPED_STEP);
 }
 
 /** Clamp a typed field, with plain words when the value didn't fit. */
@@ -563,11 +567,11 @@ export function drawDefaults(walls: Wall[]): Pick<Wall, "thickness" | "height"> 
 }
 
 /** Where a typed length puts the wall's end: `length` metres from `from` towards
- *  `toward`, rounded to 1 cm like lengthTarget. Null without a direction. */
+ *  `toward`, rounded like lengthTarget (0.1 mm). Null without a direction. */
 export function typedTarget(from: Vec2, toward: Vec2, length: number): Vec2 | null {
   const d = dist(from, toward);
   if (d < JOINT_EPS) return null;
-  return roundPoint({ x: from.x + ((toward.x - from.x) / d) * length, y: from.y + ((toward.y - from.y) / d) * length });
+  return roundPoint({ x: from.x + ((toward.x - from.x) / d) * length, y: from.y + ((toward.y - from.y) / d) * length }, TYPED_STEP);
 }
 
 // ---------------------------------------------------------------- doors and windows
@@ -828,10 +832,17 @@ export function pickOpeningAt(p: Vec2, plan: Openings, tol: number): OpeningHit 
     else if (o.kind === "door") {
       const sw = doorSwing(wall, o);
       const v = sub(p, sw.hinge);
-      const leafLen = Math.hypot(sw.leafEnd.x - sw.hinge.x, sw.leafEnd.y - sw.hinge.y);
-      const leaf = leafLen > 0 ? { x: (sw.leafEnd.x - sw.hinge.x) / leafLen, y: (sw.leafEnd.y - sw.hinge.y) / leafLen } : f.normal;
+      const unitTo = (q: Vec2, fallback: Vec2) => {
+        const [dx, dy] = [q.x - sw.hinge.x, q.y - sw.hinge.y];
+        const l = Math.hypot(dx, dy);
+        return l > 0 ? { x: dx / l, y: dy / l } : fallback;
+      };
+      const leaf = unitTo(sw.leafEnd, f.normal);
+      // Along the wall, from the hinge towards the far jamb: f.dir for a door hinged at a,
+      // the other way for one hinged at b (step M.1d), so the quarter is on the drawn side.
+      const arm = unitTo(sw.arcEnd, f.dir);
       // The swing quarter circle, every edge pushed out by `tol`: past the arc, behind the leaf, before the hinge.
-      if (Math.hypot(v.x, v.y) <= o.width + tol && dotOf(v, f.dir) >= -tol && dotOf(v, leaf) >= -tol) hit = { id: o.id, band: false, d: wall.thickness / 2 + tol };
+      if (Math.hypot(v.x, v.y) <= o.width + tol && dotOf(v, arm) >= -tol && dotOf(v, leaf) >= -tol) hit = { id: o.id, band: false, d: wall.thickness / 2 + tol };
     }
     if (hit && hit.d < (best?.d ?? Infinity)) best = hit;
   }

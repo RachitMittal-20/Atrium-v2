@@ -40,6 +40,10 @@
  * within 3 px of a traced wall's centre line moves onto it and splits it.
  * Farther than 3 px, nothing moves (the validator then lists a free end).
  *
+ * Out-of-range gaps (step M.1d): walls.ts reports every collinear gap outside 0.45–4 m
+ * that it did not read as an opening; they are carried to the coverage report in plan
+ * metres whatever the merge decides, so nothing is dropped silently.
+ *
  * Openings (step M.1c: the PDF's are primary). A traced opening whose jambs are
  * both within 3 px of a vector opening's is that opening ("snapped"); one that
  * overlaps a vector opening, or comes within 3 px of it, with a jamb farther out
@@ -55,11 +59,12 @@
  * overlaps a vector one is left out. Every opening gets `provenance` and
  * `defaultHeight` (a PDF has no heights: DOOR_SIZE and WINDOW_SIZE).
  *
- * Hinges. The plan hangs every door on the jamb nearer its wall's a end. A wall
- * whose doors read from arcs mostly hang on the jamb nearer b is turned round (a
- * and b swapped, its openings' offsets measured from the new a, door sides
- * flipped with the normal), so the plan holds the PDF's doors exactly; a door
- * still hanging on the b jamb (a wall with doors hung both ways) is noted.
+ * Hinges (step M.1d). Walls keep the direction walls.ts read them in: a is always the
+ * end with the smaller coordinate, and no wall is ever turned round to suit a door.
+ * A door drawn hinged on the jamb nearer its wall's b end is stored with
+ * `Opening.hinge = "b"` instead, which the 2D plan and the 3D leaf both read, so one
+ * wall can carry doors hung both ways and every one of them is exact. (Before M.1d the
+ * wall was reversed and a door hung the other way was mirrored along it, with a note.)
  *
  * Safety: validatePlan must not get worse than the traced plan's and the
  * rooms must still derive (no fewer than the traced plan's). A vector wall named
@@ -128,6 +133,10 @@ export interface Coverage {
   tracedOpenings: { id: string; a: Vec2; b: Vec2; thickness: number; reason: string }[];
   unclassifiedOpenings: { id: string; a: Vec2; b: Vec2; thickness: number }[];
   unusedArcs: UnusedArc[];
+  /** Step M.1d: collinear gaps outside 0.45–4 m, which are not read as openings — a narrow
+   *  one closes as wall, a wide one leaves the wall unbridged. PLAN metres, so the overlay
+   *  can highlight them; `size` is the gap itself. */
+  outOfRangeGaps: { a: Vec2; b: Vec2; thickness: number; size: number }[];
   /** Fallbacks and refused snaps, in plain words. */
   notes: string[];
   /** Plan (0, 0) in page metres at the scale in use. */
@@ -506,21 +515,12 @@ export function mergeVector(
   }
   if (lost) notes.push(`${lost} ${lost === 1 ? "opening" : "openings"} had no wall under them and ${lost === 1 ? "was" : "were"} left out.`);
 
-  // Hinges (header): turn a wall round when its doors mostly hang on the jamb nearer b.
-  planWalls.forEach((w, i) => {
-    const doors = planOpenings.filter((o) => o.wallId === w.id && hingeAt.has(o.id));
-    const atB = doors.filter((o) => hingeAt.get(o.id) === "b").length;
-    if (atB * 2 <= doors.length) return;
-    const L = wallLength(w);
-    planWalls[i] = { ...w, a: w.b, b: w.a };
-    for (const o of planOpenings.filter((o) => o.wallId === w.id)) {
-      o.offset = r4(L - o.offset);
-      if (o.swing) o.swing = o.swing === "left" ? "right" : "left"; // the normal turns round with the wall
-      if (hingeAt.has(o.id)) hingeAt.set(o.id, hingeAt.get(o.id) === "a" ? "b" : "a");
-    }
-  });
-  for (const [id, end] of hingeAt)
-    if (end === "b") notes.push(`Door ${id} hangs on the jamb nearer its wall's end in the PDF; the plan hangs doors on the jamb nearer the start, so its leaf is drawn on the other jamb (opening to the same side).`);
+  // Hinges (header, step M.1d): the jamb the PDF drew the leaf on, stored as it is. No wall
+  // is turned round, so a wall carrying doors hung both ways keeps every one of them exact.
+  for (const o of planOpenings) {
+    const end = hingeAt.get(o.id);
+    if (end === "b") o.hinge = "b"; // "a" is the default; leaving it off keeps the payload as it was
+  }
 
   const plan: Plan = { ...traced.plan, walls: planWalls, openings: planOpenings, rooms: [] };
 
@@ -576,7 +576,9 @@ export function mergeVector(
   };
 }
 
-/** The openings part of the coverage report (step M.1c), with the jambs in plan metres. */
+/** The openings part of the coverage report (step M.1c), with the jambs in plan metres, and
+ *  (step M.1d) the out-of-range gaps the same way. Both call sites — the merge and the
+ *  whole-plan fallback — go through here, so the gaps are reported either way. */
 function openingCoverage(
   plan: Plan,
   classOf: Map<string, OpeningClass>,
@@ -585,7 +587,7 @@ function openingCoverage(
   vector: VectorWalls,
   f: number,
   counts: { snapped: number; traced: number; added: number; replaced: number },
-): Pick<Coverage, "openings" | "tracedOpenings" | "unclassifiedOpenings" | "unusedArcs"> {
+): Pick<Coverage, "openings" | "tracedOpenings" | "unclassifiedOpenings" | "unusedArcs" | "outOfRangeGaps"> {
   const wall = new Map(plan.walls.map((w) => [w.id, w]));
   const mark = (o: Opening) => {
     const w = wall.get(o.wallId)!;
@@ -607,6 +609,8 @@ function openingCoverage(
     tracedOpenings: plan.openings.filter((o) => o.provenance === "traced").map((o) => ({ ...mark(o), reason: tracedWhy.get(o.id) ?? "traced" })),
     unclassifiedOpenings: exact.filter((o) => cls(o) === "unclassified").map(mark),
     unusedArcs,
+    // Step M.1d: the gaps the PDF's lines leave that are not openings, at the scale in use.
+    outOfRangeGaps: (vector.gaps ?? []).map((g) => ({ a: pageToPlan({ x: g.a.x * f, y: g.a.y * f }), b: pageToPlan({ x: g.b.x * f, y: g.b.y * f }), thickness: g.thickness * f, size: g.size * f })),
   };
 }
 

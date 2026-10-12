@@ -27,7 +27,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Analysis } from "@/lib/blueprint/analyse";
 import type { Vec2 } from "@/types/plan";
 
-type Layer = "walls" | "doors" | "windows" | "ends" | "traced" | "tracedOpenings" | "unclassified";
+type Layer = "walls" | "doors" | "windows" | "ends" | "traced" | "tracedOpenings" | "unclassified" | "gaps";
 /** A wall or an opening's gap (jambs on the centre line) in image pixels, for the PDF layers. */
 type Mark = { id: string; a: Vec2; b: Vec2; thickness: number };
 const MIN_K = 0.02;
@@ -79,15 +79,16 @@ export function PlanViewer({
   onPick: (p: Vec2) => void;
   /** Walls traced rather than read from the PDF, in image pixels (step M.1b). */
   traced?: Mark[];
-  /** Openings to check, in image pixels (step M.1c): traced, and read from the PDF but unclassified. */
-  openingMarks?: { traced: Mark[]; unclassified: Mark[] };
+  /** Openings to check, in image pixels (step M.1c): traced, and read from the PDF but unclassified.
+   *  Step M.1d adds `gaps`: collinear gaps outside 0.45–4 m, not read as openings at all. */
+  openingMarks?: { traced: Mark[]; unclassified: Mark[]; gaps: Mark[] };
 }) {
   const { width: W, height: H } = analysis.pixels;
   const url = useImageUrl(analysis);
   const boxRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [view, setView] = useState<View>({ k: 1, x: 0, y: 0 });
-  const [show, setShow] = useState<Record<Layer, boolean>>({ walls: true, doors: true, windows: true, ends: true, traced: true, tracedOpenings: true, unclassified: true });
+  const [show, setShow] = useState<Record<Layer, boolean>>({ walls: true, doors: true, windows: true, ends: true, traced: true, tracedOpenings: true, unclassified: true, gaps: true });
   const touched = useRef(false); // once the user zooms or pans, resizing no longer refits
 
   const fit = useCallback(() => {
@@ -172,6 +173,7 @@ export function PlanViewer({
       ? [
           { id: "tracedOpenings" as const, label: "Traced openings", count: openingMarks.traced.length, swatch: "bg-gilt", hint: "Doors and windows not read from the PDF's lines: traced from the picture, about a pixel out." },
           { id: "unclassified" as const, label: "Unclassified openings", count: openingMarks.unclassified.length, swatch: "bg-overlay-end", hint: "Gaps with no swing, glazing or panels drawn in them: kept as doors. Check them." },
+          { id: "gaps" as const, label: "Gaps not read", count: openingMarks.gaps.length, swatch: "bg-overlay-door", hint: "Gaps in the PDF's lines too narrow or too wide to be a door or window: a narrow one is closed as wall, a wide one leaves the wall open." },
         ]
       : []),
   ];
@@ -230,6 +232,12 @@ export function PlanViewer({
             {openingMarks && show.unclassified && (
               <g data-layer="unclassified-openings" className="stroke-overlay-end" strokeLinecap="butt" fill="none">
                 {openingMarks.unclassified.map((m) => box(m, "unclassified"))}
+              </g>
+            )}
+            {/* Step M.1d: gaps the PDF drew that are outside the opening range, so nothing was read there. */}
+            {openingMarks && show.gaps && (
+              <g data-layer="gaps-not-read" className="stroke-overlay-door" strokeLinecap="butt" fill="none">
+                {openingMarks.gaps.map((m) => box(m, "gap"))}
               </g>
             )}
             {points.length > 0 && (

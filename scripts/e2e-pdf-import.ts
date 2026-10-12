@@ -55,13 +55,29 @@
  *     opening to the PDF's side; an opening's panel says "Read from PDF · Default height";
  *   - 1440 only: in 3D, every door's rendered frame-and-leaf box reaches out of the wall on
  *     the PDF's side and not the other (the leaf stands open about 17° towards its swing).
+ * Step M.1d (the hinge jamb, thin-rectangle leaves and out-of-range gaps), plan-doors-rect.pdf
+ * at 1440 and 390 and plan-gaps.pdf at 1440:
+ *   - plan-doors-rect: every leaf drawn as a thin closed rectangle, Bézier arcs on some doors and
+ *     polyline arcs on others, and TWO doors on the north wall hinged at opposite jambs opening to
+ *     opposite sides. The same openings line and overlay boxes as plan-doors; built and opened,
+ *     every opening's width, offset, swing and hinge read from the store against the truth within
+ *     1 mm, and no wall turned round; in 3D each door's leaf PIVOTS on its own jamb (the leaf
+ *     group's world position, from __scene3d.openings()); then the panel's "Hinge side" control is
+ *     clicked for real, the 3D leaf moves to the other jamb and mirrors its turn, and Ctrl+Z puts
+ *     both back with the swing side untouched;
+ *   - plan-gaps: the coverage sentence "N gaps outside 450 mm to 4000 mm were not read as openings
+ *     (sizes: …)" against the truth, with one highlighted box per gap on the overlay. Its 4.60 m
+ *     gap is deliberately not bridged, so the generic every-wall-exact checks are skipped for it.
  * Any .pdf in test-plans/ (local only, never committed) is also read at 1440 and one
  * row per file printed: classification, walls total, exact and traced, openings exact,
- * traced and unclassified, arcs not used, dimensions read, flagged in each table, time.
+ * traced and unclassified, arcs not used, and (step M.1d) how many doors are hinged at each
+ * jamb once it is built, the out-of-range gaps with their sizes, dimensions read, flagged in
+ * each table, time.
  * Screenshots in /tmp/studio/: pdf-review-1440.png, pdf-dimension-check-1440.png,
  * pdf-fit-warning-1440.png, pdf-review-390.png, pdf-coverage-1440.png,
  * pdf-model-check-1440.png, pdf-clutter-1440.png, pdf-traced-1440.png, and (M.1c)
- * pdf-openings-1440.png, pdf-openings-3d-1440.png, pdf-openings-390.png.
+ * pdf-openings-1440.png, pdf-openings-3d-1440.png, pdf-openings-390.png, and (M.1d)
+ * pdf-hinges-1440.png, pdf-hinges-3d-1440.png, pdf-gaps-1440.png, pdf-hinges-390.png.
  * Run: npx tsx scripts/e2e-pdf-import.ts
  */
 import assert from "node:assert/strict";
@@ -92,10 +108,17 @@ type Win = Window & {
   __selectionStore?: { getState(): { select(id: string | null): void; selectOpening(id: string | null): void } };
   __importPdf?: PdfInfo;
   __studio3d?: { openingBox(id: string): Box3d | null };
+  /** Development only (PlanModel): the door leaves as rendered — where each one pivots (step M.1d). */
+  __scene3d?: { openings(): { id: string; kind: string; leafTurn: number | null; leafPivot: { x: number; y: number; z: number } | null; leafBox: Box3d | null }[] };
 };
 const COVERAGE = /^(\d+) of (\d+) walls read exactly from the PDF \((\d+)% of wall length\); (\d+) walls? (?:is|are) traced approximately \(about (\d+) mm\)\.$/;
 /** Fixtures checked at 390 by touch (besides the two-page picker). */
-const PHONE = ["plan-filled.pdf", "plan-clutter.pdf", "plan-broken-dims.pdf", "plan-outlined.pdf", "plan-single-line.pdf", "plan-doors.pdf"];
+const PHONE = ["plan-filled.pdf", "plan-clutter.pdf", "plan-broken-dims.pdf", "plan-outlined.pdf", "plan-single-line.pdf", "plan-doors.pdf", "plan-doors-rect.pdf", "plan-gaps.pdf"];
+/** Fixtures whose openings and door hinges are checked in full (step M.1c, M.1d). */
+const DOOR_FILES = ["plan-doors.pdf", "plan-doors-rect.pdf"];
+/** The out-of-range-gap fixture (step M.1d): checked for its gap report, not for exact walls. */
+const GAP_FILE = "plan-gaps.pdf";
+const GAPS = /(\d+) gaps? outside ([\d'".\- \/a-z]+) to ([\d'".\- \/a-z]+) (?:was|were) not read as openings \(sizes: ([^)]+)\)\./;
 const OPENINGS = /^(\d+) of (\d+) openings read exactly \(doors (\d+), windows (\d+), unclassified (\d+)\); (\d+) traced approximately; (\d+) arcs? not used\.$/;
 
 const errors: string[] = [];
@@ -238,31 +261,68 @@ async function session(browser: Browser, width: number, height: number, touch: b
   };
 
   /** Step M.1c, plan-doors on the review screen: the openings line, the default heights, the boxes on the overlay. */
-  const checkDoorsReview = async (t: Truth) => {
+  const checkDoorsReview = async (file: string, t: Truth) => {
+    const name = file.replace(".pdf", "");
     const text = (await tid(page, "coverage-openings-line").innerText()).trim();
     const m = text.match(OPENINGS);
-    assert.ok(m, `plan-doors: openings line "${text}"`);
+    assert.ok(m, `${name}: openings line "${text}"`);
     const unclassified = t.planOpenings.filter((o) => o.class === "unclassified");
     const want = [t.planOpenings.length, t.planOpenings.length, t.planOpenings.filter((o) => o.kind === "door").length - unclassified.length, t.planOpenings.filter((o) => o.kind === "window").length, unclassified.length, 0, t.decoyArcs];
-    assert.deepEqual(m.slice(1).map(Number), want, `plan-doors: openings line numbers (${text})`);
-    assert.ok((await tid(page, "coverage-heights").innerText()).includes("default height"), "plan-doors: the default heights are said");
-    assert.equal(await page.locator("[data-opening-mark=traced]").count(), 0, "plan-doors: no traced opening boxed");
+    assert.deepEqual(m.slice(1).map(Number), want, `${name}: openings line numbers (${text})`);
+    assert.ok((await tid(page, "coverage-heights").innerText()).includes("default height"), `${name}: the default heights are said`);
+    assert.equal(await page.locator("[data-opening-mark=traced]").count(), 0, `${name}: no traced opening boxed`);
     const boxes = page.locator("[data-opening-mark=unclassified]");
-    assert.equal(await boxes.count(), unclassified.length, "plan-doors: the unclassified opening boxed on the overlay");
+    assert.equal(await boxes.count(), unclassified.length, `${name}: the unclassified opening boxed on the overlay`);
     // Its box is as long as the bare gap is wide, in raster pixels.
     const pdf = (await page.evaluate(() => (window as Win).__importPdf))!;
     const pxPerM = pdf.pxPerPt / pdf.scale!.mPerPt!;
     const len = await boxes.first().evaluate((l) => Math.hypot(Number(l.getAttribute("x2")) - Number(l.getAttribute("x1")), Number(l.getAttribute("y2")) - Number(l.getAttribute("y1"))));
     const gapM = Math.hypot(unclassified[0].b.x - unclassified[0].a.x, unclassified[0].b.y - unclassified[0].a.y);
-    assert.ok(Math.abs(len - gapM * pxPerM) < 1, `plan-doors: the box is the gap (${len.toFixed(1)} px, want ${(gapM * pxPerM).toFixed(1)})`);
-    assert.ok((await tid(page, "coverage-unclassified").innerText()).includes("Opening type not drawn; assumed door"), "plan-doors: listed as an assumed door");
+    assert.ok(Math.abs(len - gapM * pxPerM) < 1, `${name}: the box is the gap (${len.toFixed(1)} px, want ${(gapM * pxPerM).toFixed(1)})`);
+    assert.ok((await tid(page, "coverage-unclassified").innerText()).includes("Opening type not drawn; assumed door"), `${name}: listed as an assumed door`);
     await tid(page, "coverage").scrollIntoViewIfNeeded();
-    await page.screenshot({ path: `${OUT}/pdf-openings-${touch ? 390 : 1440}.png`, fullPage: true });
+    // plan-doors keeps M.1c's screenshot names; plan-doors-rect takes M.1d's "hinges" ones.
+    await page.screenshot({ path: `${OUT}/${file === "plan-doors-rect.pdf" ? "pdf-hinges" : "pdf-openings"}-${touch ? 390 : 1440}.png`, fullPage: true });
     return `"${text}", the unclassified gap boxed (${len.toFixed(1)} px), no traced boxes`;
   };
 
+  /** Step M.1d, plan-gaps on the review screen: the out-of-range sentence and the highlight. */
+  const checkGapsReview = async (t: Truth) => {
+    const want = [...t.outOfRangeGaps!].sort((a, b) => a - b);
+    const line = tid(page, "coverage-gaps-line");
+    await line.waitFor();
+    const text = (await line.innerText()).trim();
+    const m = text.match(GAPS);
+    assert.ok(m, `plan-gaps: the out-of-range sentence "${text}"`);
+    assert.equal(Number(m[1]), want.length, `plan-gaps: ${want.length} gaps said (${text})`);
+    assert.deepEqual([m[2], m[3]], ["450 mm", "4000 mm"], `plan-gaps: the range as printed (${m[2]} to ${m[3]})`);
+    // The sizes, in the mm this browser is set to, and in the order the panel lists them.
+    const said = m[4].split(", ").map((s) => Number(s.replace(/[^\d.]/g, "")) / 1000);
+    assert.deepEqual([...said].sort((a, b) => a - b).map((v) => +v.toFixed(3)), want.map((v) => +v.toFixed(3)), `plan-gaps: the sizes (${m[4]})`);
+    // data-sizes carries them unrounded, so the check does not depend on the displayed unit.
+    const attr = (await line.getAttribute("data-sizes"))!.split(" ").map(Number);
+    assert.deepEqual([...attr].sort((a, b) => a - b).map((v) => +v.toFixed(3)), want.map((v) => +v.toFixed(3)), "plan-gaps: data-sizes agrees");
+    // Highlighted on the overlay: one box per gap, each as long as the gap is wide.
+    const boxes = page.locator("[data-opening-mark=gap]");
+    assert.equal(await boxes.count(), want.length, "plan-gaps: every gap highlighted on the overlay");
+    const pdf = (await page.evaluate(() => (window as Win).__importPdf))!;
+    const pxPerM = pdf.pxPerPt / pdf.scale!.mPerPt!;
+    const lens = await boxes.evaluateAll((ls) => ls.map((l) => Math.hypot(Number(l.getAttribute("x2")) - Number(l.getAttribute("x1")), Number(l.getAttribute("y2")) - Number(l.getAttribute("y1")))));
+    assert.deepEqual(
+      [...lens].sort((a, b) => a - b).map((v) => +(v / pxPerM).toFixed(2)),
+      want.map((v) => +v.toFixed(2)),
+      `plan-gaps: each box is its gap (${lens.map((v) => (v / pxPerM).toFixed(2)).join(", ")} m)`,
+    );
+    // And the layer's own toggle says how many.
+    assert.ok((await page.locator("label", { hasText: "Gaps not read" }).innerText()).includes(String(want.length)), "plan-gaps: the overlay layer is listed with its count");
+    await tid(page, "coverage").scrollIntoViewIfNeeded();
+    if (!touch) await page.screenshot({ path: `${OUT}/pdf-gaps-1440.png`, fullPage: true });
+    return `"${text}", ${want.length} boxed on the overlay`;
+  };
+
   /** Step M.1c, plan-doors in the studio: every opening against the truth, a panel, and (1440) the 3D leaves. */
-  const checkDoorsStudio = async (plan: Awaited<ReturnType<typeof buildAndOpen>>, t: Truth) => {
+  const checkDoorsStudio = async (file: string, plan: Awaited<ReturnType<typeof buildAndOpen>>, t: Truth) => {
+    const name = file.replace(".pdf", "");
     const vec = plan.walls.filter((w) => w.provenance === "vector");
     const o = { x: Math.min(...vec.flatMap((w) => [w.a.x, w.b.x])), y: Math.min(...vec.flatMap((w) => [w.a.y, w.b.y])) }; // the page frame's origin
     const P = (p: { x: number; y: number }) => ({ x: p.x - o.x, y: p.y - o.y });
@@ -279,27 +339,37 @@ async function session(browser: Browser, width: number, height: number, touch: b
           return { op, w, err: Math.min(Math.max(dd(p, to.a), dd(q, to.b)), Math.max(dd(p, to.b), dd(q, to.a))) };
         })
         .sort((x, y) => x.err - y.err)[0];
-      assert.ok(hit && hit.err <= 0.001, `plan-doors: ${to.id} within 1 mm (${hit ? (hit.err * 1000).toFixed(3) : "none"} mm)`);
+      assert.ok(hit && hit.err <= 0.001, `${name}: ${to.id} within 1 mm (${hit ? (hit.err * 1000).toFixed(3) : "none"} mm)`);
       worst = Math.max(worst, hit.err);
       const { op, w } = hit;
-      assert.equal(op.kind, to.kind, `plan-doors: ${to.id} is a ${to.kind}`);
-      assert.ok(Math.abs(op.width - Math.hypot(to.b.x - to.a.x, to.b.y - to.a.y)) <= 0.001, `plan-doors: ${to.id} width`);
-      assert.ok(op.provenance === "vector" && op.defaultHeight === true, `plan-doors: ${to.id} read from the PDF, default height`);
+      assert.equal(op.kind, to.kind, `${name}: ${to.id} is a ${to.kind}`);
+      assert.ok(Math.abs(op.width - Math.hypot(to.b.x - to.a.x, to.b.y - to.a.y)) <= 0.001, `${name}: ${to.id} width`);
+      assert.ok(op.provenance === "vector" && op.defaultHeight === true, `${name}: ${to.id} read from the PDF, default height`);
+      // Step M.1d: the centre's distance from the wall's a end, read straight from the store.
+      const alongTo = (q: { x: number; y: number }) => ((q.x + o.x - w.a.x) * (w.b.x - w.a.x) + (q.y + o.y - w.a.y) * (w.b.y - w.a.y)) / Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+      const wantOffset = (alongTo(to.a) + alongTo(to.b)) / 2;
+      assert.ok(Math.abs(op.offset - wantOffset) <= 0.001, `${name}: ${to.id} offset within 1 mm (${op.offset.toFixed(4)} vs ${wantOffset.toFixed(4)})`);
       if (to.side) {
         const sw = doorSwing({ a: P(w.a), b: P(w.b) }, op);
-        if (to.hinge) assert.ok(dd(sw.hinge, to.hinge) <= 0.001, `plan-doors: ${to.id} hangs on the PDF's jamb (${(dd(sw.hinge, to.hinge) * 1000).toFixed(3)} mm)`);
-        assert.ok((sw.leafEnd.x - sw.hinge.x) * to.side.x + (sw.leafEnd.y - sw.hinge.y) * to.side.y > 0, `plan-doors: ${to.id} (${op.swing}) opens to the PDF's side`);
+        if (to.hinge) assert.ok(dd(sw.hinge, to.hinge) <= 0.001, `${name}: ${to.id} hangs on the PDF's jamb (${(dd(sw.hinge, to.hinge) * 1000).toFixed(3)} mm)`);
+        assert.ok((sw.leafEnd.x - sw.hinge.x) * to.side.x + (sw.leafEnd.y - sw.hinge.y) * to.side.y > 0, `${name}: ${to.id} (${op.swing}) opens to the PDF's side`);
+        // Step M.1d: the hinge jamb is stored, not worked around by turning the wall round.
+        if (to.hingeEnd) assert.equal(op.hinge ?? "a", to.hingeEnd, `${name}: ${to.id} is stored hinged at the ${to.hingeEnd} jamb`);
       }
       found.push({ id: op.id, to, op });
     }
-    assert.equal(plan.openings.length, t.planOpenings.length, "plan-doors: exactly the drawn openings");
-    // An opening's panel says where it came from.
-    const door = found.find((f) => f.to.id === "d-bed1")!;
+    assert.equal(plan.openings.length, t.planOpenings.length, `${name}: exactly the drawn openings`);
+    // Step M.1d: every wall read from the PDF still runs the way walls.ts read it (a = the smaller
+    // coordinate). M.1c reversed a wall whose doors hung on its b jamb; nothing does now.
+    for (const w of vec) assert.ok(w.a.x < w.b.x - 1e-9 || (Math.abs(w.a.x - w.b.x) < 1e-9 && w.a.y < w.b.y - 1e-9), `${name}: wall ${w.id} was not turned round`);
+    // An opening's panel says where it came from. Pick a door hinged at its wall's b jamb when the
+    // fixture has one (both of these do), so the hinge control is exercised on the interesting case.
+    const door = found.find((f) => f.to.hingeEnd === "b") ?? found.find((f) => f.op.kind === "door")!;
     await page.evaluate((id) => (window as Win).__selectionStore!.getState().selectOpening(id), door.id);
     if (touch && !(await tid(page, "opening-panel").isVisible())) await press(page.getByRole("button", { name: /Plan details/ }));
     await tid(page, "opening-provenance").waitFor();
     const said = (await tid(page, "opening-provenance").innerText()).trim();
-    assert.equal(said, "Read from PDF · Default height", "plan-doors: the opening panel's provenance");
+    assert.equal(said, "Read from PDF · Default height", `${name}: the opening panel's provenance`);
     let leaves = "";
     if (!touch) {
       // 3D: each door's frame and leaf (open about 17° towards its swing) reach out of the wall on the PDF's side only.
@@ -309,20 +379,81 @@ async function session(browser: Browser, width: number, height: number, touch: b
       const out: string[] = [];
       for (const f of found.filter((x) => x.to.side && x.op.kind === "door")) {
         const box = await page.evaluate((id) => (window as Win).__studio3d!.openingBox(id), f.id);
-        assert.ok(box, `plan-doors: ${f.to.id} drawn in 3D`);
+        assert.ok(box, `${name}: ${f.to.id} drawn in 3D`);
         const w = plan.walls.find((x) => x.id === f.op.wallId)!;
         const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
         const c = { x: w.a.x + ((w.b.x - w.a.x) / L) * f.op.offset, y: w.a.y + ((w.b.y - w.a.y) / L) * f.op.offset };
         // World x = plan x, world z = plan y; the box's corners along the PDF's side of the wall.
         const along = [box.minX, box.maxX].flatMap((x) => [box.minZ, box.maxZ].map((z) => (x - c.x) * f.to.side!.x + (z - c.y) * f.to.side!.y));
         const [far, back] = [Math.max(...along), -Math.min(...along)];
-        assert.ok(far > w.thickness / 2 + 0.1 && far > back + 0.1, `plan-doors: ${f.to.id}'s 3D leaf stands out on the PDF's side (${far.toFixed(3)} m there, ${back.toFixed(3)} m behind)`);
+        assert.ok(far > w.thickness / 2 + 0.1 && far > back + 0.1, `${name}: ${f.to.id}'s 3D leaf stands out on the PDF's side (${far.toFixed(3)} m there, ${back.toFixed(3)} m behind)`);
         out.push(`${f.to.id} ${far.toFixed(2)}/${back.toFixed(2)} m`);
       }
-      await page.screenshot({ path: `${OUT}/pdf-openings-3d-1440.png` });
-      leaves = `; 3D leaves out on the PDF's side (front/behind): ${out.join(", ")}`;
+      // Step M.1d: each leaf PIVOTS on its own jamb. __scene3d.openings() gives the leaf group's
+      // world position, which is the hinge; compare it with the jamb the PDF drew it on.
+      const leafs = await page.evaluate(() => (window as Win).__scene3d!.openings());
+      const pivots: string[] = [];
+      for (const f of found.filter((x) => x.op.kind === "door" && x.to.hinge)) {
+        const got = leafs.find((l) => l.id === f.id);
+        assert.ok(got?.leafPivot, `${name}: ${f.to.id}'s 3D leaf is in the scene with a pivot`);
+        const w = plan.walls.find((x) => x.id === f.op.wallId)!;
+        // World (x, z) = plan (x, y). The jamb the leaf must pivot on, in the page frame:
+        const pivotPlan = P({ x: got!.leafPivot!.x, y: got!.leafPivot!.z });
+        const [jA, jB] = (() => {
+          const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+          const at = (s: number) => P({ x: w.a.x + ((w.b.x - w.a.x) / L) * s, y: w.a.y + ((w.b.y - w.a.y) / L) * s });
+          return [at(f.op.offset - f.op.width / 2), at(f.op.offset + f.op.width / 2)];
+        })();
+        const wantJamb = (f.op.hinge ?? "a") === "a" ? jA : jB;
+        const otherJamb = (f.op.hinge ?? "a") === "a" ? jB : jA;
+        // The pivot sits a frame member (0.05 m) inside the gap, so allow that much and no more.
+        assert.ok(dd(pivotPlan, wantJamb) <= 0.06, `${name}: ${f.to.id}'s 3D leaf pivots on its ${f.op.hinge ?? "a"} jamb (${(dd(pivotPlan, wantJamb) * 1000).toFixed(0)} mm from it, ${(dd(pivotPlan, otherJamb) * 1000).toFixed(0)} mm from the other)`);
+        assert.ok(dd(pivotPlan, wantJamb) < dd(pivotPlan, otherJamb), `${name}: ${f.to.id} pivots nearer that jamb than the other`);
+        assert.ok(dd(pivotPlan, f.to.hinge!) <= 0.06, `${name}: and that is the jamb the PDF drew it on`);
+        pivots.push(`${f.to.id} ${f.op.hinge ?? "a"} (${(dd(pivotPlan, f.to.hinge!) * 1000).toFixed(0)} mm)`);
+      }
+      await page.screenshot({ path: `${OUT}/${file === "plan-doors-rect.pdf" ? "pdf-hinges-3d-1440" : "pdf-openings-3d-1440"}.png` });
+      leaves = `; 3D leaves out on the PDF's side (front/behind): ${out.join(", ")}; pivots on their own jamb: ${pivots.join(", ")}`;
+      // ---- the panel's hinge control, with a real click, and Ctrl+Z (step M.1d)
+      if (file === "plan-doors-rect.pdf") leaves += `; ${await checkHingeFlip(door.id, door.op.hinge ?? "a")}`;
     }
     return `${found.length} openings within 1 mm (worst ${(worst * 1000).toFixed(3)} mm), every door on the PDF's jamb and side; panel "${said}"${leaves}`;
+  };
+
+  /**
+   * Step M.1d: flip a door's hinge in the OpeningPanel with a real click, and check the rendered 3D
+   * leaf really moves to the other jamb and Ctrl+Z puts it back. Run with the 3D view showing.
+   */
+  const checkHingeFlip = async (id: string, from: "a" | "b") => {
+    const to = from === "a" ? "b" : "a";
+    const pivotOf = async () => {
+      const got = (await page.evaluate(() => (window as Win).__scene3d!.openings())).find((l) => l.id === id);
+      assert.ok(got?.leafPivot, "the leaf is in the scene");
+      return { p: got!.leafPivot!, turn: got!.leafTurn! };
+    };
+    await page.evaluate((x) => (window as Win).__selectionStore!.getState().selectOpening(x), id);
+    const control = tid(page, "opening-hinge");
+    await control.waitFor();
+    assert.equal(await control.getAttribute("data-hinge"), from, `the hinge control shows ${from}`);
+    assert.equal(await tid(page, `hinge-${from}`).getAttribute("aria-pressed"), "true", "the current jamb is pressed");
+    const before = await pivotOf();
+    await press(tid(page, `hinge-${to}`)); // a real click on the other jamb
+    await page.waitForTimeout(250);
+    assert.equal(await control.getAttribute("data-hinge"), to, `the control now shows ${to}`);
+    const after = await pivotOf();
+    const moved = Math.hypot(after.p.x - before.p.x, after.p.z - before.p.z);
+    assert.ok(moved > 0.5, `the 3D leaf moved to the other jamb (${moved.toFixed(3)} m along the wall)`);
+    assert.ok(Math.abs(after.turn + before.turn) < 1e-6, `and mirrored its turn (${before.turn.toFixed(3)} → ${after.turn.toFixed(3)} rad)`);
+    const swing = await page.evaluate((x) => (window as Win).__planStore!.getState().plan.openings.find((op) => op.id === x)!.swing, id);
+    await page.keyboard.press("Control+z");
+    await page.waitForTimeout(250);
+    assert.equal(await control.getAttribute("data-hinge"), from, "Ctrl+Z puts the hinge back");
+    const back = await pivotOf();
+    assert.ok(Math.hypot(back.p.x - before.p.x, back.p.z - before.p.z) < 1e-6, "and the 3D leaf with it");
+    assert.equal(back.turn, before.turn, "turn restored exactly");
+    const swingBack = await page.evaluate((x) => (window as Win).__planStore!.getState().plan.openings.find((op) => op.id === x)!.swing, id);
+    assert.equal(swingBack, swing, "the swing side was never touched by either");
+    return `hinge ${from} → ${to} by a real click moved the 3D leaf ${moved.toFixed(2)} m and mirrored its turn; Ctrl+Z restored both`;
   };
 
   /** The dimension table against the truth: values within 0.1 mm, all OK. */
@@ -396,9 +527,19 @@ async function session(browser: Browser, width: number, height: number, touch: b
         if (file === "plan-outlined.pdf") assert.ok(hows.split(" / ").every((h) => h.endsWith("read by OCR")), `${file}: every row read by OCR`);
         if (file === "plan-broken-dims.pdf") assert.ok(hows.includes("between ticks") && hows.includes("line length"), `${file}: ticks and a line length`);
       } else assert.equal(await tid(page, "dimension-check").count(), 0, `${file}: no table without dimensions`);
+      // plan-gaps (step M.1d) is the out-of-range-gap fixture: its 4.60 m gap is deliberately NOT
+      // bridged, so that wall is two pieces with free ends, the living room does not close, and the
+      // generic "every wall exact / four rooms / every dimension lands on the model" checks do not
+      // apply to it. Its own check is the gap report.
+      if (file === GAP_FILE) {
+        line += `; ${await checkGapsReview(t)}`;
+        report.push(`${line}; ${(ms / 1000).toFixed(1)} s`);
+        console.log(report[report.length - 1]);
+        continue;
+      }
       const cov = await checkCoverage(file, t);
       line += `; "${cov.text}" ${cov.openings}`;
-      if (file === "plan-doors.pdf") line += `; ${await checkDoorsReview(t)}`;
+      if (DOOR_FILES.includes(file)) line += `; ${await checkDoorsReview(file, t)}`;
       if (t.dims.length) {
         const approx = await checkModel(file, t);
         line += `; model check ${t.dims.length} rows ${t.dims.some((x) => x.spans) ? "centre to centre and opening widths" : "centre to centre"}, ${approx ? `${approx} approximate (on traced walls), the rest OK` : "all OK"}`;
@@ -438,7 +579,7 @@ async function session(browser: Browser, width: number, height: number, touch: b
         const plan = await buildAndOpen();
         line += `; ${checkPlan(file, plan, t)}`;
         line += `; panel: ${await checkPanel(plan)}`;
-        if (file === "plan-doors.pdf") line += `; ${await checkDoorsStudio(plan, t)}`;
+        if (DOOR_FILES.includes(file)) line += `; ${await checkDoorsStudio(file, plan, t)}`;
       }
     }
     report.push(`${line}; ${(ms / 1000).toFixed(1)} s`);
@@ -512,7 +653,22 @@ async function session(browser: Browser, width: number, height: number, touch: b
       const openings = ol
         ? `openings exact ${await ol.getAttribute("data-exact")} of ${await ol.getAttribute("data-total")}, traced ${await ol.getAttribute("data-traced")}, unclassified ${await ol.getAttribute("data-unclassified")}, arcs not used ${await ol.getAttribute("data-arcs")}`
         : "openings traced (no coverage)";
-      report.push(`test-plans/${f}: ${err ? `error "${err}"` : `${pdf?.kind}, ${walls}, ${openings}, ${rows} dimensions read, ${flagged} flagged in the first table, ${flagged2} in the second`}, ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+      // Step M.1d: the gap sentence's own counts, and how the doors are hinged once it is built.
+      const gl = (await tid(page, "coverage-gaps-line").count()) ? tid(page, "coverage-gaps-line") : null;
+      const gaps = gl ? `out-of-range gaps ${await gl.getAttribute("data-gaps")} (${(await gl.getAttribute("data-sizes"))!.split(" ").map((v) => `${(Number(v) * 1000).toFixed(0)} mm`).join(", ")})` : "out-of-range gaps 0";
+      // Build it (the same path as the fixtures) and count how the doors are hinged. A real CAD
+      // plan may well refuse to build; the row then says so instead of failing the whole run.
+      let hinges = "not built";
+      if (!err && (await tid(page, "scale-found").count())) {
+        try {
+          const built = await buildAndOpen();
+          const doors = built.openings.filter((o) => o.kind === "door");
+          hinges = `hinge a ${doors.filter((o) => (o.hinge ?? "a") === "a").length}, hinge b ${doors.filter((o) => o.hinge === "b").length}`;
+        } catch (e) {
+          hinges = `not built (${String(e).slice(0, 80)})`;
+        }
+      }
+      report.push(`test-plans/${f}: ${err ? `error "${err}"` : `${pdf?.kind}, ${walls}, ${openings}, ${hinges}, ${gaps}, ${rows} dimensions read, ${flagged} flagged in the first table, ${flagged2} in the second`}, ${((Date.now() - t0) / 1000).toFixed(1)} s`);
       console.log(report[report.length - 1]);
     }
   }

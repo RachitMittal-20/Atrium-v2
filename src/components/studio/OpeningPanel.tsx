@@ -6,12 +6,15 @@
  * and which wall it sits on, and edits it with exact numbers: width, height,
  * sill (windows only: doors start at the floor), and the centre's distance
  * from the wall's start. A door shows its swing side, a Left/Right choice and
- * a Flip button, which flips the side and nothing else. Delete removes the
+ * a Flip button, which flips the side and nothing else, plus (step M.1d) a
+ * Hinge side A end / B end choice, which moves the leaf to the other jamb and
+ * nothing else — the two together are the door's four states. Delete removes the
  * opening and leaves its wall.
  *
  * Every rule is pure, in src/lib/plan/edit.ts (resizeOpening, slideOpening,
  * openingSize): this panel only parses what was typed (parseTypedLength, so
- * 0.9, 90 cm and 3' all work), rounds it to 1 cm, and hands the result to
+ * 0.9, 90 cm and 3' all work), rounds it to 0.1 mm (step M.1d, so a typed value is kept
+ * as typed), and hands the result to
  * planStore.updateOpening — one undo step per edit. A value that had to be
  * clamped says why underneath. Replaces the Summary in PlanPanel.tsx, the same
  * way WallPanel.tsx does for a wall, and reuses its NumberField.
@@ -22,16 +25,17 @@
  * Connects to: src/store/{planStore,selectionStore}.ts, src/lib/plan/edit.ts.
  */
 import { useState } from "react";
-import { openingSize, resizeOpening, roundTo, slideOpening } from "@/lib/plan/edit";
+import { openingSize, resizeOpening, roundTo, slideOpening, TYPED_STEP } from "@/lib/plan/edit";
 import { wallLength } from "@/lib/plan/geometry";
 import { usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
-import type { SwingSide } from "@/types/plan";
+import type { HingeEnd, SwingSide } from "@/types/plan";
 import { lengthHint } from "@/lib/units/format";
 import { same, useUnitFormat } from "./useUnitFormat";
 import { NumberField } from "./WallPanel";
 
 const SIDE_WORDS: Record<SwingSide, string> = { left: "Left", right: "Right" };
+const HINGE_WORDS: Record<HingeEnd, string> = { a: "A end", b: "B end" };
 
 export function OpeningPanel() {
   const fmt = useUnitFormat();
@@ -47,10 +51,11 @@ export function OpeningPanel() {
   const door = opening.kind === "door";
   const name = door ? "door" : "window";
 
-  /** Metres from what was typed, rounded to 1 cm, or a note saying why it wasn't read. */
+  /** Metres from what was typed, rounded to 0.1 mm (step M.1d: kept as typed), or a note
+   *  saying why it wasn't read. */
   const metres = (raw: string): number | string => {
     const m = fmt.parseLen(raw);
-    return m === null ? `"${raw.trim()}" isn't a length. ${lengthHint(fmt.length)}` : roundTo(m);
+    return m === null ? `"${raw.trim()}" isn't a length. ${lengthHint(fmt.length)}` : roundTo(m, TYPED_STEP);
   };
 
   const setWidth = (raw: string) => {
@@ -86,6 +91,11 @@ export function OpeningPanel() {
   };
 
   const side: SwingSide = opening.swing ?? "left";
+  const hinge: HingeEnd = opening.hinge ?? "a"; // no hinge stored means the a jamb, as every door did before step M.1d
+  const setHinge = (end: HingeEnd) => {
+    usePlanStore.getState().updateOpening(id, { hinge: end }); // one undo step, and the swing side is untouched
+    setNote(null);
+  };
 
   return (
     <section aria-labelledby="opening-h" data-testid="opening-panel">
@@ -146,10 +156,33 @@ export function OpeningPanel() {
               ))}
             </div>
           </div>
-          <p className="mt-1 text-xs text-smoke">Looking along the wall from its start; the hinge is at the end nearer the start.</p>
+          <p className="mt-1 text-xs text-smoke">Looking along the wall from its start.</p>
           <button type="button" data-testid="opening-flip" onClick={flip} className="mt-2 min-h-10 w-full rounded border border-stone bg-vellum px-3 text-sm text-iron hover:bg-limestone">
             Flip swing
           </button>
+
+          {/* Which jamb the leaf pivots on (step M.1d). Separate from the swing side: the two
+              make four door states, and flipping the swing never moves the hinge. */}
+          <div className="mt-3 flex items-center justify-between gap-2 text-sm">
+            <span className="text-smoke" id="hinge-label">
+              Hinge side
+            </span>
+            <div role="group" aria-labelledby="hinge-label" className="flex rounded border border-stone p-0.5" data-testid="opening-hinge" data-hinge={hinge}>
+              {(["a", "b"] as const).map((e) => (
+                <button
+                  key={e}
+                  type="button"
+                  data-testid={`hinge-${e}`}
+                  aria-pressed={hinge === e}
+                  onClick={() => hinge !== e && setHinge(e)}
+                  className={`min-h-9 rounded-sm px-3 ${hinge === e ? "bg-cyanotype text-vellum" : "text-smoke hover:bg-limestone"}`}
+                >
+                  {HINGE_WORDS[e]}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="mt-1 text-xs text-smoke">The jamb the leaf pivots on: the wall&apos;s start (A) or its end (B).</p>
         </div>
       )}
 

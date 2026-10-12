@@ -6,7 +6,9 @@
  *   table.obj + table.mtl + textures/wood.png
  *                 a 120 × 75 × 80 cm table (top and legs as two objects), in
  *                 centimetres, its top textured with a 4 × 4 px PNG;
- *   table.zip     the same three files inside a table/ folder;
+ *   table.zip     the same three files inside a table/ folder, written with a FIXED
+ *                 timestamp (step M.1d), so two runs give byte-identical files and the
+ *                 committed fixture never shows up in `git status` after an e2e run;
  *   room.dae      COLLADA, centimetres, Z up, three named objects: Sofa, Table, Lamp;
  *   nested.glb    a parent "Shelf" turned 30° and scaled 0.5 in the file, holding "Box A" and
  *                 "Box B" (step I.1b-fix: dragging a part under a transformed parent).
@@ -198,6 +200,18 @@ export function makeStlBinary(b: BoxSpec): Uint8Array {
   return out;
 }
 
+/**
+ * The zip of table.obj, table.mtl and textures/wood.png, byte for byte the same on every
+ * run (step M.1d). fflate stamps each entry with Date.now() unless it is told otherwise, so
+ * the committed fixture used to change on every e2e run and show up in `git status`. The
+ * entry order is the object's own key order, which is already fixed; only the timestamp
+ * needed pinning. ZIP's DOS timestamps cannot go before 1980, so 0 is not an option.
+ */
+const ZIP_MTIME = Date.UTC(2026, 0, 1); // a fixed date, not "now"
+export function tableZip(obj: Uint8Array, mtl: Uint8Array, png: Uint8Array): Uint8Array {
+  return zipSync({ "table/table.obj": obj, "table/table.mtl": mtl, "table/textures/wood.png": png }, { mtime: ZIP_MTIME });
+}
+
 /** A 4 × 4 px wood-coloured PNG. */
 export const woodPng = () => sharp({ create: { width: 4, height: 4, channels: 3, background: { r: 150, g: 105, b: 60 } } }).png().toBuffer().then((b) => new Uint8Array(b));
 
@@ -212,7 +226,7 @@ export async function writeFixtures() {
   writeFileSync(join(dir, "table.obj"), obj);
   writeFileSync(join(dir, "table.mtl"), mtl);
   writeFileSync(join(dir, "textures/wood.png"), png);
-  writeFileSync(join(dir, "table.zip"), zipSync({ "table/table.obj": obj, "table/table.mtl": mtl, "table/textures/wood.png": png }));
+  writeFileSync(join(dir, "table.zip"), tableZip(obj, mtl, png)); // fixed timestamps: the same bytes every run
   writeFileSync(join(dir, "room.dae"), makeDae(ROOM));
   writeFileSync(join(dir, "nested.glb"), makeNestedGlb());
   console.log(`wrote cube.glb, table.obj, table.mtl, textures/wood.png, table.zip, room.dae and nested.glb to ${dir}`);

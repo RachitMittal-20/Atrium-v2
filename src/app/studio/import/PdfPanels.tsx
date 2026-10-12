@@ -15,6 +15,8 @@
  *     PDF's lines (snap.ts's Coverage): "N of M walls read exactly from the PDF
  *     (X% of wall length); K walls are traced approximately (about Y mm)", the
  *     traced walls (also drawn in gilt dashes on the overlay) with why, the
+ *     out-of-range gaps (step M.1d: collinear gaps outside 0.45–4 m, not read as
+ *     openings, listed with their sizes and highlighted on the overlay), the
  *     diagonal and curved walls skipped, openings snapped, traced and added,
  *     and any fallback. Step M.1c adds the openings line ("A of B openings read
  *     exactly (doors D, windows W, unclassified U); C traced approximately; K
@@ -25,6 +27,7 @@
  */
 import { DOOR_SIZE, WINDOW_SIZE } from "@/data/samplePlan";
 import { paperName } from "@/lib/pdf/extract";
+import { OPENING_WIDTH } from "@/lib/pdf/openings";
 import type { Coverage } from "@/lib/pdf/snap";
 import { formatLength, STUDIO_DP, type LengthUnit } from "@/lib/units/format";
 import { useUnitsStore } from "@/store/unitsStore";
@@ -140,6 +143,15 @@ export function openingsLine(c: Coverage): string {
   return `${o.exact} of ${o.total} openings read exactly (doors ${o.doors}, windows ${o.windows}, unclassified ${o.unclassified}); ${o.traced} traced approximately; ${count(o.arcsNotUsed, "arc", "arcs")} not used.`;
 }
 
+/** The out-of-range gap sentence (step M.1d), or "" when there are none. */
+export function gapsLine(c: Coverage, unit: LengthUnit = "mm"): string {
+  const g = c.outOfRangeGaps;
+  if (!g.length) return "";
+  // The studio's own decimals, so metres read "0.45 m to 4.00 m … 0.30 m, 4.60 m" rather than three places.
+  const len = (m: number) => formatLength(m, unit, STUDIO_DP.length);
+  return `${count(g.length, "gap", "gaps")} outside ${len(OPENING_WIDTH[0])} to ${len(OPENING_WIDTH[1])} ${g.length === 1 ? "was" : "were"} not read as openings (sizes: ${g.map((x) => len(x.size)).join(", ")}).`;
+}
+
 export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
   const unit = useUnitsStore((st) => st.length); // the one units setting (step U.1)
   const len = (m: number) => formatLength(m, unit, STUDIO_DP.length);
@@ -155,6 +167,12 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
       <p data-testid="coverage-openings-line" data-exact={c.openings.exact} data-total={c.openings.total} data-traced={c.openings.traced} data-unclassified={c.openings.unclassified} data-arcs={c.openings.arcsNotUsed}>
         {openingsLine(c)}
       </p>
+      {c.outOfRangeGaps.length > 0 && (
+        <p data-testid="coverage-gaps-line" data-gaps={c.outOfRangeGaps.length} data-sizes={c.outOfRangeGaps.map((g) => g.size.toFixed(4)).join(" ")}>
+          <span aria-hidden className="mr-2 inline-block h-2.5 w-4 border-2 border-dashed border-overlay-door align-middle" />
+          {gapsLine(c, unit)} A gap narrower than {len(OPENING_WIDTH[0])} is closed as wall; a wider one leaves the wall open. Draw or place them yourself.
+        </p>
+      )}
       {c.openings.total > 0 && (
         <p className="text-sm text-smoke" data-testid="coverage-heights">
           Heights are not in a PDF: doors are {len(DOOR_SIZE.height)} and windows {len(WINDOW_SIZE.height)} on a {len(WINDOW_SIZE.sillHeight)} sill (default height). Change them in the studio.

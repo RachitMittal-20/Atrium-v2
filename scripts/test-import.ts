@@ -14,6 +14,7 @@
  * Run: npx tsx scripts/test-import.ts (throws on the first failure).
  */
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as THREE from "three";
@@ -42,7 +43,7 @@ import {
   type InputFile,
 } from "../src/lib/import/loadModel";
 import { applyOverrides, applyUpAxis, countTriangles, footprint, guessUnit, itemLocalBox, modelFrame, nodePaths, placeOnFloor } from "../src/lib/import/model";
-import { CUBE, makeDae, makeGlb, makeObj, makeStlAscii, makeStlBinary, ROOM, TABLE, tableMtl } from "./make-import-fixtures";
+import { CUBE, makeDae, makeGlb, makeObj, makeStlAscii, makeStlBinary, ROOM, TABLE, tableMtl, tableZip, woodPng } from "./make-import-fixtures";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const file = (name: string, bytes: Uint8Array | string): InputFile => ({ name, bytes: typeof bytes === "string" ? enc(bytes) : bytes });
@@ -339,6 +340,19 @@ async function main() {
     assert.ok(bomb.length < 20_000, `the bomb is small (${bomb.length} bytes)`);
     assert.equal(await refusal(() => unzipFiles(bomb, 1024 * 1024)), ZIP_TOO_BIG, "2 MB unpacked against a 1 MB cap: refused");
     assert.match(await refusal(() => unzipFiles(new Uint8Array([80, 75, 3, 4, 1, 2, 3]))), /couldn't be opened/, "a damaged zip");
+  }
+
+  // ------------------------------------------------------------ table.zip is byte-identical twice (step M.1d)
+  {
+    const obj = new TextEncoder().encode(makeObj(TABLE, "table.mtl"));
+    const mtl = new TextEncoder().encode(tableMtl("textures/wood.png"));
+    const png = await woodPng();
+    const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
+    const [one, two] = [sha(tableZip(obj, mtl, png)), sha(tableZip(obj, mtl, png))];
+    assert.equal(one, two, "table.zip is the same bytes on two runs (fixed timestamps and entry order)");
+    // And the committed fixture is exactly what the writer produces, so an e2e run leaves no diff.
+    assert.equal(sha(new Uint8Array(readFileSync(join(__dirname, "../tests/fixtures/models/table.zip")))), one, "the committed table.zip is what writeFixtures writes");
+    console.log(`table.zip: deterministic, sha256 ${one.slice(0, 16)}… twice, and equal to the committed fixture`);
   }
 
   console.log("OK");

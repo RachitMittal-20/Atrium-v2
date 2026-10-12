@@ -156,7 +156,19 @@ const dist = (p: { x: number; y: number }, q: { x: number; y: number }) => Math.
   close(st.centre, 10, 1e-12, "the centre line does not step");
   assert.equal(wallTakeoffName(plan, "w-LF", "right"), "South wall, right face");
   assert.equal(wallTakeoffName(plan, "w-CM", "centre"), "East wall, centre line");
-  console.log("wall faces: ok");
+
+  // Step M.1d: Opening.hinge must not touch a takeoff. Faces come from the walls alone, so hanging
+  // every door on the jamb nearer its wall's b end — which M.1c could only hold by turning the wall
+  // round, and that WOULD have swapped left and right — changes nothing here.
+  const farHinged: Plan = { ...plan, openings: plan.openings.map((o) => (o.kind === "door" ? { ...o, hinge: "b" as const } : o)) };
+  for (const id of ["w-HI", "w-LF", "w-EL", "w-CM", "w-BI", "w-BC", "w-KL"]) {
+    const was = wallFaceLengths(plan, id).value!;
+    const now = wallFaceLengths(farHinged, id).value!;
+    assert.deepEqual(now, was, `far-hinged doors leave ${id}'s left and right faces, rooms and pieces exactly as they were`);
+    assert.equal(wallTakeoffName(farHinged, id, "left"), wallTakeoffName(plan, id, "left"), `…and ${id}'s left-face label`);
+    assert.equal(wallTakeoffName(farHinged, id, "right"), wallTakeoffName(plan, id, "right"), `…and its right-face label`);
+  }
+  console.log("wall faces: ok (and unchanged by far-hinged doors, step M.1d)");
 }
 
 // ---- snapping: corners, then ends, then jambs, then midpoints, then the 5 cm grid

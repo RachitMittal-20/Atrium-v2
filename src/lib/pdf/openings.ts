@@ -19,7 +19,10 @@
  * never counted). An arc is a SWING ARC when its sweep is 80–100°, its radius
  * 0.5–1.5 m, and it has a LEAF: a straight segment from the arc's centre (the
  * hinge) to one of its ends, as long as the radius within 2% (both ends within
- * 2% of the radius of those points). Every arc that ends up in no opening is
+ * 2% of the radius of those points), or (step M.1d) a thin closed RECTANGLE drawn in the
+ * same place — four straight sides, 20 to 100 mm across, as long as the radius, one short
+ * end at the centre and the other at an arc end (rectLeaf). A rectangle with no valid arc
+ * is never a door on its own: such a gap stays unclassified. Every arc that ends up in no opening is
  * reported as "not used", with why (radius, sweep, no leaf, no jamb at its
  * centre, or a radius that doesn't match the opening).
  *
@@ -76,13 +79,15 @@ export const ARC_RULES = {
   maxTurn: 45,
   maxPiece: 0.6,
   minPieces: 3,
+  /** A leaf drawn as a thin closed rectangle (step M.1d): how thick it may be, in metres. */
+  rectLeaf: [0.02, 0.1] as const,
 };
 /** Opening widths (m), as the spec gives them; walls.ts merges narrower gaps as solid wall. */
 export const OPENING_WIDTH = [0.45, 4] as const;
 const SAME = 0.001;
 const DEG = Math.PI / 180;
 
-export type Seg = { x1: number; y1: number; x2: number; y2: number; curve?: boolean };
+export type Seg = { x1: number; y1: number; x2: number; y2: number; curve?: boolean; path?: number };
 
 export interface Circle {
   c: Vec2;
@@ -141,9 +146,10 @@ export interface Arc {
   /** First and last points of the chain, and its middle point (which side of a wall it lies on). */
   ends: [Vec2, Vec2];
   mid: Vec2;
-  /** Indexes of its pieces and of its leaf in the segment list given. */
+  /** Indexes of its pieces, and of its leaf (one line, or the four sides of a thin
+   *  rectangle; empty when it has none), in the segment list given. */
   pieces: number[];
-  leaf: number | null;
+  leaf: number[];
   /** Null when it is a swing arc (sweep, radius and a leaf); else why not. */
   why: string | null;
 }
@@ -181,6 +187,56 @@ function chains(segs: Seg[]): number[][] {
   return out;
 }
 
+/**
+ * A leaf drawn as a thin closed RECTANGLE rather than one line (step M.1d: CAD usually
+ * draws the leaf's real thickness). The whole path must be four straight segments forming
+ * a closed rectangle (square corners and equal opposite sides, to 2% of the radius), 20 to
+ * 100 mm across its short side and as long as the arc's radius within 2%, with the midpoint
+ * of ONE short end at the arc's centre (the hinge) and the other short end at one of the
+ * arc's ends. Every index of the path comes back, so walls.ts keeps all four sides out of
+ * the wall faces — otherwise a 0.05 m leaf would pair as a 0.9 m wall of its own.
+ *
+ * A rectangle with no valid swing arc is never a door on its own: nothing here is reached
+ * without one, so such a gap stays unclassified.
+ */
+function rectLeaf(segs: Seg[], inChain: Set<number>, fit: Circle, ends: [Vec2, Vec2], tol: number): number[] {
+  const [tMin, tMax] = ARC_RULES.rectLeaf;
+  const paths = new Map<number, number[]>();
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    if (inChain.has(i) || s.curve || s.path === undefined) continue;
+    paths.set(s.path, [...(paths.get(s.path) ?? []), i]);
+  }
+  for (const idx of paths.values()) {
+    if (idx.length !== 4) continue;
+    const sides = idx.map((i) => segs[i]);
+    // Closed: the four pieces run end to end and back to the first one's start.
+    const pts = [start(sides[0]), ...sides.map((s) => end(s))];
+    if (pts.slice(1, 4).some((q, k) => dist(q, start(sides[k + 1])) > ARC_RULES.join) || dist(pts[4], pts[0]) > ARC_RULES.join) continue;
+    const corners = pts.slice(0, 4);
+    const lens = sides.map(segLen);
+    // A rectangle: opposite sides equal (to `tol`) and every corner square.
+    if (Math.abs(lens[0] - lens[2]) > tol || Math.abs(lens[1] - lens[3]) > tol) continue;
+    const unit = (s: Seg): Vec2 => {
+      const l = segLen(s) || 1;
+      return { x: (s.x2 - s.x1) / l, y: (s.y2 - s.y1) / l };
+    };
+    if (!sides.every((s, k) => {
+      const [u, v] = [unit(s), unit(sides[(k + 1) % 4])];
+      return Math.abs(u.x * v.x + u.y * v.y) <= 0.02;
+    }))
+      continue;
+    const long = Math.max(lens[0], lens[1]);
+    const short = Math.min(lens[0], lens[1]);
+    if (short < tMin - 1e-9 || short > tMax + 1e-9 || Math.abs(long - fit.r) > tol) continue;
+    // The two SHORT ends' midpoints: one at the hinge (the arc's centre), the other at an arc end.
+    const mid = (k: number): Vec2 => ({ x: (corners[k].x + corners[(k + 1) % 4].x) / 2, y: (corners[k].y + corners[(k + 1) % 4].y) / 2 });
+    const shortEnds = [0, 1, 2, 3].filter((k) => Math.abs(lens[k] - short) <= tol).map(mid);
+    if (shortEnds.some((m) => dist(m, fit.c) <= tol) && shortEnds.some((m) => ends.some((e) => dist(m, e) <= tol))) return idx;
+  }
+  return [];
+}
+
 /** Every arc among the segments (header): fitted, its leaf found, and whether it can be a swing. */
 export function findArcs(segs: Seg[]): Arc[] {
   const arcs: Arc[] = [];
@@ -194,14 +250,16 @@ export function findArcs(segs: Seg[]): Arc[] {
     const tol = ARC_RULES.leaf * fit.r;
     const inChain = new Set(chain);
     // The leaf: a straight line from the centre to one end, as long as the radius within 2%.
-    let leaf: number | null = null;
-    for (let i = 0; i < segs.length && leaf === null; i++) {
+    let leaf: number[] = [];
+    for (let i = 0; i < segs.length && !leaf.length; i++) {
       const s = segs[i];
       if (inChain.has(i) || s.curve || Math.abs(segLen(s) - fit.r) > tol) continue;
       const [p, q] = [start(s), end(s)];
       const fits = (h: Vec2, t: Vec2) => dist(h, fit.c) <= tol && ends.some((e) => dist(t, e) <= tol);
-      if (fits(p, q) || fits(q, p)) leaf = i;
+      if (fits(p, q) || fits(q, p)) leaf = [i];
     }
+    // Or (step M.1d) a leaf drawn as a thin closed rectangle, which is how most CAD draws one.
+    if (!leaf.length) leaf = rectLeaf(segs, inChain, fit, ends, tol);
     const [rMin, rMax] = ARC_RULES.radius;
     const [sMin, sMax] = ARC_RULES.sweep;
     const why =
@@ -209,7 +267,7 @@ export function findArcs(segs: Seg[]): Arc[] {
         ? `radius ${fit.r.toFixed(2)} m, outside ${rMin}–${rMax} m`
         : sweep < sMin || sweep > sMax
           ? `sweep ${Math.round(sweep)}°, outside ${sMin}–${sMax}°`
-          : leaf === null
+          : !leaf.length
             ? "no leaf (a line from its centre to its end)"
             : null;
     arcs.push({ centre: fit.c, r: fit.r, sweep, residual: fit.residual / fit.r, ends, mid: pts[Math.floor(pts.length / 2)], pieces: chain, leaf, why });

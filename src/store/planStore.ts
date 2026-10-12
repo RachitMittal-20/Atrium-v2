@@ -14,7 +14,7 @@
  * never touch walls or rooms. A wall imported from a PDF keeps its provenance
  * through edits; `edit()` marks it `edited` once its shape changes (step M.1b),
  * and does the same for a door or window imported from a PDF (step M.1c: its wall,
- * kind, place, size or swing), clearing `defaultHeight` once its height or sill changes.
+ * kind, place, size, swing or hinge jamb), clearing `defaultHeight` once its height or sill changes.
  * `addTakeoff`, `updateTakeoff`, `deleteTakeoff` and `markTakeoffCurrent` keep the
  * quantity takeoffs (step M.2a), one undo step each; takeoffs are annotations and
  * never touch walls, rooms or openings. Connects to:
@@ -70,7 +70,8 @@ interface PlanState {
    * null, with nothing recorded, when it is refused.
    */
   placeOpening: (kind: OpeningKind, wallId: string, centre: number) => string | null;
-  /** Reverse a door's swing side and nothing else. One undo step; a window is left alone. */
+  /** Reverse a door's swing side and nothing else — not its hinge jamb (step M.1d).
+   *  One undo step; a window is left alone. */
   flipDoor: (id: string) => void;
   updateOpening: (id: string, changes: Partial<Omit<Opening, "id">>) => void;
   deleteOpening: (id: string) => void;
@@ -429,7 +430,7 @@ function markEdited(d: Draft<Plan>, before: Plan) {
     const was = before.openings.find((p) => p.id === o.id);
     if (o.defaultHeight && (!was || was.height !== o.height || was.sillHeight !== o.sillHeight)) delete o.defaultHeight;
     if (o.edited) continue;
-    if (!was || (["wallId", "kind", "offset", "width", "height", "sillHeight", "swing"] as const).some((k) => was[k] !== o[k])) o.edited = true;
+    if (!was || (["wallId", "kind", "offset", "width", "height", "sillHeight", "swing", "hinge"] as const).some((k) => was[k] !== o[k])) o.edited = true;
   }
 }
 

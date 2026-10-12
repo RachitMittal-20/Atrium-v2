@@ -474,6 +474,26 @@ async function checkWiring() {
   console.log("opening provenance: old plans unchanged, provenance / edited / defaultHeight round-trip, unknown values dropped");
 }
 
+// ---- step M.1d: Opening.hinge. An old plan has none and gains none, so it draws exactly as it did;
+// "a" and "b" round-trip; anything else is dropped, never refused, and the swing side is untouched.
+{
+  const old = serializePlan(samplePlan);
+  assert.ok(!old.includes("hinge"), "the sample stores no hinge jamb");
+  const back = parseStoredPlan(old)!;
+  assert.ok(back.openings.every((o) => !("hinge" in o)), "an old plan's openings gain no hinge field (absent means the a jamb)");
+  const hinged: Plan = { ...samplePlan, openings: samplePlan.openings.map((o, i) => (o.kind === "door" ? { ...o, hinge: (i % 2 ? "b" : "a") as "a" | "b" } : o)) };
+  const round = parseStoredPlan(serializePlan(hinged))!;
+  assert.deepEqual(round.openings, hinged.openings, "the hinge jamb survives a save and reload, on either jamb");
+  const odd = JSON.parse(serializePlan(hinged));
+  const door = odd.plan.openings.findIndex((o: { kind: string }) => o.kind === "door");
+  odd.plan.openings[door].hinge = "middle";
+  const cleaned = parseStoredPlan(JSON.stringify(odd))!;
+  assert.ok(cleaned, "an unknown hinge value does not refuse the plan");
+  assert.ok(!("hinge" in cleaned.openings[door]), "it is dropped instead, so the door falls back to the a jamb");
+  assert.equal(cleaned.openings[door].swing, hinged.openings[door].swing, "and the swing side is untouched");
+  console.log("opening hinge: old plans gain no field, a and b round-trip, unknown values dropped");
+}
+
 // (async because the debounce is waited out in real time; the CJS test runner has no top-level await)
 checkWiring().then(
   () => console.log("OK"),

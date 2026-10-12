@@ -219,6 +219,42 @@ block("Flip reverses only the swing side, as one undo step", () => {
   assert.equal(s().past.length, 1, "flipping a window does nothing (history after the undo stays at one step)");
 });
 
+block("the hinge jamb is separate from the swing side: one undo step, redo, and Flip leaves it alone (step M.1d)", () => {
+  reset();
+  const before = structuredClone(op(s().plan, "d-bed1"));
+  assert.equal(before.hinge, undefined, "the sample stores no hinge, which means the a jamb");
+  // What the OpeningPanel's "Hinge side: A end | B end" control does.
+  s().updateOpening("d-bed1", { hinge: "b" });
+  let now = op(s().plan, "d-bed1");
+  assert.equal(now.hinge, "b", "the leaf moves to the jamb nearer the wall's b end");
+  assert.deepEqual({ ...now, hinge: undefined }, { ...before, hinge: undefined }, "and nothing else changes: wall, kind, width, offset, height, sill and swing");
+  assert.equal(s().past.length, 1, "one undo step");
+  s().undo();
+  assert.equal(op(s().plan, "d-bed1").hinge, undefined, "undo puts it back on the a jamb");
+  s().redo();
+  assert.equal(op(s().plan, "d-bed1").hinge, "b", "redo moves it to b again");
+  // Flipping the swing never moves the hinge, and moving the hinge never flips the swing.
+  s().flipDoor("d-bed1");
+  now = op(s().plan, "d-bed1");
+  assert.equal(now.hinge, "b", "Flip swing keeps the hinge at b");
+  assert.equal(now.swing, "right", "…and flips only the side");
+  s().updateOpening("d-bed1", { hinge: "a" });
+  assert.equal(op(s().plan, "d-bed1").swing, "right", "moving the hinge back keeps the flipped side");
+  // All four states are storable, and the validator is indifferent to the hinge.
+  for (const hinge of ["a", "b"] as const)
+    for (const swing of ["left", "right"] as const) {
+      s().updateOpening("d-bed1", { hinge, swing });
+      assert.deepEqual(openingsValid(s().plan), [], `hinge ${hinge} + swing ${swing} is a valid door`);
+    }
+  assert.deepEqual(validatePlan({ ...samplePlan, openings: [{ ...op(samplePlan, "win-bed1"), hinge: "b" }] }).filter((x) => /hinge/i.test(x)), [], "a hinge on a window is not a validator problem (only a swing is)");
+  // The 2D drawing follows it, and the hinge is the only thing that moved.
+  const wall = wallIn(s().plan, "w-BI");
+  const atA = doorSwing(wall, { ...op(s().plan, "d-bed1"), hinge: "a" });
+  const atB = doorSwing(wall, { ...op(s().plan, "d-bed1"), hinge: "b" });
+  close(dist(atA.hinge, atB.hinge), op(s().plan, "d-bed1").width, EPS, "the two hinges are the gap's two ends");
+  assert.deepEqual(atA.arcEnd, atB.hinge, "each one's arc closes on the other's jamb");
+});
+
 block("move and resize through the store are one undo step each and stay valid", () => {
   reset();
   const out = edit.slideOpening(s().plan, "win-living-n", 3);

@@ -16,7 +16,9 @@
  *     rejected; polyline arcs found like Bézier ones;
  *   - the swing for all four combinations (hinge at the a or b jamb, leaf to either
  *     side), checked against doorSwing, and at the plan level on plan-doors (the
- *     plan's hinge on the PDF's jamb, the leaf on the PDF's side, walls turned round);
+ *     plan's hinge on the PDF's jamb and the leaf on the PDF's side). Step M.1d: the
+ *     jamb is STORED (Opening.hinge) and no wall is turned round to suit a door, so
+ *     every wall in the plan still runs the way walls.ts read it;
  *   - classification: door, double door, sliding, window (two lines in a gap, and the
  *     faces-plus-glass style), unclassified; an arc whose centre is 0.15 m off the
  *     jamb, or whose radius doesn't fit, is not used, with why; 0.44 m gaps close,
@@ -32,6 +34,13 @@
  *   - the merge: within 3 px snaps, overlapping farther out is replaced (noted), 3 px
  *     beside it is replaced, 4 px beside it stays traced (listed), a missed one is
  *     added, a PDF opening openingProblem refuses is left out and the traced kept;
+ *   - step M.1d: a leaf drawn as a thin closed RECTANGLE is a leaf when it comes with a
+ *     valid arc (Bézier or polyline, either jamb, either side) and never pairs as a wall;
+ *     a rectangle with no arc leaves the gap unclassified; 20–100 mm thick only;
+ *   - step M.1d: collinear gaps outside 0.45–4 m are reported with their sizes (0.30 m
+ *     closed as wall, 4.60 m unbridged), synthetically and on plan-gaps.pdf against its
+ *     truth; plan-doors-rect.pdf's two doors on ONE wall, hinged at opposite jambs and
+ *     opening to opposite sides, both exact;
  *   - the store: an opening from a PDF says edited after a change, typing a height
  *     clears "default height", undo restores both. (Persistence: test-persist.ts.)
  * Run: npx tsx scripts/test-pdf-openings.ts
@@ -101,13 +110,28 @@ function arc(c: Vec2, r: number, a0: number, sweep: number, o: { n?: number; pol
   const p = (i: number) => ({ x: c.x + r * jitter(i) * Math.cos(a0 + (sweep * i) / n), y: c.y + r * jitter(i) * Math.sin(a0 + (sweep * i) / n) });
   return Array.from({ length: n }, (_, i) => seg(p(i).x, p(i).y, p(i + 1).x, p(i + 1).y, { curve: !o.poly, path }));
 }
+/** A closed rectangle as four segments in ONE path, the way a stroked CAD rectangle arrives. */
+const rect4 = (pts: [number, number][]): PdfSegment[] => {
+  const path = pathNo++;
+  return pts.map((q, i) => seg(q[0], q[1], pts[(i + 1) % pts.length][0], pts[(i + 1) % pts.length][1], { path }));
+};
+/** A leaf drawn as a thin closed rectangle (step M.1d): hinge at x = h on the centre line
+ *  y = 1, tip r along the wall's `dir` side, `lt` metres across (0.06 m pairs as a wall if
+ *  openings.ts fails to keep it out of the faces). */
+const rectLeaf = (h: number, r: number, dir: 1 | -1, lt = 0.06) =>
+  rect4([
+    [h - lt / 2, 1],
+    [h + lt / 2, 1],
+    [h + lt / 2, 1 + dir * r],
+    [h - lt / 2, 1 + dir * r],
+  ]);
 const DEG = Math.PI / 180;
-const toM = (s: PdfSegment): Seg => ({ x1: s.x1 * K, y1: s.y1 * K, x2: s.x2 * K, y2: s.y2 * K, curve: s.curve });
+const toM = (s: PdfSegment): Seg => ({ x1: s.x1 * K, y1: s.y1 * K, x2: s.x2 * K, y2: s.y2 * K, curve: s.curve, path: s.path }); // path too: a rectangle leaf is found by path (step M.1d)
 
 /** A 4 m wall along y = 1 (0.2 m thick) with a gap [g0, g1], plus whatever is drawn in it. */
 const wallWithGap = (g0: number, g1: number, extra: PdfSegment[] = []) => [seg(0, 0.9, g0, 0.9), seg(0, 1.1, g0, 1.1), seg(g1, 0.9, 4, 0.9), seg(g1, 1.1, 4, 1.1), ...extra];
 /** A swing: hinge at x = h on the centre line, leaf to y = 1 + dir·r ("south" dir = +1, page y down), arc to x = to. */
-function swing(h: number, to: number, dir: 1 | -1, o: { r?: number; sweepDeg?: number; leaf?: number; poly?: boolean; noise?: number; shift?: number } = {}): PdfSegment[] {
+function swing(h: number, to: number, dir: 1 | -1, o: { r?: number; sweepDeg?: number; leaf?: number; poly?: boolean; noise?: number; shift?: number; rect?: boolean | number } = {}): PdfSegment[] {
   const r = o.r ?? Math.abs(to - h);
   const c = { x: h + (o.shift ?? 0), y: 1 };
   const tipA = dir * 90 * DEG; // the leaf's angle (page axes): south +90°, north -90°
@@ -116,7 +140,9 @@ function swing(h: number, to: number, dir: 1 | -1, o: { r?: number; sweepDeg?: n
   sw -= 2 * Math.PI * Math.round(sw / (2 * Math.PI));
   if (o.sweepDeg) sw = Math.sign(sw) * o.sweepDeg * DEG;
   const leaf = o.leaf ?? r;
-  return [seg(c.x, c.y, c.x, c.y + dir * leaf), ...arc(c, r, tipA, sw, { poly: o.poly, noise: o.noise })];
+  // Step M.1d: the leaf as a thin closed rectangle (optionally of a given thickness) instead of one line.
+  const drawn = o.rect ? rectLeaf(c.x, leaf, dir, typeof o.rect === "number" ? o.rect : 0.06) : [seg(c.x, c.y, c.x, c.y + dir * leaf)];
+  return [...drawn, ...arc(c, r, tipA, sw, { poly: o.poly, noise: o.noise })];
 }
 const one = (segs: PdfSegment[]) => readVectorWalls({ segments: segs }, K);
 
@@ -236,8 +262,66 @@ async function main() {
     console.log("classification: door, double, sliding, window (two lines in a gap; faces and glass), unclassified; off-jamb and mismatched arcs not used, with why; 0.44 m closes, 0.46 m opens");
   }
 
+  // ------------------------------------------------------------ thin-rectangle leaves (step M.1d)
+  {
+    const kind = (segs: PdfSegment[]) => one(segs);
+    // A leaf drawn as a thin closed rectangle, with a valid swing arc: a door, hinge and side as drawn.
+    for (const poly of [false, true])
+      for (const dir of [1, -1] as const) {
+        const v = kind(wallWithGap(1.5, 2.4, swing(1.5, 2.4, dir, { poly, rect: true })));
+        const [o] = v.openings;
+        assert.equal(v.walls.length, 1, `rect leaf (${poly ? "polyline" : "Bézier"} arc, ${dir === 1 ? "south" : "north"}): still ONE wall — all four sides of the rectangle are kept out of the faces`);
+        assert.ok(o && o.class === "door" && o.kind === "door", `rect leaf: a door (${JSON.stringify(o)})`);
+        assert.equal(o.swing, dir === 1 ? "left" : "right", "rect leaf: the side the rectangle lies on");
+        assert.equal(o.hingeEnd, "a", "rect leaf: the jamb its short end sits on");
+      }
+    // Hinged at the b jamb too.
+    assert.equal(kind(wallWithGap(1.5, 2.4, swing(2.4, 1.5, 1, { rect: true }))).openings[0].hingeEnd, "b", "a rect leaf on the b jamb");
+    // A rectangle with NO arc is not a door by itself: the gap stays unclassified, and it is no wall.
+    const bare = kind([...wallWithGap(1.5, 2.4), ...rectLeaf(1.5, 0.9, 1)]);
+    assert.equal(bare.openings.length, 1, "a rectangle with no arc: still one opening");
+    assert.equal(bare.openings[0].class, "unclassified", "…and it is unclassified, not a door read from a leaf");
+    assert.equal(bare.openings[0].swing, "left", "kept as a door with LEGACY_SWING, as any undrawn gap is");
+    // A rectangle outside the rules is not a leaf: too thick, too short, or not at the hinge.
+    const why = (segs: PdfSegment[]) => findArcs(segs.map(toM)).map((a) => a.why);
+    const withRect = (o: { rect?: boolean | number; leaf?: number; shift?: number }) => why(swing(1, 1.9, -1, { r: 0.9, rect: true, ...o }));
+    assert.deepEqual(withRect({}), [null], "a 60 mm rectangle leaf is a leaf");
+    assert.deepEqual(withRect({ rect: 0.02 }), [null], "20 mm, the thinnest allowed, is too");
+    assert.deepEqual(withRect({ rect: 0.1 }), [null], "and 100 mm, the thickest");
+    assert.match(String(withRect({ rect: 0.12 })[0]), /no leaf/, "120 mm is not a leaf");
+    // Thinner than 20 mm is not a RECTANGLE leaf, but one of its long sides then passes the plain
+    // LINE-leaf test (its ends are within 2% of the radius of the centre and the arc's end), so the
+    // door is still found. Only that one side is kept out of the faces; the other is 15 mm away,
+    // closer than the 50 mm walls.ts pairs at, so it cannot become a wall either.
+    assert.deepEqual(withRect({ rect: 0.015 }), [null], "15 mm: not a rectangle leaf, but a side of it reads as a line leaf");
+    assert.match(String(withRect({ rect: true, leaf: 0.9 * 1.03 })[0]), /no leaf/, "a rectangle 3% too long is not a leaf");
+    assert.deepEqual(ARC_RULES.rectLeaf, [0.02, 0.1], "the rectangle leaf's thickness range");
+    console.log("rect leaves: accepted with a Bézier or polyline arc, on either jamb and either side, and never paired as a wall; a rectangle with no arc leaves the gap unclassified; 20–100 mm only, length = radius ±2%");
+  }
+
+  // ------------------------------------------------------------ gaps outside 0.45–4 m are reported (step M.1d)
+  {
+    const sizes = (v: VectorWalls) => (v.gaps ?? []).map((g) => +g.size.toFixed(4));
+    // Narrow: closed as solid wall, as before, but now reported.
+    const narrow = one(wallWithGap(1.5, 1.8));
+    assert.equal(narrow.walls.length, 1, "a 0.30 m gap still closes as one wall");
+    assert.equal(narrow.openings.length, 0, "…and is not an opening");
+    assert.deepEqual(sizes(narrow), [0.3], "…and is reported with its size");
+    // Exactly at the limits: 0.45 m is an opening, so nothing is reported; 0.44 m is reported.
+    assert.deepEqual(sizes(one(wallWithGap(1.5, 1.96))), [], "a 0.46 m gap is an opening, so there is nothing to report");
+    assert.deepEqual(sizes(one(wallWithGap(1.5, 1.94))), [0.44], "0.44 m is reported");
+    // Wide: over 4 m, nothing bridges it, so the wall ends there; reported with its size.
+    const wide = one([seg(0, 0.9, 1.5, 0.9), seg(0, 1.1, 1.5, 1.1), seg(6.1, 0.9, 8, 0.9), seg(6.1, 1.1, 8, 1.1)]);
+    assert.equal(wide.walls.length, 2, "a 4.6 m gap leaves two walls, unbridged");
+    assert.equal(wide.openings.length, 0, "…and no opening");
+    assert.deepEqual(sizes(wide), [4.6], "…and is reported with its size");
+    // An overlap is not a gap, and neither is a break another wall crosses.
+    assert.deepEqual(sizes(one([seg(0, 0.9, 2.5, 0.9), seg(0, 1.1, 2.5, 1.1), seg(2, 0.9, 4, 0.9), seg(2, 1.1, 4, 1.1)])), [], "overlapping pieces are not a gap");
+    console.log("gaps: 0.30 m closes as wall and 4.60 m stays unbridged, both reported with their sizes; 0.46 m is an opening (nothing reported); overlaps are not gaps");
+  }
+
   // ------------------------------------------------------------ every vector fixture: exact openings
-  const files = ["plan-filled.pdf", "plan-lines.pdf", "plan-fit.pdf", "plan-rotated.pdf", "plan-imperial.pdf", "plan-two-pages.pdf", "plan-clutter.pdf", "plan-broken-dims.pdf", "plan-single-line.pdf", "plan-no-dims.pdf", "plan-doors.pdf"];
+  const files = ["plan-filled.pdf", "plan-lines.pdf", "plan-fit.pdf", "plan-rotated.pdf", "plan-imperial.pdf", "plan-two-pages.pdf", "plan-clutter.pdf", "plan-broken-dims.pdf", "plan-single-line.pdf", "plan-no-dims.pdf", "plan-doors.pdf", "plan-doors-rect.pdf"];
   for (const file of files) {
     const { analysis, pdf, t, scale } = await read(file);
     const b = buildPdfPlan(analysis, pdf, scale);
@@ -263,12 +347,22 @@ async function main() {
         const s = doorSwing(w, o);
         assert.ok(d(s.hinge, to.hinge) <= HALF_MM, `${file}: ${to.id} hangs on the PDF's jamb (${(d(s.hinge, to.hinge) * 1000).toFixed(2)} mm)`);
         assert.ok((s.leafEnd.x - s.hinge.x) * to.side!.x + (s.leafEnd.y - s.hinge.y) * to.side!.y > 0.5 * o.width, `${file}: ${to.id} opens to the PDF's side`);
+        // Step M.1d: and it is STORED as that jamb, rather than the wall being turned round to suit it.
+        assert.equal(o.hinge ?? "a", to.hingeEnd, `${file}: ${to.id} is stored hinged at the ${to.hingeEnd} jamb`);
       } else if (to.side) {
         const s = doorSwing(w, o);
         assert.ok((s.leafEnd.x - s.hinge.x) * to.side.x + (s.leafEnd.y - s.hinge.y) * to.side.y > 0, `${file}: ${to.id} (double) opens to the PDF's side`);
       }
     }
     assert.equal(plan.openings.length, t.planOpenings.length, `${file}: exactly the true openings`);
+    // Step M.1d: no wall is ever turned round to suit a door, so every wall in the plan still runs
+    // the way the PDF reading gave it. walls.ts always makes a the end with the SMALLER coordinate
+    // (asserted on its own output just below), so that one test catches any reversal. The truth's
+    // planWalls keep the sample's own a→b, which for half the walls is the other way round by
+    // design, so they say nothing about direction and are not compared here.
+    const forward = (w: { a: Vec2; b: Vec2 }) => w.a.x < w.b.x - 1e-9 || (Math.abs(w.a.x - w.b.x) < 1e-9 && w.a.y < w.b.y - 1e-9);
+    assert.ok(pdf.vectorWalls!.walls.every(forward), `${file}: the PDF reading itself runs every wall from its smaller coordinate`);
+    for (const w of plan.walls.filter((x) => x.provenance === "vector")) assert.ok(forward(w), `${file}: wall ${w.id} still runs the PDF's way (no turn-round)`);
     assert.equal(c.openings.exact, t.planOpenings.length, `${file}: all read exactly`);
     assert.deepEqual(validatePlan(plan), [], `${file}: validatePlan clean`);
     const areas = (p: Plan) => deriveRooms(p).map((r) => r.area).sort((x, y) => x - y);
@@ -293,8 +387,15 @@ async function main() {
       assert.ok(c.unclassifiedOpenings.some((u) => u.id === gap.id) && gap.swing === "left", "the bare gap is unclassified (its leafless arc never made it a door), swing left");
       const sl = atPlace(plan, t.planOpenings.find((o) => o.id === "sl-living")!)!;
       assert.ok(sl.kind === "door" && !c.unclassifiedOpenings.some((u) => u.id === sl.id), "the sliding door is a door, not unclassified");
-      // Walls turned round: d-bed1 and d-bath hang on the b jamb in the sample; their plan walls now start there.
-      assert.ok(!c.notes.some((n) => /hangs on the jamb nearer its wall's end/.test(n)), "no door left hanging on its wall's b jamb");
+      // Step M.1d: d-bed1 and d-bath are drawn hinged on the jamb nearer their wall's b end. M.1c
+      // turned those walls round to suit them; now the wall keeps its direction and the door carries
+      // hinge "b", so nothing is mirrored and there is no note about it.
+      for (const id of ["d-bed1", "d-bath"]) {
+        const to = t.planOpenings.find((x) => x.id === id)!;
+        assert.equal(to.hingeEnd, "b", `${id} is drawn on the b jamb`);
+        assert.equal(atPlace(plan, to)!.hinge, "b", `${id} is stored hinged at b, not mirrored`);
+      }
+      assert.ok(!c.notes.some((n) => /hangs on the jamb nearer/.test(n)), "no door had to be mirrored, so nothing is noted");
       // Model versus printed: the two printed opening widths.
       const toPlan = (x: number, y: number) => ({ x: x * c.mPerPt - c.origin.x, y: y * c.mPerPt - c.origin.y });
       const rows = modelRows(pdf.scale!.matches, plan, toPlan, (3 * c.traceMm) / 1000).filter((r) => r.spans === "opening width");
@@ -305,6 +406,68 @@ async function main() {
       assert.ok(modelRows(pdf.scale!.matches, tracedPlan, toPlan, (3 * c.traceMm) / 1000).filter((r) => r.spans === "opening width").every((r) => r.approximate), "on traced openings the rows are approximate");
       console.log(`plan-doors: decoys ${whys.join("; ")}; model check opening widths ${rows.map((r) => `${r.text} ${r.diffMm.toFixed(3)} mm`).join(", ")}`);
     }
+
+    if (file === "plan-doors-rect.pdf") {
+      // Step M.1d. Every leaf is a thin rectangle; some arcs are Béziers and some polylines; the
+      // north wall carries TWO doors, one hinged at each jamb and opening to opposite sides.
+      const whys = c.unusedArcs.map((a) => a.why).sort();
+      assert.deepEqual(whys, ["no leaf (a line from its centre to its end)", "radius 0.25 m, outside 0.5–1.5 m", "radius 0.35 m, outside 0.5–1.5 m", "radius 1.80 m, outside 0.5–1.5 m"], `rect fixture: the same four decoys rejected (${JSON.stringify(whys)})`);
+      assert.equal(pdf.vectorWalls!.arcs!.used, 7, "seven swing arcs used: five single doors and the double door's two");
+      const pair = ["dr-a", "dr-b"].map((id) => {
+        const to = t.planOpenings.find((x) => x.id === id)!;
+        const o = atPlace(plan, to)!;
+        assert.ok(o, `${id} is in the plan within 0.5 mm`);
+        return { to, o };
+      });
+      assert.equal(pair[0].o.wallId, pair[1].o.wallId, "both doors are on the SAME wall (the north wall was never split or turned round)");
+      const w = plan.walls.find((x) => x.id === pair[0].o.wallId)!;
+      for (const { to, o } of pair) {
+        assert.ok(Math.abs(o.width - d(to.a, to.b)) <= HALF_MM, `${to.id}: width within 0.5 mm (${(Math.abs(o.width - d(to.a, to.b)) * 1000).toFixed(3)} mm)`);
+        // The offset is the centre from the wall's a end: check it against the truth's own jambs.
+        const wantOffset = Math.min(...[to.a, to.b].map((q) => (q.x - w.a.x) * (w.b.x - w.a.x) + (q.y - w.a.y) * (w.b.y - w.a.y))) / wallLength(w) + d(to.a, to.b) / 2;
+        assert.ok(Math.abs(o.offset - wantOffset) <= HALF_MM, `${to.id}: offset within 0.5 mm (${o.offset.toFixed(4)} vs ${wantOffset.toFixed(4)})`);
+        assert.equal(o.hinge ?? "a", to.hingeEnd, `${to.id}: hinged at the ${to.hingeEnd} jamb, as drawn`);
+        const s = doorSwing(w, o);
+        assert.ok(d(s.hinge, to.hinge!) <= HALF_MM, `${to.id}: the drawn leaf pivots on that jamb`);
+        assert.ok((s.leafEnd.x - s.hinge.x) * to.side!.x + (s.leafEnd.y - s.hinge.y) * to.side!.y > 0.5 * o.width, `${to.id}: and opens to the PDF's side`);
+      }
+      assert.notEqual(pair[0].o.hinge ?? "a", pair[1].o.hinge ?? "a", "the two doors hang on opposite jambs");
+      assert.notEqual(pair[0].o.swing, pair[1].o.swing, "and open to opposite sides");
+      assert.ok(!c.notes.some((n) => /hangs on the jamb nearer/.test(n)), "and nothing had to be mirrored or noted");
+      console.log(`plan-doors-rect: rectangle leaves read; ${pair.map(({ to, o }) => `${to.id} hinge ${o.hinge ?? "a"}/${o.swing} ${o.width.toFixed(4)} m at ${o.offset.toFixed(4)} m`).join(", ")} both on wall ${w.id}; decoys ${whys.length} rejected`);
+    }
+  }
+
+  // ------------------------------------------------------------ plan-gaps: the gap report against the truth (step M.1d)
+  {
+    const { analysis, pdf, t, scale } = await read("plan-gaps.pdf");
+    const b = buildPdfPlan(analysis, pdf, scale);
+    const sizes = (xs: number[]) => xs.map((v) => +v.toFixed(3)).sort((p, q) => p - q);
+    assert.deepEqual(sizes(pdf.vectorWalls!.gaps!.map((g) => g.size)), sizes(t.outOfRangeGaps!), `plan-gaps: walls.ts reports exactly the drawn out-of-range gaps (${JSON.stringify(t.outOfRangeGaps)})`);
+    assert.deepEqual(sizes(b.coverage.outOfRangeGaps.map((g) => g.size)), sizes(t.outOfRangeGaps!), "plan-gaps: and so does the coverage report, at the scale in use");
+    assert.equal(b.coverage.outOfRangeGaps.length, 2, "plan-gaps: two of them");
+    // Neither is an opening: the openings read are exactly the drawn ones.
+    for (const to of t.planOpenings) assert.ok(atPlace(b.plan, to, 4 / scale.pxPerM), `plan-gaps: ${to.id} is in the plan`);
+    assert.equal(b.coverage.openings.exact, t.planOpenings.length, `plan-gaps: ${t.planOpenings.length} openings read exactly, and neither gap among them`);
+    // The narrow gap closed as wall: no wall end sits in it.
+    const narrow = b.coverage.outOfRangeGaps.find((g) => g.size < 0.45)!;
+    const wide = b.coverage.outOfRangeGaps.find((g) => g.size > 4)!;
+    assert.ok(narrow && wide, "one narrow and one wide");
+    const mid = (g: { a: Vec2; b: Vec2 }) => ({ x: (g.a.x + g.b.x) / 2, y: (g.a.y + g.b.y) / 2 });
+    const covered = (q: Vec2) =>
+      b.plan.walls.some((w) => {
+        const L = wallLength(w);
+        const along = ((q.x - w.a.x) * (w.b.x - w.a.x) + (q.y - w.a.y) * (w.b.y - w.a.y)) / L;
+        const off = Math.abs((q.x - w.a.x) * -(w.b.y - w.a.y) + (q.y - w.a.y) * (w.b.x - w.a.x)) / L;
+        return along > 0 && along < L && off <= w.thickness / 2 + 1e-6;
+      });
+    assert.ok(covered(mid(narrow)), "the 0.30 m gap is closed as solid wall (a wall runs through it)");
+    assert.ok(!covered(mid(wide)), "the 4.60 m gap is not bridged (no wall runs through it)");
+    // The image tracing, which M.1d does not change, does read the narrow gap as a 0.3 m door; it
+    // stays in the plan as a TRACED opening, which is why the total is one more than the truth's.
+    assert.equal(b.coverage.openings.total, t.planOpenings.length + 1, "the tracing's own 0.30 m door is kept as a traced opening");
+    assert.equal(b.coverage.openings.traced, 1, "…counted as traced, not exact");
+    console.log(`plan-gaps: gaps ${b.coverage.outOfRangeGaps.map((g) => g.size.toFixed(2)).join(", ")} m reported and matching the truth; the narrow one closed as wall, the wide one unbridged; ${b.coverage.openings.exact}/${b.coverage.openings.total} openings exact (the extra is the tracing's own 0.30 m door)`);
   }
 
   // ------------------------------------------------------------ the merge and the 3-pixel limit (1 px = 1 cm)

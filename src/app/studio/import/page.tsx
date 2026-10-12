@@ -339,7 +339,8 @@ export default function ImportPage() {
                   ? (() => {
                       const px = planToPixels(review.coverage, scaleInUse.pxPerM);
                       const toPx = (m: { id: string; a: Vec2; b: Vec2; thickness: number }) => ({ id: m.id, a: px(m.a), b: px(m.b), thickness: m.thickness * scaleInUse.pxPerM });
-                      return { traced: review.coverage.tracedOpenings.map(toPx), unclassified: review.coverage.unclassifiedOpenings.map(toPx) };
+                      // Step M.1d: the gaps outside 0.45–4 m are highlighted too; `size` is dropped, the box is the gap.
+                      return { traced: review.coverage.tracedOpenings.map(toPx), unclassified: review.coverage.unclassifiedOpenings.map(toPx), gaps: review.coverage.outOfRangeGaps.map((g, i) => toPx({ id: `gap${i + 1}`, ...g })) };
                     })()
                   : undefined
               }

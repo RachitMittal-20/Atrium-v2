@@ -1,6 +1,7 @@
 /**
  * openings.ts — pure 2D geometry of an opening on its wall, for drawing gaps,
  * door swings and windows (no React). Plan space: x → east, y → south.
+ * A door's hinge jamb and swing side are independent (step M.1d): doorSides reads both.
  * Connects to: src/lib/plan/geometry.ts (wall direction and normal),
  * src/components/plan2d/PlanCanvas.tsx.
  */
@@ -44,15 +45,25 @@ export interface DoorSwing {
   arcEnd: Vec2;
 }
 
+/** A door's two sides as numbers: which jamb it pivots on (+1 = the a jamb) and which
+ *  side of the wall it opens to (+1 = the left of a→b, the normal's side). One place,
+ *  so the 2D drawing, the picking and the 3D leaf can never disagree (step M.1d). */
+export function doorSides(opening: Pick<Opening, "swing" | "hinge">): { atA: boolean; side: 1 | -1 } {
+  return { atA: opening.hinge !== "b", side: opening.swing === "right" ? -1 : 1 };
+}
+
 /**
- * A 90° door swing with leaf length = opening width. The hinge is the gap end
- * nearer the wall's a end; the leaf opens to the door's stored swing side,
- * "left" (the positive side of the normal, the left of a→b) or "right". A door
- * with no side yet is drawn "left", the rule every door followed before the side
- * was stored. The arc runs from leafEnd to arcEnd, a quarter circle about the hinge.
+ * A 90° door swing with leaf length = opening width. The leaf pivots on the jamb
+ * `opening.hinge` names — the gap end nearer the wall's a end, or (step M.1d) the one
+ * nearer b; absent means "a", what every door did before — and opens to the door's
+ * stored swing side, "left" (the positive side of the normal, the left of a→b) or
+ * "right". A door with no side yet is drawn "left", the rule every door followed
+ * before the side was stored. The two are independent, so all four states are drawn.
+ * The arc runs from leafEnd to arcEnd, a quarter circle about the hinge.
  */
-export function doorSwing(wall: Segment, opening: Slot & Pick<Opening, "swing">): DoorSwing {
+export function doorSwing(wall: Segment, opening: Slot & Pick<Opening, "swing" | "hinge">): DoorSwing {
   const f = openingFrame(wall, opening);
-  const side = opening.swing === "right" ? -1 : 1;
-  return { hinge: f.start, leafEnd: along(f.start, f.normal, side * opening.width), arcEnd: f.end };
+  const { atA, side } = doorSides(opening);
+  const hinge = atA ? f.start : f.end;
+  return { hinge, leafEnd: along(hinge, f.normal, side * opening.width), arcEnd: atA ? f.end : f.start };
 }

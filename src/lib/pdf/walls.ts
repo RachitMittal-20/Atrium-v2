@@ -29,6 +29,8 @@
  *     the gap (toPlan.ts's 4 m limit). A face inside a wall's band, away from
  *     both faces, 0.45–4 m long and within the wall's span, is a window's glass
  *     line: a WINDOW over its span. (M.1b used 0.3 m; M.1c's openings start at 0.45.)
+ *     A collinear gap OUTSIDE 0.45–4 m is unchanged — narrow ones close as wall, wide ones
+ *     are left unbridged — but since M.1d each is reported in `gaps` with its size.
  *  5. Clutter. A piece with no other piece within 0.3 m of either end AND shorter
  *     than 1.5 m is dropped (furniture, text boxes, a stray pair of lines); the
  *     dropped pieces are returned (`clutter`) so a traced wall on one is dropped too.
@@ -46,7 +48,8 @@
  *
  * Step M.1c (openings.ts): arcs are found first (Bézier pieces and polyline arcs
  * alike) and their pieces and leaves are never faces, so a polyline door's leaf
- * can't pair as a wall. Openings are 0.45–4 m: pieces on one line closer than
+ * can't pair as a wall. Since step M.1d a leaf may be a thin closed rectangle, and all
+ * four of its sides are kept out of the faces, so it can't pair as a thin wall either. Openings are 0.45–4 m: pieces on one line closer than
  * 0.45 m merge as solid wall. A thinner pair lying wholly inside a door gap's
  * band (two glazing lines in a real gap) neither blocks the bridge nor stays a
  * wall. Every opening span is then classified by openings.classifyOpening (door
@@ -188,8 +191,13 @@ function selectPieces(candidates: Piece[], dropped: VectorWalls["dropped"]): Pie
   return kept;
 }
 
-/** Rule 4: merge pieces on one line, then bridge door gaps where nothing crosses. */
-function mergeLines(pieces: Piece[]): Piece[] {
+/**
+ * Rule 4: merge pieces on one line, then bridge door gaps where nothing crosses.
+ * Step M.1d: a collinear gap OUTSIDE 0.45–4 m is still not an opening — a narrow one
+ * closes as solid wall and a wide one is left unbridged — but each is recorded in
+ * `gaps`, so the coverage report can say what it did not read instead of saying nothing.
+ */
+function mergeLines(pieces: Piece[], gaps: NonNullable<VectorWalls["gaps"]>): Piece[] {
   const sameLine = (p: Piece, q: Piece) => p.axis === q.axis && Math.abs(p.c - q.c) <= SAME && Math.abs(p.t - q.t) <= SAME;
   const groups: Piece[][] = [];
   for (const p of pieces) {
@@ -203,6 +211,8 @@ function mergeLines(pieces: Piece[]): Piece[] {
     let cur: Piece | null = null;
     for (const p of g) {
       if (cur && p.s0 < cur.s1 + WALL_RULES.opening[0] - EPS) {
+        // A real break under 0.45 m (not an overlap): closed as wall, and reported.
+        if (p.s0 - cur.s1 > SAME) gaps.push({ a: at(p.axis, cur.s1, p.c), b: at(p.axis, p.s0, p.c), thickness: p.t, size: p.s0 - cur.s1 });
         cur.s1 = Math.max(cur.s1, p.s1);
         cur.openings.push(...p.openings);
       } else merged.push((cur = { ...p, openings: [...p.openings] }));
@@ -232,7 +242,11 @@ function mergeLines(pieces: Piece[]): Piece[] {
         for (const w of merged) if (glazing(w, door, cur)) absorbed.add(w);
         cur.openings.push({ kind: "door", s0: cur.s1, s1: p.s0 }, ...p.openings);
         cur.s1 = p.s1;
-      } else out.push((cur = p));
+      } else {
+        // Over 4 m with nothing across it: too wide to be an opening, so the wall simply ends here (step M.1d).
+        if (cur && door && gap > WALL_RULES.opening[1] + EPS && !crosses(door, [cur, p])) gaps.push({ a: at(cur.axis, cur.s1, cur.c), b: at(cur.axis, p.s0, cur.c), thickness: cur.t, size: gap });
+        out.push((cur = p));
+      }
     }
   }
   return out.filter((p) => !absorbed.has(p));
@@ -386,6 +400,7 @@ function countCurved(curves: Map<number, Seg[]>): number {
 
 export function readVectorWalls(page: Pick<VectorPage, "segments">, mPerPt: number): VectorWalls {
   const dropped: VectorWalls["dropped"] = { short: 0, clutter: 0, inside: 0, openingsCut: 0 };
+  const gaps: NonNullable<VectorWalls["gaps"]> = [];
   const m = (s: PdfSegment): Seg & { src: PdfSegment } => ({ x1: s.x1 * mPerPt, y1: s.y1 * mPerPt, x2: s.x2 * mPerPt, y2: s.y2 * mPerPt, src: s });
   const segs = page.segments.map(m);
 
@@ -401,8 +416,8 @@ export function readVectorWalls(page: Pick<VectorPage, "segments">, mPerPt: numb
     return false;
   };
   // Step M.1c: arcs (Bézier or polyline); their pieces and leaves are never faces.
-  const arcs = findArcs(segs.map((s) => ({ x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, curve: s.src.curve })));
-  const notFace = new Set(arcs.flatMap((a) => [...a.pieces, ...(a.leaf === null ? [] : [a.leaf])]).map((i) => segs[i]));
+  const arcs = findArcs(segs.map((s) => ({ x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, curve: s.src.curve, path: s.src.path })));
+  const notFace = new Set(arcs.flatMap((a) => [...a.pieces, ...a.leaf]).map((i) => segs[i]));
   const straight = segs.filter((s) => !s.src.curve && !notFace.has(s) && !(len(s) <= WALL_RULES.maxLeaf && (arcEnd(s.x1, s.y1) || arcEnd(s.x2, s.y2))));
 
   // Rule 2: filled rectangles are pairs as they stand.
@@ -430,7 +445,7 @@ export function readVectorWalls(page: Pick<VectorPage, "segments">, mPerPt: numb
   let pieces = selectPieces([...rects, ...pairFaces(faces)], dropped);
 
   // Rule 4: one line, doors and windows.
-  pieces = mergeLines(pieces);
+  pieces = mergeLines(pieces, gaps);
   findWindows(pieces, faces);
 
   // Rule 5: clutter.
@@ -480,6 +495,7 @@ export function readVectorWalls(page: Pick<VectorPage, "segments">, mPerPt: numb
     skipped: { diagonal: countDiagonal(diagonal, pieces), curved: countCurved(curves) },
     dropped,
     clutter,
+    gaps,
     arcs: { found: arcs.length, used: arcsUsed.size, notUsed },
   };
 }

@@ -25,6 +25,11 @@
  * slice beside it) are never visible; they are named by the way they face, so
  * every role still means one outward normal.
  *
+ * doorLeaf3d (step M.1d) is the only maths for where a door's leaf hangs in 3D: the
+ * local x of its pivot, the local x of the leaf box inside that pivot, and the turn
+ * about Y. It reads the SAME doorSides as the 2D plan, so the 3D leaf can never pivot
+ * on a different jamb from the drawn one.
+ *
  * Exposed faces (step 4.7c): every triangle is also marked `exposed` or not, where
  * the wall is built, and the 3D tools never hover or pick a triangle that is not
  * (pickableFaceAt). NOT exposed:
@@ -43,6 +48,7 @@
  * joint is hidden even where it stands taller than the wall it meets.
  */
 import * as THREE from "three";
+import { doorSides } from "@/lib/plan2d/openings";
 import type { Opening, Vec2, Wall } from "@/types/plan";
 import { dist, isFreeEnd, JOINT_EPS, wallDirection, wallLength, wallOutline } from "./geometry";
 
@@ -255,4 +261,31 @@ export function buildFloorGeometry(polygon: Vec2[]): THREE.ShapeGeometry {
   const geometry = new THREE.ShapeGeometry(new THREE.Shape(polygon.map((p) => new THREE.Vector2(p.x, -p.y))));
   geometry.rotateX(-Math.PI / 2);
   return geometry;
+}
+
+// ---------------------------------------------------------------- the door leaf (step M.1d)
+
+/** Radians a door's leaf stands open in 3D, about 17°. Small on purpose: an open leaf
+ *  hides the room behind it. */
+export const LEAF_OPEN = 0.3;
+
+/**
+ * Where a door's leaf hangs in an OpeningMesh's local frame: local +x runs along the
+ * wall a → b and local +z is the wall's left normal (plan (-dy, dx)), the frame
+ * PlanModel rotates to the wall.
+ *
+ * `pivotX` is the hinge jamb, inside the frame member: the a jamb for a door hinged at
+ * "a" (or with no hinge stored, which is what every door did before step M.1d), the b
+ * jamb for one hinged at "b". `boxX` puts the closed leaf between the pivot and the far
+ * jamb, so it extends +x from an a hinge and −x from a b hinge. `turn` about Y swings
+ * its tip to the swing side: rotateY(θ) maps local +x to (cos θ, 0, −sin θ), so a leaf
+ * reaching +x needs θ < 0 to swing towards +z (left) and one reaching −x needs θ > 0.
+ * Hence turn = LEAF_OPEN × (hinged at a ? −side : +side), which is why flipping the
+ * hinge alone visibly moves the leaf to the other jamb AND mirrors its turn.
+ */
+export function doorLeaf3d(opening: Pick<Opening, "width" | "swing" | "hinge">, frame: number): { pivotX: number; boxX: number; turn: number; length: number } {
+  const { atA, side } = doorSides(opening);
+  const length = opening.width - 2 * frame;
+  const pivotX = (atA ? -1 : 1) * (opening.width / 2 - frame);
+  return { pivotX, boxX: (atA ? 1 : -1) * (length / 2), turn: LEAF_OPEN * (atA ? -side : side), length };
 }

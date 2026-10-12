@@ -24,11 +24,14 @@
  * userData.faces (see src/lib/plan/meshBuilders.ts) and from the opening ids.
  * The opening the Move tool is over (or moving) has its frame tinted light blue.
  * Doors and windows are built from the same Opening data as the 2D plan: a
- * door's leaf stands slightly open towards its stored swing side (the hinge at
- * the jamb nearer the wall's a end), so Flip turns it to the other side.
+ * door's leaf stands slightly open towards its stored swing side, pivoting on the
+ * jamb its `hinge` names (step M.1d: "a", the jamb nearer the wall's a end, when
+ * none is stored), so Flip turns it to the other side and the panel's hinge control
+ * moves it to the other jamb.
  * In development the wall ids of the meshes actually in the scene are exposed
  * as window.__scene3d.wallIds(), and the openings as __scene3d.openings() (id,
- * kind, and which way the door leaf actually turned), so
+ * kind, which way the door leaf actually turned, and since step M.1d where it pivots
+ * and the world box of its mesh), so
  * scripts/e2e-studio.ts can check an edit really reached the 3D model, not just
  * the store.
  *
@@ -47,7 +50,7 @@ import { floorColor, SCENE_COLORS } from "@/data/materials";
 import { pickAlongRay, type RayHit } from "@/lib/handles3d/edges";
 import { isClick, type PointerStamp } from "@/lib/handles3d/math";
 import { wallDirection } from "@/lib/plan/geometry";
-import { buildFloorGeometry, buildWallGeometry, wallSignature } from "@/lib/plan/meshBuilders";
+import { buildFloorGeometry, buildWallGeometry, doorLeaf3d, wallSignature } from "@/lib/plan/meshBuilders";
 import type { DerivedRoom } from "@/lib/plan/rooms";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { usePushPullStore } from "@/store/pushPullStore";
@@ -103,24 +106,22 @@ function Box({ size, position, color, glass, openingId }: { size: [number, numbe
   );
 }
 
-const LEAF_OPEN = 0.3; // radians a door leaf stands open, about 17°
-
 /** How an opening's frame is tinted: the Move tool's target, the selection, the hover, or not at all. */
 type Tint = "tool" | "selected" | "hovered" | null;
 const FRAME_TINT: Record<Exclude<Tint, null>, string> = { tool: SCENE_COLORS.toolHighlight, selected: SCENE_COLORS.wallSelected, hovered: SCENE_COLORS.wallHovered };
 
 /** Frame plus a glass pane (window) or a slightly open leaf (door). Local x runs
  *  along the wall (a → b), local z across it, so the group is rotated to the wall.
- *  With that rotation local +z is the wall's left normal (plan (-dy, dx)), and
- *  turning the leaf by -LEAF_OPEN about y swings its tip towards +z: so "left"
- *  turns -LEAF_OPEN and "right" +LEAF_OPEN, matching the 2D swing. */
+ *  With that rotation local +z is the wall's left normal (plan (-dy, dx)). Where the
+ *  leaf hangs and which way it turns is doorLeaf3d (step M.1d), which reads the same
+ *  hinge jamb and swing side as the 2D plan, so the two can never disagree. */
 function OpeningMesh({ opening, wall, tint }: { opening: Opening; wall: Wall; tint: Tint }) {
   const d = wallDirection(wall);
   const { id, width: w, height: h, sillHeight: s } = opening;
   const depth = wall.thickness + 0.02; // frames stand a hair proud of the wall faces
   const midY = s + h / 2;
   const frame = tint ? FRAME_TINT[tint] : SCENE_COLORS.frame;
-  const turn = opening.swing === "right" ? LEAF_OPEN : -LEAF_OPEN;
+  const leaf = doorLeaf3d(opening, FRAME);
   return (
     <group
       position={[wall.a.x + d.x * opening.offset, 0, wall.a.y + d.y * opening.offset]}
@@ -136,9 +137,9 @@ function OpeningMesh({ opening, wall, tint }: { opening: Opening; wall: Wall; ti
           <Box openingId={id} size={[w - 2 * FRAME, h - 2 * FRAME, 0.01]} position={[0, midY, 0]} color={SCENE_COLORS.glass} glass />
         </>
       ) : (
-        // Leaf hinged at the jamb nearer a, standing open towards the swing side.
-        <group position={[-w / 2 + FRAME, 0, 0]} rotation={[0, turn, 0]} userData={{ leaf: true }}>
-          <Box openingId={id} size={[w - 2 * FRAME, h - FRAME, 0.04]} position={[(w - 2 * FRAME) / 2, s + (h - FRAME) / 2, 0]} color={SCENE_COLORS.door} />
+        // Leaf hinged on its own jamb ("a" or "b"), standing open towards the swing side.
+        <group position={[leaf.pivotX, 0, 0]} rotation={[0, leaf.turn, 0]} userData={{ leaf: true }}>
+          <Box openingId={id} size={[leaf.length, h - FRAME, 0.04]} position={[leaf.boxX, s + (h - FRAME) / 2, 0]} color={SCENE_COLORS.door} />
         </group>
       )}
     </group>
@@ -208,10 +209,23 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
     const hook = {
       wallIds: () => children().filter((c) => c.userData.wallId).map((c) => String(c.userData.wallId)),
       // The leaf's real rotation, read back from the scene graph: which way the door stands open.
+      // Step M.1d also reports where it PIVOTS, in world space (the leaf group's own position: the
+      // hinge jamb), and the world box of its mesh, so a test can tell the two jambs apart.
       openings: () =>
         children()
           .filter((c) => c.userData.openingId)
-          .map((c) => ({ id: String(c.userData.openingId), kind: String(c.userData.kind), leafTurn: c.children.find((k) => k.userData.leaf)?.rotation.y ?? null })),
+          .map((c) => {
+            const leaf = c.children.find((k) => k.userData.leaf);
+            const pivot = leaf && leaf.getWorldPosition(new THREE.Vector3());
+            const box = leaf && new THREE.Box3().setFromObject(leaf);
+            return {
+              id: String(c.userData.openingId),
+              kind: String(c.userData.kind),
+              leafTurn: leaf?.rotation.y ?? null,
+              leafPivot: pivot ? { x: pivot.x, y: pivot.y, z: pivot.z } : null,
+              leafBox: box ? { minX: box.min.x, maxX: box.max.x, minY: box.min.y, maxY: box.max.y, minZ: box.min.z, maxZ: box.max.z } : null,
+            };
+          }),
     };
     (window as unknown as { __scene3d?: typeof hook }).__scene3d = hook;
     return () => {

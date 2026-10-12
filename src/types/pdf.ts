@@ -199,6 +199,10 @@ export interface VectorWalls {
   /** Step M.1c: arcs found (fitted circles, 0.2 m and 30° or more), how many became door
    *  swings, and the rest with why. Absent on readings made before it. */
   arcs?: { found: number; used: number; notUsed: UnusedArc[] };
+  /** Step M.1d: collinear gaps outside 0.45–4 m, which are not read as openings (a narrow
+   *  one closes as wall, a wide one is left unbridged). Page metres, on the centre line.
+   *  Absent on readings made before M.1d. */
+  gaps?: { a: Vec2; b: Vec2; thickness: number; size: number }[];
 }
 
 /** One row of the dimension check (src/lib/pdf/dimensions.ts), or of the

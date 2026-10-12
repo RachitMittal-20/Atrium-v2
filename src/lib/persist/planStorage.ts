@@ -118,6 +118,9 @@ function opening(v: unknown): Opening | null {
   const kind: OpeningKind = v.kind; // narrowed by the guard above
   const base: Opening = { id: v.id, wallId: v.wallId, kind, offset: v.offset, width: v.width, height: v.height, sillHeight: v.sillHeight };
   if (v.swing !== undefined) base.swing = v.swing;
+  // A door's hinge jamb (step M.1d) is user data too; absent means "a", so older plans draw
+  // exactly as they did. An unknown value is dropped, never refused.
+  if (v.hinge === "a" || v.hinge === "b") base.hinge = v.hinge;
   // Step M.1c, as walls' (M.1b): older plans have none; an unknown value is dropped, never refused.
   if (v.provenance === "vector" || v.provenance === "traced") base.provenance = v.provenance;
   if (v.edited === true) base.edited = true;
