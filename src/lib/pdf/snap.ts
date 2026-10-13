@@ -51,7 +51,12 @@
  * exact, the tracing's were wrong); one with no vector opening within 3 px stays
  * traced, placed on the final wall under its centre (clamped into it) and listed
  * (`tracedOpenings`). Vector openings the tracing missed are added. Every vector
- * opening keeps the PDF's kind, class and swing: the swing is re-derived on the
+ * opening keeps the PDF's kind, class and swing (step M.2b: a traced opening with no
+ * vector opening near it and under 0.45 m wide is DROPPED, not kept, where one
+ * contiguous run of the PDF's own walls covers its span with no PDF opening in it — the
+ * PDF draws solid wall there, so the tracing's gap was a shadow or a hatch, not a door;
+ * they are reported in `droppedOpenings`. An opening on a wall that is itself traced
+ * never reaches that test, so it stays traced as before). The swing is re-derived on the
  * wall it lands on from the side its arc lies on (`swingNormal` against that
  * wall's (-dy, dx) normal). A vector opening `openingProblem` refuses (outside
  * its wall's usable span, overlapping another, too narrow) is left out with the
@@ -93,6 +98,7 @@ import { validatePlan } from "@/lib/plan/validate";
 import { BlueprintError, type BuildReport, type PlanScale } from "@/types/blueprint";
 import type { Opening, OpeningKind, Plan, SwingSide, Vec2, Wall } from "@/types/plan";
 import type { OpeningClass, PdfInfo, UnusedArc, VectorWalls } from "@/types/pdf";
+import { OPENING_WIDTH } from "./openings";
 
 export const SNAP_PX = { near: 2, move: 3 };
 /** walls.ts's clutter rule, applied to traced walls too. */
@@ -131,6 +137,9 @@ export interface Coverage {
   /** Traced openings and the unclassified ones read from the PDF (assumed doors), in PLAN metres
    *  (jambs on the centre line), for the overlay and the list; and the arcs no opening used. */
   tracedOpenings: { id: string; a: Vec2; b: Vec2; thickness: number; reason: string }[];
+  /** Step M.2b: traced openings DROPPED because the PDF draws solid wall across them
+   *  (phantoms of the raster), in PLAN metres, with the width the tracing gave them. */
+  droppedOpenings: { id: string; a: Vec2; b: Vec2; thickness: number; size: number }[];
   unclassifiedOpenings: { id: string; a: Vec2; b: Vec2; thickness: number }[];
   unusedArcs: UnusedArc[];
   /** Step M.1d: collinear gaps outside 0.45–4 m, which are not read as openings — a narrow
@@ -427,6 +436,39 @@ export function mergeVector(
   const counts = { snapped: 0, traced: 0, added: 0, replaced: 0 };
   let tracedOps: TracedOp[] = [];
   const tracedWhy = new Map<string, string>();
+  /**
+   * Step M.2b: the PDF draws SOLID WALL from p to q. One contiguous run of collinear
+   * walls read from the PDF covers the span — the faces on both sides carry straight
+   * through it, since walls.ts only leaves a wall unbroken where neither face breaks —
+   * and no opening read from the PDF overlaps it. A traced opening there is a phantom
+   * of the raster (a shadow, a hatch, a grey wash read as a gap), not a door.
+   */
+  const solidInPdf = (p: Vec2, q: Vec2): boolean => {
+    const host = hostOf(p, q);
+    if (!host || host.provenance !== "vector") return false;
+    const onLine = (w: Wall) => [w.a, w.b].every((e) => Math.abs(lineCoords(e, host).off) <= 1e-6);
+    // Every PDF wall on the host's centre line, as spans along it, merged where they touch.
+    const spans = walls
+      .filter((w) => w.provenance === "vector" && onLine(w))
+      .map((w) => [lineCoords(w.a, host).along, lineCoords(w.b, host).along].sort((x, y) => x - y) as [number, number])
+      .sort((x, y) => x[0] - y[0]);
+    const runs: [number, number][] = [];
+    for (const [s0, s1] of spans) {
+      const last = runs[runs.length - 1];
+      if (last && s0 <= last[1] + 1e-6) last[1] = Math.max(last[1], s1);
+      else runs.push([s0, s1]);
+    }
+    const [t0, t1] = [lineCoords(p, host).along, lineCoords(q, host).along].sort((x, y) => x - y);
+    if (!runs.some((r) => t0 >= r[0] - 1e-6 && t1 <= r[1] + 1e-6)) return false;
+    // An opening read from the PDF in the way means the gap is real, whatever the tracing made of it.
+    return !vOpen.some((v) => {
+      const [c0, c1] = [lineCoords(v.a, host), lineCoords(v.b, host)];
+      if (Math.max(Math.abs(c0.off), Math.abs(c1.off)) > host.thickness / 2 + 1e-6) return false;
+      return Math.min(Math.max(c0.along, c1.along), t1) - Math.max(Math.min(c0.along, c1.along), t0) > 1e-6;
+    });
+  };
+  /** Page metres; turned into plan metres and reported once the origin is known. */
+  const droppedOps: { id: string; a: Vec2; b: Vec2; thickness: number }[] = [];
   for (const op of traced.plan.openings) {
     const w = byId.get(op.wallId);
     if (!w) continue;
@@ -455,6 +497,13 @@ export function mergeVector(
       notes.push(`Traced opening ${op.id} (${dist(p, q).toFixed(2)} m) replaced by ${v.id} read from the PDF (${dist(v.a, v.b).toFixed(2)} m): the traced jambs were up to ${fmtM(off)} out, more than ${SNAP_PX.move} px.`);
     }
     if (near.length) continue;
+    // Step M.2b: a narrow traced opening where the PDF's wall runs unbroken is dropped, not kept.
+    // Never on a wall that is itself traced (its group kept its traced walls, so the PDF has no
+    // wall there to speak for): that opening stays traced, as before.
+    if (!keptTraced.has(w.id) && dist(p, q) < OPENING_WIDTH[0] && solidInPdf(p, q)) {
+      droppedOps.push({ id: op.id, a: p, b: q, thickness: w.thickness });
+      continue;
+    }
     tracedOps.push(tOp);
     tracedWhy.set(op.id, `no opening in the PDF within ${SNAP_PX.move} px`);
   }
@@ -568,6 +617,7 @@ export function mergeVector(
       added,
       skipped: vector.skipped,
       ...openingCoverage(namedPlan, classOf, tracedWhy, (p) => ({ x: p.x - origin.x, y: p.y - origin.y }), vector, f, counts),
+      droppedOpenings: droppedOps.map((o) => ({ id: o.id, a: toPlan(o.a), b: toPlan(o.b), thickness: o.thickness, size: dist(o.a, o.b) })),
       notes,
       origin,
       mPerPt,
@@ -655,6 +705,7 @@ function fallback(traced: { plan: Plan; report: BuildReport }, o: { pxPerM: numb
         o.pxPerPt / o.pxPerM / vector.mPerPt,
         { snapped: 0, traced: plan.openings.length, added: 0, replaced: 0 },
       ),
+      droppedOpenings: [], // no opening from the PDF is used, so nothing of the tracing's is dropped
       notes: [note],
       origin: { x: traced.report.origin.x * px, y: traced.report.origin.y * px },
       mPerPt: o.pxPerPt / o.pxPerM,

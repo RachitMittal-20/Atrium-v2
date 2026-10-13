@@ -30,6 +30,11 @@
  * plan, then the side panels (PDF, coverage, scale, Build), then the tables;
  * from lg the tables sit under the plan beside the panels.
  *
+ * Step M.2b: at Build model every printed dimension the review matched to a line is carried
+ * into the plan as a takeoff with source "pdf" (src/lib/pdf/takeoffs.ts), so the studio's
+ * Takeoff panel keeps checking the model against the drawing's own numbers; the summary says
+ * how many, and when the 200-row cap bit. Scanned pages and images carry none.
+ *
  * Nothing is kept except the plan loaded into the store, which autosaves to
  * the browser (src/store/persistence.ts). Editing walls
  * here is a later piece; this screen only reviews.
@@ -44,6 +49,8 @@ import { usePlanStore } from "@/store/planStore";
 import { usePersistenceReady } from "@/store/persistence";
 import { dimensionRows, modelRows, rowsToCsv, type Overrides } from "@/lib/pdf/dimensions";
 import { buildPdfPlan, planToPixels, type PdfBuild } from "@/lib/pdf/snap";
+import { approximateIndexes, MAX_PDF_TAKEOFFS, pdfTakeoffs } from "@/lib/pdf/takeoffs";
+import { wallsHash } from "@/lib/takeoff/rows";
 import type { PlanScale } from "@/types/blueprint";
 import type { PdfInfo } from "@/types/pdf";
 import type { Vec2 } from "@/types/plan";
@@ -65,6 +72,25 @@ type Built = ReturnType<typeof buildFromAnalysis> | PdfBuild;
 /** The build for a page: a vector PDF with walls read from its lines goes through snap.ts. */
 function buildFor(analysis: Analysis, pdf: PdfInfo | undefined, scale: PlanScale): Built {
   return pdf?.vectorWalls ? buildPdfPlan(analysis, pdf, scale) : buildFromAnalysis(analysis, scale);
+}
+
+/**
+ * Step M.2b: every printed dimension the review matched becomes a takeoff with source "pdf",
+ * so the studio keeps checking the model against the drawing's own numbers. Vector pages only:
+ * a scanned PDF and an image have no matched dimensions and carry nothing. Ids are "tp-N", not
+ * random, so building the same page twice saves the same bytes.
+ */
+function withPdfTakeoffs(built: Built, pdf: PdfInfo | undefined, overrides: Overrides): Built {
+  const matches = pdf?.scale?.matches ?? [];
+  if (!matches.length || !("coverage" in built)) return built;
+  const c = built.coverage;
+  const hash = wallsHash(built.plan.walls);
+  const toPlan = (x: number, y: number) => ({ x: x * c.mPerPt - c.origin.x, y: y * c.mPerPt - c.origin.y });
+  // The model check's own verdict on which dimensions land on a traced wall (the table's "approximate").
+  const approximate = approximateIndexes(modelRows(matches, built.plan, toPlan, (3 * c.traceMm) / 1000));
+  const takeoffs = pdfTakeoffs(matches, toPlan, overrides, approximate).map((t, i) => ({ ...t, id: `tp-${i + 1}`, wallsHash: hash }));
+  if (!takeoffs.length) return built;
+  return { ...built, plan: { ...built.plan, takeoffs: [...(built.plan.takeoffs ?? []), ...takeoffs] } };
 }
 
 /** One plain-words line per analysis warning. */
@@ -198,7 +224,7 @@ export default function ImportPage() {
   function build(analysis: Analysis, pdf?: PdfInfo) {
     if (!chosen) return;
     try {
-      setBuilt(buildFor(analysis, pdf, chosen));
+      setBuilt(withPdfTakeoffs(buildFor(analysis, pdf, chosen), pdf, overrides));
       setBuildError(null);
     } catch (e) {
       setBuilt(null);
@@ -380,7 +406,7 @@ export default function ImportPage() {
             </button>
             {!chosen && <p className="-mt-2 text-sm text-smoke">Choose a scale first.</p>}
             {buildError && <p role="alert">{buildError}</p>}
-            {built && <Summary built={built} onOpen={openInStudio} />}
+            {built && <Summary built={built} carried={phase.pdf?.scale?.matches.length ?? 0} onOpen={openInStudio} />}
 
             <button type="button" className={`${secondaryBtn} self-start`} onClick={reset}>
               Try another file
@@ -415,7 +441,7 @@ function Tables(p: { pdf: PdfInfo; chosen: PlanScale | null; review: PdfBuild | 
 }
 
 /** What the build made, in plain words, and the way into the studio. */
-function Summary({ built, onOpen }: { built: Built; onOpen: () => void }) {
+function Summary({ built, carried, onOpen }: { built: Built; carried: number; onOpen: () => void }) {
   const { plan, report } = built;
   useUnitsStore((st) => st.length); // re-render when the display unit changes (the notes below quote lengths)
   const count = (k: string) => plan.openings.filter((o) => o.kind === k).length;
@@ -447,6 +473,12 @@ function Summary({ built, onOpen }: { built: Built; onOpen: () => void }) {
         </ul>
       ) : (
         <p className="text-sm">No closed rooms were found, so the floor isn&apos;t divided into rooms yet. You can still open the plan and close the gaps in the studio.</p>
+      )}
+      {(plan.takeoffs?.length ?? 0) > 0 && (
+        <p className="text-sm text-smoke" data-testid="summary-takeoffs" data-takeoffs={plan.takeoffs!.length}>
+          {n(plan.takeoffs!.length, "printed dimension", "printed dimensions")} carried into the studio as takeoffs, to check against the model there.
+          {carried > MAX_PDF_TAKEOFFS && ` Only the first ${MAX_PDF_TAKEOFFS} of ${carried} were carried.`}
+        </p>
       )}
       {notes.length > 0 && (
         <ul className="list-disc pl-5 text-sm text-smoke">

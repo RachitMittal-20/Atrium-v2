@@ -234,9 +234,10 @@ async function desktop() {
   const [download] = await Promise.all([page.waitForEvent("download"), tid(page, "takeoff-csv").click()]);
   assert.equal(download.suggestedFilename(), "two-bedroom-house-takeoffs.csv");
   const csv = readFileSync((await download.path())!, "utf8").trim().split(/\r\n/);
-  assert.equal(csv[0], "name,kind,basis,measured (mm | m²),reference (mm | m²),difference (mm | m²),status,override (mm | m²),override note,effective (mm | m²),stale");
+  // Step M.2b added the last column, the row's source: "studio" here, "pdf" for a carried dimension.
+  assert.equal(csv[0], "name,kind,basis,measured (mm | m²),reference (mm | m²),difference (mm | m²),status,override (mm | m²),override note,effective (mm | m²),stale,source");
   assert.equal(csv.length, 1 + (await plan(page)).takeoffs!.length, `${tag}: one line per takeoff`);
-  assert.equal(csv[1], "Length 1,length,Drawn,10200,10150,50.0,Flagged,10180,,10180,no", `${tag}: measured, override and effective in their own columns`);
+  assert.equal(csv[1], "Length 1,length,Drawn,10200,10150,50.0,Flagged,10180,,10180,no,studio", `${tag}: measured, override and effective in their own columns`);
   console.log(`${tag}: CSV ${csv.length - 1} rows: ${csv[1]}`);
 
   // ---- reload: everything persists (the autosave writes after 800 ms of quiet)

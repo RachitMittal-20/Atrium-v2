@@ -17,7 +17,10 @@
  * kind, place, size, swing or hinge jamb), clearing `defaultHeight` once its height or sill changes.
  * `addTakeoff`, `updateTakeoff`, `deleteTakeoff` and `markTakeoffCurrent` keep the
  * quantity takeoffs (step M.2a), one undo step each; takeoffs are annotations and
- * never touch walls, rooms or openings. Connects to:
+ * never touch walls, rooms or openings. `calibratePlan` rescales the whole plan about its
+ * origin (step M.2b, src/lib/plan/calibrate.ts) in one undo step, or refuses with a reason
+ * and changes nothing; it is the one edit that keeps the provenance marks as they are.
+ * Connects to:
  * src/types/plan.ts, src/lib/plan/{validate,geometry,rooms,edit}.ts,
  * src/lib/keyboard.ts; the 3D scene, 2D plan and exports read `plan` from here.
  */
@@ -26,6 +29,7 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import { samplePlan } from "@/data/samplePlan";
 import { isTypingTarget } from "@/lib/keyboard";
+import { calibrationProblem, scalePlan } from "@/lib/plan/calibrate";
 import { drawProblem, flipSide, hostAt, placeOpening as planOpening, splitWallAt, withSwingSides } from "@/lib/plan/edit";
 import { clampOpening, JOINT_EPS, wallLength } from "@/lib/plan/geometry";
 import { deriveRooms, toStoredRoom, type DerivedRoom } from "@/lib/plan/rooms";
@@ -97,6 +101,14 @@ interface PlanState {
   deleteTakeoff: (id: string) => void;
   /** Accept the walls as they are now: the stale marker goes. One undo step. */
   markTakeoffCurrent: (id: string) => void;
+  /**
+   * Multiply every plan-space length by `factor` about the plan's (0, 0) (step M.2b,
+   * src/lib/plan/calibrate.ts): walls, openings, takeoffs and imported models' positions;
+   * never heights, sills, a model's own size, or a typed reference or override. Returns the
+   * reason when the result would not hold together (nothing is changed then), else null.
+   * One undo step, and redo puts it back; provenance and the "Edited" marks are untouched.
+   */
+  calibratePlan: (factor: number, note?: string) => string | null;
 
   /** Run `fn`; every edit inside becomes a single undo step. Synchronous only. */
   transaction: (fn: () => void) => void;
@@ -131,11 +143,13 @@ let tx: { depth: number; entry: HistoryEntry } | null = null;
 
 export const usePlanStore = create<PlanState>((set, get) => {
   /** Apply `recipe` to the plan and record it in history (or in the open transaction). */
-  function edit(recipe: (draft: Draft<Plan>) => void) {
+  function edit(recipe: (draft: Draft<Plan>) => void, opts: { keepMarks?: boolean } = {}) {
     const before = get().plan;
     const [plan, patches, inverse] = produceWithPatches(before, (d) => {
       recipe(d);
-      markEdited(d, before);
+      // keepMarks: a recalibration moves every wall at once, which is not an edit of one
+      // wall's shape against the drawing it was read from, so nothing is marked "Edited".
+      if (!opts.keepMarks) markEdited(d, before);
     });
     if (patches.length === 0) return;
     if (tx) {
@@ -160,12 +174,12 @@ export const usePlanStore = create<PlanState>((set, get) => {
     });
 
   /** Wall edit: run `mutate`, then rebuild `d.rooms` against the pre-edit plan. */
-  function editWalls(mutate: (d: Draft<Plan>) => void) {
+  function editWalls(mutate: (d: Draft<Plan>) => void, opts: { keepMarks?: boolean } = {}) {
     const before = get().plan;
     edit((d) => {
       mutate(d);
       syncRooms(d, before);
-    });
+    }, opts);
   }
 
   /** Run `mutate` on the walls, then clamp openings on every wall whose length changed. */
@@ -361,6 +375,19 @@ export const usePlanStore = create<PlanState>((set, get) => {
         const t = d.takeoffs?.find((x) => x.id === id);
         if (t) t.wallsHash = hash;
       });
+    },
+    calibratePlan: (factor, note) => {
+      const scaled = scalePlan(get().plan, factor);
+      const problem = calibrationProblem(scaled);
+      if (problem) return problem; // refused: nothing is written, so there is nothing to undo
+      editWalls((d) => {
+        d.walls = scaled.walls;
+        d.openings = scaled.openings;
+        d.items = scaled.items;
+        if (scaled.takeoffs) d.takeoffs = scaled.takeoffs;
+        (d.calibrations ??= []).push({ factor, ...(note?.trim() && { note: note.trim() }) });
+      }, { keepMarks: true });
+      return null;
     },
 
     transaction: (fn) => {

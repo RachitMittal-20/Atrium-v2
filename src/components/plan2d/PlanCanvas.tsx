@@ -65,6 +65,12 @@
  * no wall, door or window selects the model (selectionStore.itemId). Models are
  * never dragged here in this step; the panel moves them.
  *
+ * Set scale (step M.2b, src/store/calibrateStore.ts): while it is picking, a press here is
+ * only a tap or a pan — no wall, opening or model is picked, hovered or dragged, whatever the
+ * tool is — and two taps place the two points (snapped as a takeoff's are; Alt for none).
+ * Escape cancels, leaving history untouched. The dialog that then asks for the true distance
+ * (CalibrateDialog.tsx) is mounted here, and after Apply the camera fits the plan again.
+ *
  * Takeoff tool (step M.2a, src/store/takeoffStore.ts, drawn by TakeoffLayer.tsx): like
  * Measure, a press never picks a wall; hover, tap, double-click and the keys (Enter
  * finishes, Backspace removes the last point, Escape cancels the draft and then goes back
@@ -127,8 +133,10 @@ import { footprint, itemLocalBox } from "@/lib/import/model";
 import { pointInPolygon } from "@/lib/plan/rooms";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { useSelectedRun, useSelectionStore } from "@/store/selectionStore";
+import { useCalibrateStore } from "@/store/calibrateStore";
 import { useTakeoffStore, type TakeoffPointer } from "@/store/takeoffStore";
 import { useToolStore } from "@/store/toolStore";
+import { CalibrateDialog } from "@/components/studio/CalibrateDialog";
 import { TakeoffBar, TakeoffOverlay } from "./TakeoffLayer";
 import type { Opening, OpeningKind, Vec2, Wall } from "@/types/plan";
 
@@ -237,6 +245,10 @@ export function PlanCanvas() {
   const tool = useToolStore((s) => s.tool);
   const setTool = useToolStore((s) => s.setTool);
   const measurement = useToolStore((s) => s.measurement);
+  // Set scale (step M.2b): while picking, this pane only taps and pans.
+  const calibrating = useCalibrateStore((s) => s.picking);
+  const calibratePoints = useCalibrateStore((s) => s.points);
+  const calibrateHover = useCalibrateStore((s) => s.hover);
 
   const [view, setView] = useState<View>({ scale: 1, tx: 0, ty: 0 });
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -530,6 +542,10 @@ export function PlanCanvas() {
 
     root.current!.focus({ preventScroll: true }); // so Escape, Delete and the arrows reach this canvas
     burst.current.at = 0;
+    if (calibrating) {
+      drag.current = { kind: "pan", from: local(e), moved: 0 }; // a tap places a point, a drag pans
+      return;
+    }
     if (tool === "measure") {
       // Measure: no wall or opening is picked or dragged. A placed marker can be grabbed; anything else pans, or taps.
       const touch = e.pointerType === "touch";
@@ -566,7 +582,8 @@ export function PlanCanvas() {
     const prev = pointers.current.get(e.pointerId);
     if (!prev) {
       if (drag.current) return;
-      if (tool === "wall") updateGhost(local(e), e.altKey); // the preview follows the mouse
+      if (calibrating) useCalibrateStore.getState().pointer(takeoffPointer(e, local(e)));
+      else if (tool === "wall") updateGhost(local(e), e.altKey); // the preview follows the mouse
       else if (tool === "door" || tool === "window") {
         const pl = placementAt(local(e));
         setPlace(pl);
@@ -657,7 +674,8 @@ export function PlanCanvas() {
     if (d.kind === "pan") {
       drag.current = null;
       if (d.moved > CLICK_SLOP_PX || d.multi || e.type !== "pointerup") return; // a pan, a pinch or a cancel: not a click
-      if (tool === "measure") placeMeasure(local(e), e);
+      if (calibrating) useCalibrateStore.getState().click(takeoffPointer(e, local(e)));
+      else if (tool === "measure") placeMeasure(local(e), e);
       else if (tool === "wall") placePoint(local(e), e.altKey);
       else if (tool === "door" || tool === "window") placeAt(local(e));
       else if (tool === "takeoff") useTakeoffStore.getState().click(takeoffPointer(e, local(e)));
@@ -691,6 +709,15 @@ export function PlanCanvas() {
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.target !== e.currentTarget || e.metaKey || e.ctrlKey) return; // only when the canvas itself has focus
+
+    // Set scale: Escape gives up the two points. Nothing was in the plan, so history is untouched.
+    if (calibrating) {
+      if (e.key === "Escape") {
+        e.stopPropagation(); // beat the page-wide Escape in selectionStore
+        useCalibrateStore.getState().cancel();
+      }
+      if (e.key === "Escape" || e.key === "Delete" || e.key === "Backspace") return;
+    }
 
     if (tool === "wall") {
       if (e.key === "Escape") {
@@ -951,6 +978,7 @@ export function PlanCanvas() {
             setHoverOp(null);
             setPlace(null);
             useTakeoffStore.getState().leave();
+            useCalibrateStore.getState().leave();
           }}
           onDoubleClick={() => {
             if (tool === "wall") finishChain();
@@ -1171,6 +1199,36 @@ export function PlanCanvas() {
           {/* takeoffs: every one in the plan (Show takeoffs), and the tool's draft and hover */}
           <TakeoffOverlay view={view} active={tool === "takeoff"} size={size} />
 
+          {/* Set scale (step M.2b): the points picked so far, the span between them, and where the next would land */}
+          {calibrating && (
+            <g pointerEvents="none" className="font-sans" data-testid="calibrate-overlay" data-points={calibratePoints.length}>
+              {calibratePoints.length === 2 &&
+                (() => {
+                  const [p, q] = calibratePoints.map(([x, y]) => S({ x, y }));
+                  return (
+                    <>
+                      <line x1={p.x} y1={p.y} x2={q.x} y2={q.y} className="stroke-limestone" strokeWidth={5} />
+                      <line x1={p.x} y1={p.y} x2={q.x} y2={q.y} className="stroke-cyanotype" strokeWidth={1.5} data-testid="calibrate-line" />
+                    </>
+                  );
+                })()}
+              {calibratePoints.map(([x, y], i) => {
+                const c = S({ x, y });
+                return <circle key={i} cx={c.x} cy={c.y} r={4.5} className="fill-cyanotype stroke-vellum" strokeWidth={2} data-testid="calibrate-point" />;
+              })}
+              {calibrateHover &&
+                calibratePoints.length < 2 &&
+                (() => {
+                  const c = S({ x: calibrateHover.point[0], y: calibrateHover.point[1] });
+                  return (
+                    <g data-testid="calibrate-snap" data-snap={calibrateHover.kind}>
+                      <circle cx={c.x} cy={c.y} r={6} className="fill-none stroke-gilt" strokeWidth={2} />
+                    </g>
+                  );
+                })()}
+            </g>
+          )}
+
           {/* scale bar, bottom left */}
           <g data-testid="plan-scalebar" className="font-sans" transform={`translate(16 ${size.height - 16})`}>
             <path d={`M0,-6V0H${barPx}V-6`} fill="none" className="stroke-iron" strokeWidth={1.5} />
@@ -1180,6 +1238,32 @@ export function PlanCanvas() {
           </g>
         </svg>
       )}
+
+      {/* Set scale: the way in from the plan itself, beside the scale bar (44 px tall for a finger) */}
+      <button
+        type="button"
+        data-testid="plan-set-scale"
+        aria-pressed={calibrating}
+        onClick={() => useCalibrateStore.getState().start()}
+        className={`absolute bottom-10 left-4 min-h-11 rounded border px-3 text-xs shadow ${calibrating ? "border-cyanotype bg-cyanotype text-vellum" : "border-stone bg-vellum text-iron hover:bg-limestone"}`}
+      >
+        Set scale…
+      </button>
+
+      {/* Set scale: what to do next, and Cancel for a screen with no Escape key */}
+      {calibrating && (
+        <div data-testid="calibrate-bar" className="absolute left-2 right-14 top-2 flex flex-wrap items-center gap-2">
+          <p role="status" data-testid="calibrate-hint" className="rounded border border-stone bg-vellum px-2 py-1 text-xs text-iron shadow">
+            {calibratePoints.length === 0 ? "Set scale: click or tap the first point" : calibratePoints.length === 1 ? "Now the second point" : "Type the true distance"}
+          </p>
+          <button type="button" data-testid="calibrate-bar-cancel" onClick={() => useCalibrateStore.getState().cancel()} className="min-h-11 rounded border border-stone bg-vellum px-3 text-xs text-iron shadow hover:bg-limestone">
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* the Set scale dialog, and the refit after Apply */}
+      <CalibrateDialog onApplied={refit} />
 
       {/* why a drag stopped short, or why a wall can't be drawn there, in plain words */}
       {message && (

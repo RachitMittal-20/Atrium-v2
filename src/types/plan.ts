@@ -170,7 +170,16 @@ export interface Plan {
   items: Item[];
   /** Quantity takeoffs (step M.2a): annotations measured on the plan, never geometry. Absent on older plans. */
   takeoffs?: Takeoff[];
+  /** Scale changes applied in the studio (step M.2b), oldest first. No timestamps, so a save
+   *  of the same plan is always the same bytes. Absent until the first one. */
+  calibrations?: Calibration[];
   meta: PlanMeta;
+}
+
+/** One applied recalibration (step M.2b): every plan-space length was multiplied by `factor`. */
+export interface Calibration {
+  factor: number;
+  note?: string;
 }
 
 /** A value someone typed against a takeoff: metres for a length, m² for an area. */
@@ -194,6 +203,12 @@ export interface Takeoff {
   reference?: TakeoffValue;
   override?: TakeoffValue;
   wallsHash: string;
+  /** "pdf": carried in at Build model from a dimension the PDF review matched to a line
+   *  (step M.2b). Absent for a takeoff measured by hand in the studio. */
+  source?: "pdf";
+  /** A carried PDF dimension whose ends land on a wall the image pipeline traced, so the
+   *  comparison is only about a raster pixel good (step M.2b). Absent otherwise. */
+  approximate?: true;
 }
 
 /** A named design alternative: a full snapshot so options can be compared and

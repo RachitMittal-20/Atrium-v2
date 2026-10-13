@@ -22,6 +22,8 @@
  *     exactly (doors D, windows W, unclassified U); C traced approximately; K
  *     arcs not used"), the default heights, and lists of the unclassified
  *     openings (assumed doors), the traced ones and the arcs not used, with why.
+ *     Step M.2b adds the dropped-phantom sentence ("N traced openings dropped because
+ *     the PDF draws solid wall there (sizes: …)").
  * Connects to: src/types/pdf.ts (PdfInfo), src/lib/pdf/extract.ts (paperName),
  * src/lib/pdf/snap.ts (Coverage).
  */
@@ -152,6 +154,14 @@ export function gapsLine(c: Coverage, unit: LengthUnit = "mm"): string {
   return `${count(g.length, "gap", "gaps")} outside ${len(OPENING_WIDTH[0])} to ${len(OPENING_WIDTH[1])} ${g.length === 1 ? "was" : "were"} not read as openings (sizes: ${g.map((x) => len(x.size)).join(", ")}).`;
 }
 
+/** The dropped-phantom sentence (step M.2b), or "" when nothing was dropped. */
+export function droppedLine(c: Coverage, unit: LengthUnit = "mm"): string {
+  const d = c.droppedOpenings;
+  if (!d.length) return "";
+  const len = (m: number) => formatLength(m, unit, STUDIO_DP.length);
+  return `${count(d.length, "traced opening", "traced openings")} dropped because the PDF draws solid wall there (sizes: ${d.map((o) => len(o.size)).join(", ")}).`;
+}
+
 export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
   const unit = useUnitsStore((st) => st.length); // the one units setting (step U.1)
   const len = (m: number) => formatLength(m, unit, STUDIO_DP.length);
@@ -167,6 +177,11 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
       <p data-testid="coverage-openings-line" data-exact={c.openings.exact} data-total={c.openings.total} data-traced={c.openings.traced} data-unclassified={c.openings.unclassified} data-arcs={c.openings.arcsNotUsed}>
         {openingsLine(c)}
       </p>
+      {c.droppedOpenings.length > 0 && (
+        <p className="text-sm text-smoke" data-testid="coverage-dropped-line" data-dropped={c.droppedOpenings.length} data-sizes={c.droppedOpenings.map((o) => o.size.toFixed(4)).join(" ")}>
+          {droppedLine(c, unit)} The tracing read a gap the PDF does not draw.
+        </p>
+      )}
       {c.outOfRangeGaps.length > 0 && (
         <p data-testid="coverage-gaps-line" data-gaps={c.outOfRangeGaps.length} data-sizes={c.outOfRangeGaps.map((g) => g.size.toFixed(4)).join(" ")}>
           <span aria-hidden className="mr-2 inline-block h-2.5 w-4 border-2 border-dashed border-overlay-door align-middle" />

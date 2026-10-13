@@ -32,6 +32,7 @@ import { isTypingTarget } from "@/lib/keyboard";
 import { installPlanShortcuts } from "@/store/planStore";
 import { usePersistenceReady } from "@/store/persistence";
 import { installSelectionShortcuts } from "@/store/selectionStore";
+import { useCalibrateStore } from "@/store/calibrateStore";
 import { installToolShortcuts, is3dTool, TOOL_SHORTCUTS, useToolStore, type Tool } from "@/store/toolStore";
 import { useViewStore } from "@/store/viewStore";
 
@@ -60,6 +61,18 @@ export default function Studio() {
     () =>
       useToolStore.subscribe((s, prev) => {
         if (s.tool === "select" || is3dTool(s.tool) || s.tool === prev.tool) return; // Push/Pull and Move are 3D tools: they never open the 2D plan
+        const isWide = window.matchMedia(SPLIT_QUERY).matches;
+        setView((v) => (v === "2d" || (v === "split" && isWide) ? v : isWide ? "split" : "2d"));
+      }),
+    [],
+  );
+
+  // Set scale (step M.2b) picks its two points in the 2D plan: starting it brings that pane up,
+  // the same way picking a 2D tool does, and leaves going back to 3D to the user.
+  useEffect(
+    () =>
+      useCalibrateStore.subscribe((s, prev) => {
+        if (!s.picking || prev.picking) return;
         const isWide = window.matchMedia(SPLIT_QUERY).matches;
         setView((v) => (v === "2d" || (v === "split" && isWide) ? v : isWide ? "split" : "2d"));
       }),

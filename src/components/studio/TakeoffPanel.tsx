@@ -3,20 +3,31 @@
 /*
  * src/components/studio/TakeoffPanel.tsx — the Takeoff section of the right panel (step M.2a),
  * collapsible. The length and area unit switches (src/store/unitsStore.ts; the area one is the
- * Summary's toggle too), "Show takeoffs", and a table with one row per takeoff: its name
- * (editable), kind, basis, measured value, a typed reference (the wall panel's parser; a bare
- * number is in the current unit), the difference, the status (OK, Flagged, No reference), an
- * override with its note (the measured value is always kept and shown beside it), the stale
- * marker with "Mark as current", and Delete. Each change is one planStore call, so one undo
- * step. Clicking a row selects it, and the 2D plan draws it in gilt. Totals sum the unrounded
- * values (measured, and effective with overrides) and round once. "Download CSV" and "Copy
- * table" give the same cells. The table scrolls sideways inside its own box, so a phone page
- * never does. Connects to: src/lib/takeoff/rows.ts, src/lib/units/format.ts,
- * src/store/{planStore,takeoffStore,unitsStore}.ts; mounted by PlanPanel.tsx.
+ * Summary's toggle too), "Show takeoffs", "Set scale…" (step M.2b), and a table with one row per
+ * takeoff: its name (editable), kind, basis, measured value, a typed reference (the wall panel's
+ * parser; a bare number is in the current unit), the difference, the status (OK, Flagged, No
+ * reference), an override with its note (the measured value is always kept and shown beside it),
+ * the stale marker with "Mark as current", and Delete. Each change is one planStore call, so one
+ * undo step. Clicking a row selects it, and the 2D plan draws it in gilt. Totals sum the
+ * unrounded values (measured, and effective with overrides) and round once. "Download CSV" and
+ * "Copy table" give the same cells. The table scrolls sideways inside its own box, so a phone
+ * page never does.
+ *
+ * Step M.2b, "From PDF": the dimensions carried in at Build model (Takeoff.source === "pdf") are
+ * a group of their own, collapsible, with how many there are and how many are Flagged, and the
+ * same units, references, overrides, stale marker and CSV as the rest. A line under it says that
+ * a Set scale changes their measured values, so a row that flags afterwards is the drawing
+ * disagreeing with the new scale — which is the signal, not a bug. "Set scale…" starts the
+ * two-point flow in the 2D plan (src/store/calibrateStore.ts, CalibrateDialog.tsx).
+ *
+ * Connects to: src/lib/takeoff/rows.ts, src/lib/units/format.ts,
+ * src/store/{planStore,takeoffStore,unitsStore,calibrateStore}.ts; mounted by PlanPanel.tsx.
  */
 import { useMemo, useRef, useState } from "react";
-import { csvFileName, STATUS_TEXT, tableCells, takeoffRow, toCsv, toTsv, totals, wallsHash, type TakeoffRow } from "@/lib/takeoff/rows";
+import { csvFileName, STATUS_TEXT, tableCells, takeoffRow, toCsv, toTsv, totals, wallsHash, type TakeoffRow, type Units } from "@/lib/takeoff/rows";
+import { MAX_PDF_TAKEOFFS } from "@/lib/pdf/takeoffs";
 import { AREA_LABEL, AREA_UNITS, formatArea, formatLength, LENGTH_LABEL, LENGTH_UNITS, parseAreaInput, parseLengthInput } from "@/lib/units/format";
+import { useCalibrateStore } from "@/store/calibrateStore";
 import { usePlanStore } from "@/store/planStore";
 import { useTakeoffStore } from "@/store/takeoffStore";
 import { useUnitsStore } from "@/store/unitsStore";
@@ -96,23 +107,137 @@ function Switch<T extends string>({ label, values, names, value, set, testPrefix
   );
 }
 
+/** One table of rows; `group` marks the From PDF one. Module level, so a plan change never
+ *  remounts it and a half-typed value in one of its fields is never lost. */
+function RowsTable({ list, group, units, selectedId, select }: { list: TakeoffRow[]; group?: "pdf"; units: Units; selectedId: string | null; select: (id: string) => void }) {
+  const store = usePlanStore.getState();
+    const fmt = (t: Takeoff, v: number | null | undefined) => (v === null || v === undefined ? "–" : t.kind === "length" ? formatLength(v, units.length) : formatArea(v, units.area));
+    const signed = (t: Takeoff, v: number | null) => (v === null ? "–" : `${v > 0 ? "+" : ""}${fmt(t, v)}`);
+    const parse = (t: Takeoff) => (raw: string) => (t.kind === "length" ? parseLengthInput(raw, units.length) : parseAreaInput(raw, units.area));
+    const unitOf = (t: Takeoff) => (t.kind === "length" ? LENGTH_LABEL[units.length] : AREA_LABEL[units.area]);
+    return (
+      // relative: an absolutely placed child can never widen the page beyond this scroll box
+      <div className="relative max-w-full overflow-x-auto rounded border border-stone" data-testid="takeoff-table-wrap" data-group={group ?? "studio"}>
+        <table className="min-w-max border-collapse text-left text-xs" data-testid="takeoff-table" data-group={group ?? "studio"}>
+          <thead className="bg-limestone/60 text-smoke">
+            <tr>
+              {["Name", "Kind", "Basis", "Measured", "Reference", "Difference", "Status", "Override", "Walls", ""].map((h, i) => (
+                <th key={i} scope="col" className="px-2 py-1.5 font-normal">
+                  {h || <span className="sr-only">Delete</span>}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((r) => {
+              const t = r.takeoff;
+              const on = t.id === selectedId;
+              return (
+                <tr
+                  key={t.id}
+                  data-testid="takeoff-row"
+                  data-takeoff={t.id}
+                  data-source={t.source ?? "studio"}
+                  data-status={r.status}
+                  data-selected={on}
+                  aria-selected={on}
+                  onClick={() => select(t.id)}
+                  onFocusCapture={() => select(t.id)}
+                  className={`border-t border-stone align-top ${on ? "bg-gilt/10" : "hover:bg-limestone/60"}`}
+                >
+                  <td className="px-2 py-1.5">
+                    <EditableText value={t.name} onCommit={(n) => store.updateTakeoff(t.id, { name: n })} label={`Takeoff name, ${t.name}`} testId="takeoff-name" className="w-36 py-1" />
+                  </td>
+                  <td className="px-2 py-1.5">{t.kind === "length" ? "Length" : "Area"}</td>
+                  <td className="px-2 py-1.5" data-testid="takeoff-basis">
+                    {r.basis}
+                  </td>
+                  <td className="px-2 py-1.5 whitespace-nowrap" data-testid="takeoff-measured">
+                    {fmt(t, r.measured)}
+                    {r.basis === "Traced approximate" && <span className="block text-smoke">approximate</span>}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <ValueField
+                      key={`${t.reference?.value}-${unitOf(t)}`}
+                      value={t.reference ? fmt(t, t.reference.value) : ""}
+                      parse={parse(t)}
+                      onCommit={(v) => store.updateTakeoff(t.id, { reference: v === null ? null : { value: v, note: t.reference?.note } })}
+                      label={`Reference for ${t.name}, in ${unitOf(t)}`}
+                      placeholder={unitOf(t)}
+                      testId="takeoff-ref"
+                    />
+                  </td>
+                  <td className="px-2 py-1.5 whitespace-nowrap" data-testid="takeoff-diff">
+                    {signed(t, r.difference)}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <span data-testid="takeoff-status" data-status={r.status} className={`inline-block whitespace-nowrap rounded border px-1.5 py-0.5 ${BADGE[r.status]}`}>
+                      {STATUS_TEXT[r.status]}
+                    </span>
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <div className="flex flex-col gap-1">
+                      <ValueField
+                        key={`${t.override?.value}-${unitOf(t)}`}
+                        value={t.override ? fmt(t, t.override.value) : ""}
+                        parse={parse(t)}
+                        onCommit={(v) => store.updateTakeoff(t.id, { override: v === null ? null : { value: v, note: t.override?.note } })}
+                        label={`Override for ${t.name}, in ${unitOf(t)}`}
+                        placeholder="value"
+                        testId="takeoff-override"
+                      />
+                      {t.override && (
+                        <>
+                          <EditableText value={t.override.note ?? ""} onCommit={(n) => store.updateTakeoff(t.id, { override: { value: t.override!.value, note: n } })} label={`Override note for ${t.name}`} testId="takeoff-override-note" className="w-36 border border-stone py-1" />
+                          <span className="whitespace-nowrap text-smoke" data-testid="takeoff-overridden">
+                            Overridden: {fmt(t, t.override.value)}, measured {fmt(t, r.measured)}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-2 py-1.5">
+                    {r.stale ? (
+                      <div className="flex w-40 flex-col gap-1" data-testid="takeoff-stale">
+                        <span className="text-gilt">Walls have moved since this was measured</span>
+                        <button type="button" data-testid="takeoff-mark-current" onClick={() => store.markTakeoffCurrent(t.id)} className="min-h-8 w-fit rounded border border-stone px-2 hover:bg-limestone">
+                          Mark as current
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-smoke">Current</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <button type="button" data-testid="takeoff-delete" aria-label={`Delete ${t.name}`} onClick={(e) => (e.stopPropagation(), store.deleteTakeoff(t.id))} className="min-h-8 rounded border border-stone px-2 hover:bg-limestone">
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+  );
+}
+
 export function TakeoffPanel() {
   const plan = usePlanStore((s) => s.plan);
-  const store = usePlanStore.getState();
   const units = useUnitsStore();
   const { selectedId, show, select, setShow } = useTakeoffStore();
   const [open, setOpen] = useState(true);
+  const [openPdf, setOpenPdf] = useState(true);
   const [copied, setCopied] = useState<string | null>(null);
 
   const rows = useMemo(() => {
     const hash = wallsHash(plan.walls);
     return (plan.takeoffs ?? []).map((t) => takeoffRow(plan, t, hash));
   }, [plan]);
+  const pdfRows = rows.filter((r) => r.takeoff.source === "pdf");
+  const mine = rows.filter((r) => r.takeoff.source !== "pdf");
+  const flagged = pdfRows.filter((r) => r.status === "flagged").length;
   const sum = totals(rows);
-  const fmt = (t: Takeoff, v: number | null | undefined) => (v === null || v === undefined ? "–" : t.kind === "length" ? formatLength(v, units.length) : formatArea(v, units.area));
-  const signed = (t: Takeoff, v: number | null) => (v === null ? "–" : `${v > 0 ? "+" : ""}${fmt(t, v)}`);
-  const parse = (t: Takeoff) => (raw: string) => (t.kind === "length" ? parseLengthInput(raw, units.length) : parseAreaInput(raw, units.area));
-  const unitOf = (t: Takeoff) => (t.kind === "length" ? LENGTH_LABEL[units.length] : AREA_LABEL[units.area]);
 
   const download = () => {
     const blob = new Blob([toCsv(tableCells(rows, units))], { type: "text/csv;charset=utf-8" });
@@ -151,113 +276,51 @@ export function TakeoffPanel() {
             <input type="checkbox" data-testid="takeoff-show" checked={show} onChange={(e) => setShow(e.target.checked)} className="size-4 accent-cyanotype" />
             Show takeoffs
           </label>
+          {/* Step M.2b: set the plan's scale from two points you know the distance between. */}
+          <button type="button" data-testid="takeoff-set-scale" onClick={() => useCalibrateStore.getState().start()} className="min-h-9 w-fit rounded border border-stone px-3 text-xs hover:bg-limestone">
+            Set scale…
+          </button>
 
-          {rows.length === 0 ? (
+          {/* From PDF: the dimensions carried in at Build model */}
+          {pdfRows.length > 0 && (
+            <section aria-labelledby="takeoff-pdf-h" className="flex min-w-0 flex-col gap-2" data-testid="takeoff-pdf">
+              <h3 id="takeoff-pdf-h" className="text-xs font-medium">
+                <button
+                  type="button"
+                  aria-expanded={openPdf}
+                  aria-controls="takeoff-pdf-body"
+                  data-testid="takeoff-pdf-toggle"
+                  data-count={pdfRows.length}
+                  data-flagged={flagged}
+                  onClick={() => setOpenPdf(!openPdf)}
+                  className="flex min-h-9 w-full items-center justify-between rounded text-left hover:bg-limestone"
+                >
+                  <span>
+                    From PDF ({pdfRows.length}) · {flagged} flagged
+                  </span>
+                  <span className="text-smoke" aria-hidden>
+                    {openPdf ? "▾" : "▸"}
+                  </span>
+                </button>
+              </h3>
+              {openPdf && (
+                <div id="takeoff-pdf-body" className="flex min-w-0 flex-col gap-2">
+                  <RowsTable list={pdfRows} group="pdf" units={units} selectedId={selectedId} select={select} />
+                  <p className="text-[11px] text-smoke" data-testid="takeoff-pdf-note">
+                    These are the drawing&apos;s printed dimensions, measured on the model. Set scale changes what they measure, so a row that flags afterwards is the printed numbers disagreeing with the new scale.
+                    {pdfRows.length >= MAX_PDF_TAKEOFFS && ` Only the first ${MAX_PDF_TAKEOFFS} dimensions were carried in.`}
+                  </p>
+                </div>
+              )}
+            </section>
+          )}
+
+          {mine.length === 0 ? (
             <p className="text-xs text-smoke" data-testid="takeoff-empty">
-              No takeoffs yet. Choose Takeoff in the tools (K) and click points, corners or a wall in the 2D plan.
+              No takeoffs of your own yet. Choose Takeoff in the tools (K) and click points, corners or a wall in the 2D plan.
             </p>
           ) : (
-            // relative: an absolutely placed child can never widen the page beyond this scroll box
-            <div className="relative max-w-full overflow-x-auto rounded border border-stone" data-testid="takeoff-table-wrap">
-              <table className="min-w-max border-collapse text-left text-xs" data-testid="takeoff-table">
-                <thead className="bg-limestone/60 text-smoke">
-                  <tr>
-                    {["Name", "Kind", "Basis", "Measured", "Reference", "Difference", "Status", "Override", "Walls", ""].map((h, i) => (
-                      <th key={i} scope="col" className="px-2 py-1.5 font-normal">
-                        {h || <span className="sr-only">Delete</span>}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => {
-                    const t = r.takeoff;
-                    const on = t.id === selectedId;
-                    return (
-                      <tr
-                        key={t.id}
-                        data-testid="takeoff-row"
-                        data-takeoff={t.id}
-                        data-selected={on}
-                        aria-selected={on}
-                        onClick={() => select(t.id)}
-                        onFocusCapture={() => select(t.id)}
-                        className={`border-t border-stone align-top ${on ? "bg-gilt/10" : "hover:bg-limestone/60"}`}
-                      >
-                        <td className="px-2 py-1.5">
-                          <EditableText value={t.name} onCommit={(n) => store.updateTakeoff(t.id, { name: n })} label={`Takeoff name, ${t.name}`} testId="takeoff-name" className="w-36 py-1" />
-                        </td>
-                        <td className="px-2 py-1.5">{t.kind === "length" ? "Length" : "Area"}</td>
-                        <td className="px-2 py-1.5" data-testid="takeoff-basis">
-                          {r.basis}
-                        </td>
-                        <td className="px-2 py-1.5 whitespace-nowrap" data-testid="takeoff-measured">
-                          {fmt(t, r.measured)}
-                          {r.basis === "Traced approximate" && <span className="block text-smoke">approximate</span>}
-                        </td>
-                        <td className="px-2 py-1.5">
-                          <ValueField
-                            key={`${t.reference?.value}-${unitOf(t)}`}
-                            value={t.reference ? fmt(t, t.reference.value) : ""}
-                            parse={parse(t)}
-                            onCommit={(v) => store.updateTakeoff(t.id, { reference: v === null ? null : { value: v } })}
-                            label={`Reference for ${t.name}, in ${unitOf(t)}`}
-                            placeholder={unitOf(t)}
-                            testId="takeoff-ref"
-                          />
-                        </td>
-                        <td className="px-2 py-1.5 whitespace-nowrap" data-testid="takeoff-diff">
-                          {signed(t, r.difference)}
-                        </td>
-                        <td className="px-2 py-1.5">
-                          <span data-testid="takeoff-status" data-status={r.status} className={`inline-block whitespace-nowrap rounded border px-1.5 py-0.5 ${BADGE[r.status]}`}>
-                            {STATUS_TEXT[r.status]}
-                          </span>
-                        </td>
-                        <td className="px-2 py-1.5">
-                          <div className="flex flex-col gap-1">
-                            <ValueField
-                              key={`${t.override?.value}-${unitOf(t)}`}
-                              value={t.override ? fmt(t, t.override.value) : ""}
-                              parse={parse(t)}
-                              onCommit={(v) => store.updateTakeoff(t.id, { override: v === null ? null : { value: v, note: t.override?.note } })}
-                              label={`Override for ${t.name}, in ${unitOf(t)}`}
-                              placeholder="value"
-                              testId="takeoff-override"
-                            />
-                            {t.override && (
-                              <>
-                                <EditableText value={t.override.note ?? ""} onCommit={(n) => store.updateTakeoff(t.id, { override: { value: t.override!.value, note: n } })} label={`Override note for ${t.name}`} testId="takeoff-override-note" className="w-36 border border-stone py-1" />
-                                <span className="whitespace-nowrap text-smoke" data-testid="takeoff-overridden">
-                                  Overridden: {fmt(t, t.override.value)}, measured {fmt(t, r.measured)}
-                                </span>
-                              </>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-2 py-1.5">
-                          {r.stale ? (
-                            <div className="flex w-40 flex-col gap-1" data-testid="takeoff-stale">
-                              <span className="text-gilt">Walls have moved since this was measured</span>
-                              <button type="button" data-testid="takeoff-mark-current" onClick={() => store.markTakeoffCurrent(t.id)} className="min-h-8 w-fit rounded border border-stone px-2 hover:bg-limestone">
-                                Mark as current
-                              </button>
-                            </div>
-                          ) : (
-                            <span className="text-smoke">Current</span>
-                          )}
-                        </td>
-                        <td className="px-2 py-1.5">
-                          <button type="button" data-testid="takeoff-delete" aria-label={`Delete ${t.name}`} onClick={(e) => (e.stopPropagation(), store.deleteTakeoff(t.id))} className="min-h-8 rounded border border-stone px-2 hover:bg-limestone">
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <RowsTable list={mine} units={units} selectedId={selectedId} select={select} />
           )}
 
           {rows.length > 0 && (

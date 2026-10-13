@@ -229,8 +229,9 @@ const dist = (p: { x: number; y: number }, q: { x: number; y: number }) => Math.
   // CSV: the measured, override and effective values in their own columns, in the chosen units; names escaped.
   const tricky = takeoffRow(plan, { ...len, name: `Hall, "east"\nwall` });
   const cells = tableCells([tricky], { length: "mm", area: "m2" });
-  assert.deepEqual(cells[0], ["name", "kind", "basis", "measured (mm | m²)", "reference (mm | m²)", "difference (mm | m²)", "status", "override (mm | m²)", "override note", "effective (mm | m²)", "stale"]);
-  assert.deepEqual(cells[1], [`Hall, "east"\nwall`, "length", "Free points", "4062", "4000", "62.0", "Flagged", "4100", "site", "4100", "no"]);
+  // Step M.2b added the last column, the row's source ("studio" or "pdf").
+  assert.deepEqual(cells[0], ["name", "kind", "basis", "measured (mm | m²)", "reference (mm | m²)", "difference (mm | m²)", "status", "override (mm | m²)", "override note", "effective (mm | m²)", "stale", "source"]);
+  assert.deepEqual(cells[1], [`Hall, "east"\nwall`, "length", "Free points", "4062", "4000", "62.0", "Flagged", "4100", "site", "4100", "no", "studio"]);
   const csv = toCsv(cells);
   assert.ok(csv.includes(`"Hall, ""east""\nwall",length`), "comma, quotes and the line break are quoted and the quotes doubled");
   assert.equal(csvFileName("Two-bedroom house"), "two-bedroom-house-takeoffs.csv");

@@ -9,7 +9,11 @@
  *   - basis: the worst provenance among the walls the points sit on (a face corner, a wall
  *     end, a jamb or a midpoint, within 1 µm): "Traced approximate" < "Drawn" (hand-drawn,
  *     sample, image-imported, or a PDF wall since edited) < "PDF exact"; "Free points" when
- *     no point is on a wall.
+ *     no point is on a wall. A row carried in from a PDF dimension (step M.2b,
+ *     `Takeoff.source === "pdf"`) is measured between the ends of its own printed line, which
+ *     lie off the building, so no point of it is on a wall: it is "PDF exact", or "Traced
+ *     approximate" when `Takeoff.approximate` says the model check landed it on a traced wall.
+ *   - the CSV's last column is the row's source: "pdf" for a carried dimension, else "studio".
  *   - stale: the walls' hash (ids, ends, thicknesses) differs from the one stored when the
  *     takeoff was measured. Points are absolute and do not follow the walls.
  * Totals are sums of unrounded values, rounded once at display (src/lib/units/format.ts).
@@ -100,7 +104,11 @@ export function takeoffRow(plan: Plan, t: Takeoff, hash = wallsHash(plan.walls))
   const ref = t.reference?.value;
   return {
     takeoff: t,
-    basis: basisOf(plan, [...t.points, ...(t.cutouts ?? []).flat()]),
+    // A carried PDF dimension is measured between the ends of its own printed line, out beyond
+    // the walls, so no point of it sits on a wall: its basis is the PDF's geometry, and
+    // `approximate` (stamped at Build model from the model check) is what says a traced wall
+    // is involved. Every other takeoff is judged by the walls its points sit on.
+    basis: t.source === "pdf" ? (t.approximate ? "Traced approximate" : "PDF exact") : basisOf(plan, [...t.points, ...(t.cutouts ?? []).flat()]),
     measured,
     difference: measured !== null && ref !== undefined ? measured - ref : null,
     status: measured === null ? "none" : takeoffStatus(t.kind, measured, ref),
@@ -149,11 +157,11 @@ const value = (kind: Takeoff["kind"], v: number | null | undefined, u: Units) =>
 /** The table as cells, header first: values in the chosen units, the difference in mm (lengths) or m² (areas). */
 export function tableCells(rows: TakeoffRow[], u: Units): string[][] {
   const units = `${LENGTH_LABEL[u.length]} | ${AREA_LABEL[u.area]}`;
-  const head = ["name", "kind", "basis", `measured (${units})`, `reference (${units})`, "difference (mm | m²)", "status", `override (${units})`, "override note", `effective (${units})`, "stale"];
+  const head = ["name", "kind", "basis", `measured (${units})`, `reference (${units})`, "difference (mm | m²)", "status", `override (${units})`, "override note", `effective (${units})`, "stale", "source"];
   const body = rows.map((r) => {
     const t = r.takeoff;
     const diff = r.difference === null ? "" : t.kind === "length" ? (Number((r.difference * 1000).toFixed(1)) || 0).toFixed(1) : (Number(r.difference.toFixed(3)) || 0).toFixed(3);
-    return [t.name, t.kind, r.basis, value(t.kind, r.measured, u), value(t.kind, t.reference?.value, u), diff, STATUS_TEXT[r.status], value(t.kind, t.override?.value, u), t.override?.note ?? "", value(t.kind, r.effective, u), r.stale ? "yes" : "no"];
+    return [t.name, t.kind, r.basis, value(t.kind, r.measured, u), value(t.kind, t.reference?.value, u), diff, STATUS_TEXT[r.status], value(t.kind, t.override?.value, u), t.override?.note ?? "", value(t.kind, r.effective, u), r.stale ? "yes" : "no", t.source ?? "studio"];
   });
   return [head, ...body];
 }

@@ -494,6 +494,41 @@ async function checkWiring() {
   console.log("opening hinge: old plans gain no field, a and b round-trip, unknown values dropped");
 }
 
+// ---- step M.2b: a takeoff's `source` and `approximate`, and `plan.calibrations`. An old plan has
+// none and gains none; the new fields round-trip; unknown values are dropped, never refused; a
+// calibration with a bad factor refuses the plan rather than loading a scale nobody can trust.
+{
+  const old = serializePlan(samplePlan);
+  assert.ok(!old.includes("calibrations") && !old.includes("approximate"), "the sample stores no calibrations and no takeoff marks"); // "source" is plan.meta's
+  const back = parseStoredPlan(old)!;
+  assert.ok(!("calibrations" in back), "an old plan gains no calibrations field");
+  const hash = "abc123";
+  const withBoth: Plan = {
+    ...samplePlan,
+    takeoffs: [
+      { id: "tp-1", name: "PDF 4000 mm", kind: "length", points: [[0, 0], [4, 0]], reference: { value: 4, note: "4000 mm" }, override: { value: 4.01, note: "site" }, wallsHash: hash, source: "pdf", approximate: true },
+      { id: "t-1", name: "Length 1", kind: "length", points: [[0, 0], [1, 0]], wallsHash: hash },
+    ],
+    calibrations: [{ factor: 1.025, note: "tape, hall" }, { factor: 0.99 }],
+  };
+  const round = parseStoredPlan(serializePlan(withBoth))!;
+  assert.deepEqual(round.takeoffs, withBoth.takeoffs, "source and approximate survive a save and reload, and absent stays absent");
+  assert.deepEqual(round.calibrations, withBoth.calibrations, "and every calibration, with and without a note");
+  const odd = JSON.parse(serializePlan(withBoth));
+  odd.plan.takeoffs[0].source = "spreadsheet";
+  odd.plan.takeoffs[0].approximate = "yes";
+  const cleaned = parseStoredPlan(JSON.stringify(odd))!;
+  assert.ok(cleaned, "unknown values do not refuse the plan");
+  assert.ok(!("source" in cleaned.takeoffs![0]) && !("approximate" in cleaned.takeoffs![0]), "they are dropped instead");
+  const badFactor = JSON.parse(serializePlan(withBoth));
+  badFactor.plan.calibrations[0].factor = 0;
+  assert.equal(parseStoredPlan(JSON.stringify(badFactor)), null, "a calibration factor of 0 refuses the plan");
+  const badNote = JSON.parse(serializePlan(withBoth));
+  badNote.plan.calibrations[1] = { factor: 1.1, note: 7 };
+  assert.equal(parseStoredPlan(JSON.stringify(badNote)), null, "and so does a note that isn't text");
+  console.log("takeoff source and calibrations: old plans gain no fields, both round-trip, unknown values dropped, bad factors refused");
+}
+
 // (async because the debounce is waited out in real time; the CJS test runner has no top-level await)
 checkWiring().then(
   () => console.log("OK"),

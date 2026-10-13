@@ -39,7 +39,9 @@
  *     a rectangle with no arc leaves the gap unclassified; 20–100 mm thick only;
  *   - step M.1d: collinear gaps outside 0.45–4 m are reported with their sizes (0.30 m
  *     closed as wall, 4.60 m unbridged), synthetically and on plan-gaps.pdf against its
- *     truth; plan-doors-rect.pdf's two doors on ONE wall, hinged at opposite jambs and
+ *     truth; step M.2b: the 0.30 m door the tracing read there is DROPPED as a phantom
+ *     (the PDF's wall runs unbroken across it) and reported, so plan-gaps' plan holds the
+ *     PDF's 7 openings and nothing else, where M.1d kept 8; plan-doors-rect.pdf's two doors on ONE wall, hinged at opposite jambs and
  *     opening to opposite sides, both exact;
  *   - the store: an opening from a PDF says edited after a change, typing a height
  *     clears "default height", undo restores both. (Persistence: test-persist.ts.)
@@ -463,11 +465,14 @@ async function main() {
       });
     assert.ok(covered(mid(narrow)), "the 0.30 m gap is closed as solid wall (a wall runs through it)");
     assert.ok(!covered(mid(wide)), "the 4.60 m gap is not bridged (no wall runs through it)");
-    // The image tracing, which M.1d does not change, does read the narrow gap as a 0.3 m door; it
-    // stays in the plan as a TRACED opening, which is why the total is one more than the truth's.
-    assert.equal(b.coverage.openings.total, t.planOpenings.length + 1, "the tracing's own 0.30 m door is kept as a traced opening");
-    assert.equal(b.coverage.openings.traced, 1, "…counted as traced, not exact");
-    console.log(`plan-gaps: gaps ${b.coverage.outOfRangeGaps.map((g) => g.size.toFixed(2)).join(", ")} m reported and matching the truth; the narrow one closed as wall, the wide one unbridged; ${b.coverage.openings.exact}/${b.coverage.openings.total} openings exact (the extra is the tracing's own 0.30 m door)`);
+    // The image tracing does read the narrow gap as a 0.3 m door. Step M.2b drops it: the PDF's
+    // wall runs unbroken across it, so it is a phantom of the raster, and the plan holds the
+    // PDF's openings and nothing else. (M.1d kept it, so the total was one more than the truth's.)
+    assert.equal(b.coverage.openings.total, t.planOpenings.length, "the tracing's own 0.30 m door is dropped, not kept");
+    assert.equal(b.coverage.openings.traced, 0, "…so nothing is traced");
+    assert.equal(b.coverage.droppedOpenings.length, 1, "it is reported as dropped");
+    assert.ok(Math.abs(b.coverage.droppedOpenings[0].size - 0.3) < 0.01, `with its size (${b.coverage.droppedOpenings[0].size.toFixed(3)} m)`);
+    console.log(`plan-gaps: gaps ${b.coverage.outOfRangeGaps.map((g) => g.size.toFixed(2)).join(", ")} m reported and matching the truth; the narrow one closed as wall, the wide one unbridged; ${b.coverage.openings.exact}/${b.coverage.openings.total} openings exact; ${b.coverage.droppedOpenings.length} phantom traced opening dropped (${(b.coverage.droppedOpenings[0].size * 1000).toFixed(0)} mm)`);
   }
 
   // ------------------------------------------------------------ the merge and the 3-pixel limit (1 px = 1 cm)

@@ -13,9 +13,11 @@
  * settings (`Item.import`); the file bytes live in IndexedDB (src/lib/import/assetStore.ts)
  * and never come through here. Quantity takeoffs (step M.2a, `plan.takeoffs`) are plan data
  * and are stored; the Takeoff tool's mode, draft and selected row are not. Connects to: src/types/plan.ts; wired to the plan
- * store by src/store/persistence.ts; tested by scripts/test-persist.ts.
+ * store by src/store/persistence.ts; tested by scripts/test-persist.ts. A takeoff carried in
+ * from a PDF dimension keeps its `source` and a recalibration its `plan.calibrations` (step
+ * M.2b); a plan written before either loads exactly as it did.
  */
-import type { ImportFormat, ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Room, Takeoff, TakeoffValue, Vec2, Wall } from "@/types/plan";
+import type { Calibration, ImportFormat, ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Room, Takeoff, TakeoffValue, Vec2, Wall } from "@/types/plan";
 
 export const STORAGE_KEY = "atrium-v2:plan";
 /** Bump when the stored shape changes, and add a case to `migrate`. */
@@ -209,7 +211,15 @@ function takeoff(v: unknown): Takeoff | null {
     if (!tv) return null;
     out[key] = tv;
   }
+  if (v.source === "pdf") out.source = "pdf"; // step M.2b; any other value is dropped, never refused
+  if (v.approximate === true) out.approximate = true;
   return out;
+}
+
+/** One applied scale change (step M.2b): a positive, finite factor and an optional note. */
+function calibration(v: unknown): Calibration | null {
+  if (!isObject(v) || !isNum(v.factor) || v.factor <= 0 || (v.note !== undefined && !isStr(v.note))) return null;
+  return { factor: v.factor, ...(isStr(v.note) && { note: v.note }) };
 }
 
 /** Map every element through `one`; null when the input is not an array or any element is bad. */
@@ -250,11 +260,17 @@ function coercePlan(v: unknown): Plan | null {
   if (!unique(walls.map((w) => w.id)) || !unique(openings.map((o) => o.id)) || !unique(rooms.map((r) => r.id)) || !unique(items.map((i) => i.id))) return null;
   if (openings.some((o) => !wallIds.has(o.wallId)) || rooms.some((r) => r.wallIds.some((id) => !wallIds.has(id)))) return null;
 
-  const plan: Plan = { id: v.id, name: v.name, units: "m", walls, openings, rooms, items, meta: { createdAt, updatedAt, source } };
-  if (v.takeoffs === undefined) return plan; // every plan before step M.2a: loads exactly as it was
-  const takeoffs = all(v.takeoffs, takeoff);
-  if (!takeoffs || !unique(takeoffs.map((t) => t.id))) return null;
-  return { ...plan, takeoffs };
+  let plan: Plan = { id: v.id, name: v.name, units: "m", walls, openings, rooms, items, meta: { createdAt, updatedAt, source } };
+  if (v.takeoffs !== undefined) {
+    // Every plan before step M.2a has none and loads exactly as it was.
+    const takeoffs = all(v.takeoffs, takeoff);
+    if (!takeoffs || !unique(takeoffs.map((t) => t.id))) return null;
+    plan = { ...plan, takeoffs };
+  }
+  if (v.calibrations === undefined) return plan; // every plan before step M.2b
+  const calibrations = all(v.calibrations, calibration);
+  if (!calibrations) return null;
+  return { ...plan, calibrations };
 }
 
 // ---------------------------------------------------------------- autosave
