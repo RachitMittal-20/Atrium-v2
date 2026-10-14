@@ -569,6 +569,26 @@ async function checkBuildReachesStorage(storage: ReturnType<typeof fakeStorage>)
   console.log("takeoff source and calibrations: old plans gain no fields, both round-trip, unknown values dropped, bad factors refused");
 }
 
+// ---- step M.2c: plan.background, the imported drawing under the 2D plan. An old plan has none and
+// gains none; the descriptor round-trips and holds no bytes; a malformed one is dropped, never the plan.
+{
+  const old = serializePlan(samplePlan);
+  assert.ok(!old.includes("background"), "the sample stores no background");
+  const back = parseStoredPlan(old)!;
+  assert.ok(!("background" in back), "an old plan gains no background field");
+  assert.deepEqual(back.walls, samplePlan.walls, "and loads its walls exactly as they were");
+  const bg = { assetId: "0123456789abcdef", kind: "pdf" as const, page: 1, mapping: { a: 0.035278, b: 0, c: 0, d: 0.035278, e: -5.1, f: -7.2 } };
+  const withBg: Plan = { ...samplePlan, background: bg };
+  const raw = serializePlan(withBg);
+  assert.deepEqual(parseStoredPlan(raw)!.background, bg, "a drawing's descriptor survives a save and reload");
+  assert.deepEqual(Object.keys(JSON.parse(raw).plan.background).sort(), ["assetId", "kind", "mapping", "page"], "and the autosave holds only the descriptor, no bytes");
+  const odd = JSON.parse(raw);
+  odd.plan.background.kind = "dwg";
+  const kept = parseStoredPlan(JSON.stringify(odd))!;
+  assert.ok(kept && !("background" in kept), "an unknown kind drops the drawing, not the plan");
+  console.log("background: old plans gain no field, the descriptor round-trips without bytes, a bad one is dropped");
+}
+
 // (async because the debounce is waited out in real time; the CJS test runner has no top-level await)
 checkWiring()
   .then(checkBuildReachesStorage)

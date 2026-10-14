@@ -296,6 +296,85 @@ Read this before sections 18-22, which still describe the old order.
     - `scripts/test-persist.ts`: assertions added, none changed.
   - **Not covered:** no real CAD PDF was read (`test-plans/` holds only images, and the e2e says so when it finds no .pdf there); the Basis and Status columns of the From PDF table are only reachable by scrolling the table sideways in its own box (M.2a's layout), so the browser test reads the group heading's counts and each row's `data-status` rather than the badges' pixels; the dialog is checked for focus trapping, not for a full keyboard-only walk from the tool rail; no test covers a calibration while walking, or two calibrations in a row; `scalePlan` is checked on the sample and plan-filled, not on a plan with imported model PARTS moved (their transforms are in the model frame and are not scaled, which is the intended behaviour but is untested).
 
+- **M.2c (DONE; not committed; 2026-10-14): the imported drawing as a 2D background, kept aligned through Set scale, and "Rescaled" labels.** CLAUDE.md has the rules (section "The drawing under the 2D plan, and Rescaled labels (step M.2c)").
+  - **Checks**, all on the final tree:
+    - `npm test`: 38 suites; new `test-background.ts`.
+    - `npx tsc --noEmit`.
+    - A COLD `perl -e 'alarm 300; exec @ARGV' npm run build`, with the dev server stopped and `.next` deleted first: compiled in 5.9 s, 16 s wall clock.
+    - After that build, the dev-hook grep (with `__background`, `__scene3d` and `__walkDebug` added) and the CDN grep: both `clean`. The layer's code is in the bundle (`bitmaprenderer` is found), so the hook grep is clean because of the guard, not because the code was dropped.
+    - Then `npm run dev` restarted from this checkout (`next-server` pid 5363, cwd `/Users/rachitmittal20/Atrium-v2`, nothing else driving port 3000). All nine e2e suites ran ONE AT A TIME, each exit 0 **first time**, with `/studio` probed before each: `e2e-background` 29 s, `e2e-calibrate` 15 s, `e2e-takeoff` 20 s, `e2e-pdf-import` 64 s, `e2e-units` 24 s, `e2e-studio` 196 s, `e2e-walk` 21 s, `e2e-import3d` 155 s, `e2e-offline-ocr` 22 s.
+    - `npx eslint src/` still reports the same 12 problems as HEAD; none is in a file M.2c touched.
+  - **One incident on the way**, written up under section 23: a `flake-hunt --tag=after` run from F.1 was still driving the same dev server while M.2c was edited. Five of its failures are logged there. The machine then restarted, clearing `/tmp`, and every check above was rerun from scratch afterwards.
+  - **What M.2c added:**
+    - `Plan.background?: { assetId, kind, page?, mapping }` and `Affine` (`types/plan.ts`).
+    - `planStorage` reads `background` strictly and drops a bad one, never the plan.
+    - `planStore.setBackground` / `clearBackground` are one undo step each.
+    - `calibratePlan` writes the scaled mapping in its one step.
+    - `src/lib/background/mapping.ts` (pure): `apply`, `compose`, `invert`, `scaleAbout`, `pdfVectorMapping`, `rasterMapping`, `buildMapping`.
+    - `src/lib/background/keep.ts`: `keepDrawing`, the I.1a asset store at Build model, plus the note when storage is refused.
+    - `PdfInfo.pageSize`.
+    - `calibrate.ts`: `scalePlan` scales the mapping, and `rescaledText` gives the label.
+    - `src/store/backgroundStore.ts`: view settings in localStorage `atrium.background`, and the drawing's load state.
+    - `src/workers/background.worker.ts`: pdf.js renders a page region to an ImageBitmap and cancels the stale task.
+    - `src/components/plan2d/BackgroundLayer.tsx`:
+      - an `<img>`, or a `<canvas>` (bitmaprenderer), behind the now-`relative` SVG, placed by one CSS matrix;
+      - a render 300 ms after the camera settles, capped at 4096 px, never asking for the same region twice;
+      - the dev hook `window.__background`.
+    - `DrawingControls.tsx`, beside Set scale… in the 2D pane and in the panel's new Drawing section (with Remove drawing and the missing-file message).
+    - `PlanPanel` takes `view2d`, so the section is hidden while only 3D shows.
+    - Rescaled text in `WallPanel`, `OpeningPanel` and `TakeoffPanel` (the "PDF exact" basis cell and the From PDF heading).
+  - **Covered by tests (Node, `test-background.ts`):**
+    - **Stored mapping, PDF:** every PDF wall end, from the PDF's own lines read by `walls.ts` and taken back to points, lands on a true wall end and on a built-plan wall end. Worst cases: plan-filled 0.0003 mm, plan-rotated 0.0004 mm, plan-imperial 0.0000 mm (allowed 0.5 mm).
+    - **Stored mapping, image:** on `public/samples/sample-plan.png`, each house corner measured from the image's own wall bands lands within one raster pixel (10 mm, the stated tolerance) of the plan's corner: 0.00 mm upright, 0.08 mm turned 3° (deskewed by the pipeline).
+    - **FAILING FIRST:** run against `calibrate.ts` with the mapping line taken out, it failed with `with the fix the same PDF point maps to the scaled plan point within 1e-9 (worst 6.40e-1 m)`; the drift is 4.76% (= 1 − 1/1.05) of the distance from the origin. With the fix: 4.0e-15 m, wall ends within 0.0003 mm, also about another origin.
+    - **Store:** setBackground and clearBackground are one undo step each with redo; calibratePlan carries the mapping in its one step and undo restores it exactly.
+    - **Autosave:** it holds only the descriptor (120 bytes, 4 keys, no bytes; a 200 kB file adds under 400 bytes). Old plans load with no field; five kinds of malformed descriptor are dropped and the plan kept.
+    - **keepDrawing:** uses the I.1a id rule. Refused storage gives exactly "The drawing could not be kept for the background." and no background.
+    - **Asset load state:** a missing asset, or storage that throws, reads as "missing"; a stored one as "ready".
+    - **Render region:** k = camera px per point × devicePixelRatio, inside the page, never over 4096, null off screen.
+    - **Rescaled text:** none for zero calibrations, "Rescaled x1.0234" for one (1.0234) and for two (1.02 × 1.0033), and through the store ×1.02 → ×1.0033 → undo → undo, gone at the end.
+    - `test-persist.ts` gained assertions only.
+  - **Covered in the browser** (`scripts/e2e-background.ts`, not in `npm test`; real file input, clicks, wheel, keys and taps; hooks only read; no blind sleeps, every wait a named `e2e-helpers` condition):
+    - **plan-filled at 1440:**
+      - no drawing and no Drawing section in the 3D view;
+      - in 2D, the toggle and slider in the pane and in the panel, starting at 50%;
+      - **alignment in the DOM:** every on-screen wall end, taken back through the stored mapping, the bitmap placement and the element's computed CSS transform, lands within 0.0013 px of the camera's own drawing (allowed 1 px);
+      - **alignment in the pixels:** with the SVG hidden and the drawing at 100%, the drawing's dark wall bands are centred on the plan's walls within 0.56 px over 53 crossings (allowed 1 px);
+      - a 200 px crop around the longest wall differs between drawing on and off by a mean RGB difference of 11.03 (threshold 2);
+      - the slider by keyboard: 50% → 40%, the computed opacity 0.4, the panel slider agrees, and localStorage holds `{ visible: true, opacity: 0.4 }` while the plan holds no opacity;
+      - four quick wheel steps, 81.5 → 167.4 px/m: **exactly one** render after it settled (1 → 2, nothing pending); still aligned, 0.48 px in the pixels;
+      - a Length takeoff by two real clicks on the drawing's wall ends, each snap read as "endpoint" before the click: 3000.000 mm against the printed 3000 mm (allowed 1 mm);
+      - Set scale ×1.02 by two clicks and a typed distance: the mapping's a, d, e, f are scaled by the stored factor (1e-12), still aligned (0.0018 px DOM, 0.56 px in the pixels), "From PDF (11) · 11 flagged · Rescaled x1.0200", a wall "Read from PDF · Rescaled x1.0200", a door "Read from PDF · Rescaled x1.0200 · Default height";
+      - Ctrl+Z restores the walls and the mapping exactly, aligned at 0.82 px, and the heading loses "Rescaled";
+      - a reload keeps the drawing and the opacity;
+      - after `indexedDB.deleteDatabase("atrium-assets")` and a reload, the panel says "The PDF this plan was imported from isn't stored in this browser. Import it again to see the background.", nothing is drawn, the plan is intact and there is no console error.
+    - **390 with real touch:** the pane's controls are inside the viewport and 44 px tall, aligned (0.42 px in the pixels, 26 crossings), toggled off and on by tap (difference 9.51), and the page is exactly 390 px wide, also with the Plan details sheet open on its Drawing section.
+    - **plan-scanned.pdf** (raster route, scale set by hand) and **03_with_dimensions.png**: the same toggle, slider, drawing kind, DOM alignment (0.0017 / 0.0005 px), pixel alignment (1.00 / 0.90 px; allowed 2 px, because the plan's walls there are TRACED from the picture and good to about a raster pixel) and on/off difference (11.95 / 8.64).
+    - A Set scale whose refit leaves the same region of the page at the same pixels per point renders **nothing** (0 renders), because the bitmap on screen is placed in points. The suite waits for "the layer holds the plan's mapping and nothing is pending" rather than a render, and the alignment checks prove the placement.
+  - **Screenshots** (`/tmp/studio/`):
+    - `background-on-1440.png`: 2D only, plan-filled under the plan at 50%. The drawing's own large room names show grey behind the plan's smaller labels and overlap them ("Bedroom 1" twice, offset). Its printed dimension text sits beside the carried From PDF takeoff labels and is overlapped by them in places. The top dimension's text ("4000 mm") is cut by the top edge of the pane. The panel shows the Drawing section at 50%.
+    - `background-takeoff-1440.png`: zoomed in on the bathroom's east wall with "Length 1: 3.000 m" drawn along it and the "wall end" snap label. The Length | Area | Wall bar covers the top-left of the pane, and the drawing's "3000 mm" text sits beside the takeoff.
+    - `background-rescaled-1440.png`: after Set scale ×1.02; the From PDF labels read 4.080 m, 3.060 m and so on, and the studio's own "Length 1" now reads 3.060 m, its label printed over the Bathroom label. The panel shows the Summary (net area 77.7 m²). The wall and door labels with "Rescaled" were read and cleared before this shot, so they are not in it.
+    - `background-390.png`: the phone's 2D plan, small at that width. The Drawing toggle and slider sit in a row above "Set scale…" (the row wraps upwards), clear of the plan. The carried takeoff labels and the drawing's text overlap heavily at this zoom.
+  - **NOT covered:**
+    - **No real CAD PDF was tested**: `test-plans/` has none, and every fixture is synthetic.
+    - Pinch zoom and pan re-render counts (only the wheel at 1440 is counted).
+    - Cancelling an in-flight render in the browser (the worker's cancel path and the id check are not forced by any test).
+    - The 4096 px cap reached in the browser (Node only).
+    - devicePixelRatio above 1 (the suite runs at 1).
+    - Storage refused at Build model in a browser (Node only).
+    - A drawing from page 2 of a multi-page PDF.
+    - plan-rotated, plan-imperial and a tilted image in the browser (Node only).
+    - An EXIF-rotated photo.
+    - The panel's slider at 390 (only shown).
+    - "Traced, approximate · Rescaled" in the browser (Node checks the text).
+    - Safari, Firefox and a real phone.
+  - **Existing test lines changed:** none. `test-persist.ts` only gained assertions, and `package.json`'s test script gained `test-background.ts`.
+  - **Choices worth knowing:**
+    - "Hidden in 3D" is read as: the drawing is drawn only in the 2D pane, and the panel's Drawing section is shown only while the 2D plan is.
+    - A malformed stored background is dropped, not the plan.
+    - The image route's object URL is made once per drawing and never revoked (a `ponytail:` comment says so).
+
 - **U.1 (DONE; not committed; 2026-10-12): one units setting every length and area follows.** CLAUDE.md has the rules (section "One units setting (step U.1)"). Checks, all passing against `npm run dev` on port 3000 from this checkout (pid 9154, cwd `/Users/rachitmittal20/Atrium-v2`, parent `next dev`): `npm test` (29 suites, new `test-units-store.ts` and `test-units-everywhere.ts`), `npx tsc --noEmit`, `npm run build`, the dev-hook grep (`clean`), and `scripts/e2e-units.ts` (new), `e2e-takeoff.ts` (extended), `e2e-studio.ts`, `e2e-walk.ts`, `e2e-import3d.ts`, `e2e-pdf-import.ts`: each exit 0 on the final tree, no e2e flake.
   - **What U.1 added:**
     - `unitsStore` is the one source (`ftin` stays the stored key; `"ft-in"` is read as it). It is mirrored to `src/lib/units/current.ts` (`lenText`, `areaText`, `signedLenText`, `rangeText`, `sizeText`, `gridText`…), which the pure edit rules, Push/Pull and Move labels, the validator's warnings and the measure label use. In Node nothing sets it, so every old string is unchanged.
@@ -586,7 +665,7 @@ Rules:
 Verification status at `4ba7192` (main):
 - `npm test` (18 suites), `npx tsc --noEmit` and `npm run build` passed.
 - The browser e2e (`scripts/e2e-studio.ts`) was run on this commit after main was updated, and it passed (result below). To re-run it: terminal A runs `npm run dev` and stays running (it must be port 3000, and it must be `dev` and not `start`, because the e2e uses dev-only hooks such as `window.__planStore`); terminal B runs `npx tsx scripts/e2e-studio.ts` and must exit 0.
-- **Run before committing** (since 4.7c): `npm test`, `npx tsc --noEmit`, `perl -e 'alarm 300; exec @ARGV' npm run build` (this Mac has neither `timeout` nor `gtimeout`; since M.1d: a build that takes over five minutes means an import cycle or a hang, not a slow machine — a clean build is about 2 s. `npm test`'s `test-import-cycles.ts` catches the usual cause first), `grep -rlE "__studio3d|__pushPullDebug|__importDebug|__importPdf|__plan2d|__takeoffStore" .next/static || echo clean` (must print `clean`), and with `npm run dev` on port 3000 from THIS checkout (`lsof -i :3000`, then the process's working directory): `npx tsx scripts/e2e-studio.ts`, `npx tsx scripts/e2e-walk.ts`, (since I.1a) `npx tsx scripts/e2e-import3d.ts` and (since M.1a) `npx tsx scripts/e2e-pdf-import.ts` (since M.2a) `npx tsx scripts/e2e-takeoff.ts`, (since U.1) `npx tsx scripts/e2e-units.ts` and (since M.2b) `npx tsx scripts/e2e-calibrate.ts`, and (since O.1) `npx tsx scripts/e2e-offline-ocr.ts`, all exit 0. `npm run build` needs a working `.next`: if it stalls with no output, see the flake-hunt item. Do not edit source files while an e2e runs: the dev server hot-reloads mid-test.
+- **Run before committing** (since 4.7c): `npm test`, `npx tsc --noEmit`, `perl -e 'alarm 300; exec @ARGV' npm run build` (this Mac has neither `timeout` nor `gtimeout`; since M.1d: a build that takes over five minutes means an import cycle or a hang, not a slow machine — a clean build is about 2 s. `npm test`'s `test-import-cycles.ts` catches the usual cause first), `grep -rlE "__studio3d|__pushPullDebug|__importDebug|__importPdf|__plan2d|__takeoffStore|__scene3d|__walkDebug|__background" .next/static || echo clean` and `grep -rlE "cdn\.jsdelivr|unpkg\.com|cdnjs" .next/static || echo clean` (both must print `clean`, run after the build), and with `npm run dev` on port 3000 from THIS checkout (`lsof -i :3000`, then the process's working directory): `npx tsx scripts/e2e-studio.ts`, `npx tsx scripts/e2e-walk.ts`, (since I.1a) `npx tsx scripts/e2e-import3d.ts` and (since M.1a) `npx tsx scripts/e2e-pdf-import.ts` (since M.2a) `npx tsx scripts/e2e-takeoff.ts`, (since U.1) `npx tsx scripts/e2e-units.ts` and (since M.2b) `npx tsx scripts/e2e-calibrate.ts`, (since O.1) `npx tsx scripts/e2e-offline-ocr.ts` and (since M.2c) `npx tsx scripts/e2e-background.ts`, all exit 0. Before a sweep, check nothing else is driving port 3000 (`pgrep -fl "flake-hunt|scripts/e2e-"`): in M.2c a `flake-hunt` run started during F.1 was still running and sharing the server (section 23). `npm run build` needs a working `.next`: if it stalls with no output, see the flake-hunt item. Do not edit source files while an e2e runs: the dev server hot-reloads mid-test.
 - **On-demand tool (not a pre-commit check), since F.1:** `npx tsx scripts/flake-hunt.ts [--rounds=10] [--prod-rounds=5] [--phases=fresh,warm,prod] [--suites=…] [--tag=before]`. It takes over port 3000 (refusing to touch a server that is not this checkout), runs every e2e suite back to back for many rounds against a dev server restarted each round, a long-lived warm one and `npm run build && npm run start`, and prints failure counts by suite and server state with each failure's step, assertion and first console error. Logs in `/tmp/flake-hunt/<tag>/`. It never retries and never relaxes a check. A full matrix is about four hours.
 - e2e result on `4ba7192`, 2026-10-01: PASSED, exit 0. At 1440 (mouse) and 390 (real touch events): 2D, select and edit, wall runs, draw walls, opening selection, doors and windows, Measure, nothing outside the viewport, 19 tab stops all with a focus ring, and the Import plan link; plus autosave restore and flipped-door swing persistence through a reload at both sizes. No 390 px flake appeared in this run. Tag `editor-complete-4.6` points at `4ba7192`.
 
@@ -683,8 +762,7 @@ Atrium 2.0 now has the editable Plan pipeline, 2D/3D studio shell, wall selectio
 - Test pinch zoom on a real phone after deployment, and test the import worker in Safari and Firefox.
 - Room list rounds each area to one decimal, so the rows can add to 0.1 less than the total. Fix with the schedules in 7.1.
 - Flake hunt: DONE, step F.1 (2026-10-14). Each of the eight logged one-off failures, its verdict and what changed are in section 23. `scripts/flake-hunt.ts` reproduces them on demand.
-- Label the From PDF rows and the wall provenance with "Rescaled" when `plan.calibrations` is non-empty, so a row that flags after Set scale says the plan was rescaled rather than looking like a bad reading.
-- M.2c: show the imported PDF page (or image) as a background in the 2D view, aligned to the plan with an opacity slider and a toggle, so takeoffs can be traced on the drawing itself.
+- Snap takeoff points to the PDF's own line endpoints and corners (needs the vector page kept with the plan).
 - A dev flag that opens 3D door leaves wide (for screenshots). `LEAF_OPEN` is a fixed 0.3 rad, so a 3D screenshot shows a leaf barely open.
 - Label collision avoidance on the 2D canvas: area, takeoff and room labels overlap. Visible as soon as a PDF's dimensions are carried in (step M.2b): two takeoff labels on the same line print over each other ("PDF 4000 mm: 4.0PDF 3000 mm: 3.000 m00 m" in /tmp/studio/takeoff-from-pdf-flagged-1440.png).
 - Decide the order after 5.3: landing page (Phase 8) before or after the catalog (Phase 6). The core editor, walkthrough, bird's-eye and recenter will be demoable by then.
@@ -740,6 +818,22 @@ Two harness bugs of my own were fixed on the way: `rm -rf .next` raced the dying
 - Which navigation let a restore land after Build model's `loadPlan` (failure 8). The window is closed either way.
 - Why `next dev` livelocks inside `next-swc` after a long run of suites. It is reproducible (twice, both times around 60–65 suite runs on one server) but it is Next's bug, not ours.
 
+
+### Logged during M.2c (2026-10-14): a flake-hunt run overlapping another step's edits
+
+- **What was found.** While M.2c was being written, `npx tsx scripts/flake-hunt.ts --tag=after` (started 15:02 during F.1, run as `npm exec`, not by the M.2c session) was still running. It was in its warm phase, round 9 of 10, with the production phase still to come, against the same `npm run dev` on port 3000 that M.2c was editing and testing. It was found at 17:35, when stopping the server for the cold build made it restart `next dev` at once (pid 21756, parent `npm run dev` ← `flake-hunt.ts`).
+- **Failures it logged in the overlap**, each with its step and server state (warm server, one `next dev` since its warm round 1):
+  - warm-6 `e2e-import3d`, step "390 import 3D models", 17:06: `page.waitForSelector` timed out on `[data-testid="import-dialog"][data-kind="closed"]` (`confirmImport`).
+  - warm-6 `e2e-takeoff`, step "1440 takeoffs", 17:08: a click on `camera-walk` timed out: "element is not stable".
+  - warm-7 `e2e-import3d`, step "1440 import 3D models", 17:13: a click on `view-split` timed out.
+  - warm-7 `e2e-takeoff`, step "1440 takeoffs", 17:14: a click on `tool-takeoff` timed out.
+  - warm-9 `e2e-units`, step "390 units", 17:34:49: `ERR_CONNECTION_REFUSED` on `/studio`.
+- **Verdicts.**
+  - The four round-6 and round-7 failures are **almost certainly M.2c's own source edits hot-reloading the server under the suites**. They fall exactly in 17:03–17:15, when `PlanCanvas.tsx`, `PlanPanel.tsx`, `src/app/studio/page.tsx`, the plan store and the new stores were being written. Every symptom is an element that was remounting, unstable or missing. They are not product flakes.
+  - The round-9 `e2e-units` failure is **certain**: the M.2c session stopped that server for the cold build at that second.
+  - M.2c's own `e2e-background` development runs (17:15–17:30) also overlapped its suites.
+- **Consequence:** the `--tag=after` results from about 17:03 onwards describe neither HEAD nor the M.2c tree and should not be counted. Its logs in `/tmp/flake-hunt/after/` did not survive (the machine's `/tmp` was cleared before M.2c finished), so the run cannot be re-read; rerun it if those numbers are needed.
+- **Process rule added** to "Run before committing": check `pgrep -fl "flake-hunt|scripts/e2e-"` before a sweep, and never edit source while anything drives the dev server.
 
 ## 24. O.1 — self-hosted OCR: DONE (2026-10-14)
 

@@ -131,6 +131,9 @@ export interface PdfInfo {
   route: "vector" | "raster";
   /** Raster pixels per page point. */
   pxPerPt: number;
+  /** The page's size in points (viewport at scale 1, /Rotate applied), so the raster the image
+   *  pipeline read can be mapped back to the page (step M.2c, the drawing under the plan). */
+  pageSize: { width: number; height: number };
   paper: string;
   /** Null on the raster route. */
   scale: PdfScale | null;

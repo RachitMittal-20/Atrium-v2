@@ -77,6 +77,11 @@
  * to Select) are handed to the takeoff store with the pointer in plan metres. A drag still
  * pans and two fingers still pinch.
  *
+ * The imported drawing (step M.2c, BackgroundLayer.tsx) is drawn BEHIND the <svg>, which is
+ * positioned so it always paints above it; the drawing is never picked, hovered or snapped to.
+ * Its "Drawing" toggle and opacity slider (DrawingControls.tsx) sit beside "Set scale…" when the
+ * plan has a drawing.
+ *
  * Pan/zoom lives here, not in the store. Nothing animates, so
  * prefers-reduced-motion needs no special case.
  * Mounted by src/app/studio/page.tsx (2D view and the 2D half of Split).
@@ -137,6 +142,8 @@ import { useCalibrateStore } from "@/store/calibrateStore";
 import { useTakeoffStore, type TakeoffPointer } from "@/store/takeoffStore";
 import { useToolStore } from "@/store/toolStore";
 import { CalibrateDialog } from "@/components/studio/CalibrateDialog";
+import { BackgroundLayer } from "./BackgroundLayer";
+import { DrawingControls } from "./DrawingControls";
 import { TakeoffBar, TakeoffOverlay } from "./TakeoffLayer";
 import type { Opening, OpeningKind, Vec2, Wall } from "@/types/plan";
 
@@ -249,6 +256,7 @@ export function PlanCanvas() {
   const calibrating = useCalibrateStore((s) => s.picking);
   const calibratePoints = useCalibrateStore((s) => s.points);
   const calibrateHover = useCalibrateStore((s) => s.hover);
+  const hasDrawing = Boolean(plan.background); // step M.2c: the toggle and slider only when there is a drawing
 
   const [view, setView] = useState<View>({ scale: 1, tx: 0, ty: 0 });
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -960,6 +968,9 @@ export function PlanCanvas() {
       style={{ outlineOffset: -3 }} // inside the box, so the overflow clip doesn't cut the focus ring
       className="absolute inset-0 touch-none select-none overflow-hidden bg-limestone"
     >
+      {/* the imported drawing, under everything (step M.2c) */}
+      {visible && <BackgroundLayer view={view} size={size} />}
+
       {visible && (
         <svg
           width={size.width}
@@ -967,7 +978,7 @@ export function PlanCanvas() {
           role="img"
           aria-label={`Floor plan with ${rooms.length} ${rooms.length === 1 ? "room" : "rooms"}`}
           data-testid="plan-svg"
-          className={`block touch-none ${tool !== "select" && tool !== "pushpull" ? "cursor-crosshair" : hoveredId || hoverOp ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
+          className={`relative block touch-none ${tool !== "select" && tool !== "pushpull" ? "cursor-crosshair" : hoveredId || hoverOp ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerEnd}
@@ -1239,16 +1250,20 @@ export function PlanCanvas() {
         </svg>
       )}
 
-      {/* Set scale: the way in from the plan itself, beside the scale bar (44 px tall for a finger) */}
-      <button
-        type="button"
-        data-testid="plan-set-scale"
-        aria-pressed={calibrating}
-        onClick={() => useCalibrateStore.getState().start()}
-        className={`absolute bottom-10 left-4 min-h-11 rounded border px-3 text-xs shadow ${calibrating ? "border-cyanotype bg-cyanotype text-vellum" : "border-stone bg-vellum text-iron hover:bg-limestone"}`}
-      >
-        Set scale…
-      </button>
+      {/* Set scale: the way in from the plan itself, beside the scale bar (44 px tall for a finger), and the
+          drawing's toggle and opacity beside it (step M.2c). The row lets the plan's pointer events through. */}
+      <div className="pointer-events-none absolute bottom-10 left-4 right-14 flex flex-wrap-reverse items-center gap-2">
+        <button
+          type="button"
+          data-testid="plan-set-scale"
+          aria-pressed={calibrating}
+          onClick={() => useCalibrateStore.getState().start()}
+          className={`pointer-events-auto min-h-11 shrink-0 rounded border px-3 text-xs shadow ${calibrating ? "border-cyanotype bg-cyanotype text-vellum" : "border-stone bg-vellum text-iron hover:bg-limestone"}`}
+        >
+          Set scale…
+        </button>
+        {hasDrawing && <DrawingControls prefix="plan" className="pointer-events-auto rounded border border-stone bg-vellum/90 pr-2 shadow" />}
+      </div>
 
       {/* Set scale: what to do next, and Cancel for a screen with no Escape key */}
       {calibrating && (

@@ -12,12 +12,17 @@
  * setting (src/store/unitsStore.ts, step U.1) through useUnitFormat; the area switch below
  * the summary is a view of that setting (m², mm², sq ft). Room rows are rounded for display
  * and the total is summed from the exact areas, which the note under the list says. The
- * Takeoff section (TakeoffPanel.tsx, step M.2a) sits at the bottom, under Rooms.
- * Mounted by src/app/studio/page.tsx.
+ * Takeoff section (TakeoffPanel.tsx, step M.2a) sits at the bottom, under Rooms. When the plan
+ * has an imported drawing (step M.2c) and the 2D plan is showing, a "Drawing" section holds the
+ * same toggle and opacity slider as the 2D pane, says when the file is not in this browser
+ * ("Import it again to see the background"), and removes the drawing from the plan (one undo
+ * step; the file stays in the asset store). Mounted by src/app/studio/page.tsx.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { DrawingControls } from "@/components/plan2d/DrawingControls";
 import { AREA_LABEL, AREA_UNITS } from "@/lib/units/format";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
+import { useBackgroundStore } from "@/store/backgroundStore";
 import { useSelectionStore } from "@/store/selectionStore";
 import { useUnitsStore } from "@/store/unitsStore";
 import { EditableText } from "./EditableText";
@@ -27,7 +32,8 @@ import { TakeoffPanel } from "./TakeoffPanel";
 import { useUnitFormat } from "./useUnitFormat";
 import { WallPanel } from "./WallPanel";
 
-export function PlanPanel() {
+/** `view2d`: the 2D plan is showing (the drawing is only ever drawn there). */
+export function PlanPanel({ view2d = true }: { view2d?: boolean }) {
   const plan = usePlanStore((s) => s.plan);
   const renameRoom = usePlanStore((s) => s.renameRoom);
   const rooms = useDerivedRooms();
@@ -103,6 +109,8 @@ export function PlanPanel() {
           </section>
         )}
 
+        {plan.background && view2d && <DrawingSection assetId={plan.background.assetId} kind={plan.background.kind} />}
+
         <div role="group" aria-label="Area units" className="flex w-fit rounded border border-stone p-0.5 text-sm">
           {AREA_UNITS.map((u) => (
             <button
@@ -151,5 +159,35 @@ export function PlanPanel() {
         <TakeoffPanel />
       </div>
     </aside>
+  );
+}
+
+/** The imported drawing under the 2D plan (step M.2c): its controls, whether its file is here, and Remove. */
+function DrawingSection({ assetId, kind }: { assetId: string; kind: "pdf" | "image" }) {
+  const asset = useBackgroundStore((s) => s.asset);
+  const status = asset?.id === assetId ? asset.status : "loading";
+  useEffect(() => void useBackgroundStore.getState().load(assetId), [assetId]);
+  return (
+    <section aria-labelledby="drawing-h" data-testid="panel-drawing" data-status={status} className="flex flex-col gap-2">
+      <h2 id="drawing-h" className="text-sm font-medium">
+        Drawing
+      </h2>
+      <p className="text-xs text-smoke" data-testid="panel-drawing-status" role={status === "missing" ? "status" : undefined}>
+        {status === "missing"
+          ? `The ${kind === "pdf" ? "PDF" : "image"} this plan was imported from isn't stored in this browser. Import it again to see the background.`
+          : status === "loading"
+            ? "Loading the drawing…"
+            : `The ${kind === "pdf" ? "PDF page" : "image"} this plan was imported from, under the 2D plan.`}
+      </p>
+      {status !== "missing" && <DrawingControls prefix="panel" />}
+      <button
+        type="button"
+        data-testid="panel-drawing-remove"
+        onClick={() => usePlanStore.getState().clearBackground()}
+        className="min-h-9 w-fit rounded border border-stone px-3 text-xs hover:bg-limestone"
+      >
+        Remove drawing
+      </button>
+    </section>
   );
 }

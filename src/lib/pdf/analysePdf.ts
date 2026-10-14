@@ -137,7 +137,7 @@ export async function analysePdfPage(
 ): Promise<{ analysis: Analysis; pdf: PdfInfo; vector: VectorPage }> {
   const vector = await extractVectorPage(pdfjs, page, { maxPathOps: opts.maxPathOps });
   if (!vector.segments.length && !vector.texts.length && !vector.images.length) throw new BlueprintError(PDF_MESSAGES.blank);
-  const base = { pageNumber: page.pageNumber, pageCount: opts.pageCount, kind: vector.kind, paper: vector.paper };
+  const base = { pageNumber: page.pageNumber, pageCount: opts.pageCount, kind: vector.kind, paper: vector.paper, pageSize: { width: vector.width, height: vector.height } };
 
   if (vector.kind === "scanned") {
     const pxPerPt = scanRasterScale(vector);

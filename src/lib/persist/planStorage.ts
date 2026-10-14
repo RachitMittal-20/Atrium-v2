@@ -15,9 +15,11 @@
  * and are stored; the Takeoff tool's mode, draft and selected row are not. Connects to: src/types/plan.ts; wired to the plan
  * store by src/store/persistence.ts; tested by scripts/test-persist.ts. A takeoff carried in
  * from a PDF dimension keeps its `source` and a recalibration its `plan.calibrations` (step
- * M.2b); a plan written before either loads exactly as it did.
+ * M.2b); a plan written before either loads exactly as it did. The imported drawing shown under the
+ * 2D plan (step M.2c, `plan.background`) is stored as its descriptor only — asset id, kind, page and
+ * mapping — never its bytes, which stay in IndexedDB; a malformed descriptor is dropped, never the plan.
  */
-import type { Calibration, ImportFormat, ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Room, Takeoff, TakeoffValue, Vec2, Wall } from "@/types/plan";
+import type { Affine, Background, Calibration, ImportFormat, ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Room, Takeoff, TakeoffValue, Vec2, Wall } from "@/types/plan";
 
 export const STORAGE_KEY = "atrium-v2:plan";
 /** Bump when the stored shape changes, and add a case to `migrate`. */
@@ -222,6 +224,19 @@ function calibration(v: unknown): Calibration | null {
   return { factor: v.factor, ...(isStr(v.note) && { note: v.note }) };
 }
 
+/** The drawing under the 2D plan (step M.2c): an asset id, a kind, a page for a PDF and an
+ *  invertible mapping of six finite numbers; anything else is null (and the field is dropped). */
+function background(v: unknown): Background | null {
+  if (!isObject(v) || !isStr(v.assetId) || !/^[0-9a-f]{16}$/.test(v.assetId) || (v.kind !== "pdf" && v.kind !== "image") || !isObject(v.mapping)) return null;
+  const m = v.mapping;
+  if (![m.a, m.b, m.c, m.d, m.e, m.f].every(isNum)) return null;
+  const mapping: Affine = { a: m.a as number, b: m.b as number, c: m.c as number, d: m.d as number, e: m.e as number, f: m.f as number };
+  if (Math.abs(mapping.a * mapping.d - mapping.b * mapping.c) < 1e-18) return null; // a drawing squashed to a line can't be placed
+  if (v.kind === "image") return { assetId: v.assetId, kind: "image", mapping };
+  if (!Number.isInteger(v.page) || (v.page as number) < 1) return null;
+  return { assetId: v.assetId, kind: "pdf", page: v.page as number, mapping };
+}
+
 /** Map every element through `one`; null when the input is not an array or any element is bad. */
 function all<T>(v: unknown, one: (e: unknown) => T | null): T[] | null {
   const xs = list(v);
@@ -267,10 +282,15 @@ function coercePlan(v: unknown): Plan | null {
     if (!takeoffs || !unique(takeoffs.map((t) => t.id))) return null;
     plan = { ...plan, takeoffs };
   }
-  if (v.calibrations === undefined) return plan; // every plan before step M.2b
-  const calibrations = all(v.calibrations, calibration);
-  if (!calibrations) return null;
-  return { ...plan, calibrations };
+  if (v.calibrations !== undefined) {
+    // Every plan before step M.2b has none.
+    const calibrations = all(v.calibrations, calibration);
+    if (!calibrations) return null;
+    plan = { ...plan, calibrations };
+  }
+  // Step M.2c: a view of the drawing, not geometry, so a bad one is dropped rather than losing the plan.
+  const bg = v.background === undefined ? null : background(v.background);
+  return bg ? { ...plan, background: bg } : plan;
 }
 
 // ---------------------------------------------------------------- autosave

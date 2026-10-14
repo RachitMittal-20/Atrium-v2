@@ -31,6 +31,7 @@ import { usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
 import type { HingeEnd, SwingSide } from "@/types/plan";
 import { lengthHint } from "@/lib/units/format";
+import { rescaledText } from "@/lib/plan/calibrate";
 import { same, useUnitFormat } from "./useUnitFormat";
 import { NumberField } from "./WallPanel";
 
@@ -124,7 +125,13 @@ export function OpeningPanel() {
 
       {(opening.provenance || opening.defaultHeight) && (
         <p data-testid="opening-provenance" data-provenance={opening.provenance} data-edited={opening.edited ? "true" : undefined} data-default-height={opening.defaultHeight ? "true" : undefined} className="mb-2 text-xs text-smoke">
-          {[opening.provenance && (opening.edited ? "Edited" : opening.provenance === "vector" ? "Read from PDF" : "Traced, approximate"), opening.defaultHeight && "Default height"].filter(Boolean).join(" · ")}
+          {[
+            opening.provenance && (opening.edited ? "Edited" : opening.provenance === "vector" ? "Read from PDF" : "Traced, approximate"),
+            opening.provenance && !opening.edited && rescaledText(plan.calibrations), // step M.2c: after a Set scale
+            opening.defaultHeight && "Default height",
+          ]
+            .filter(Boolean)
+            .join(" · ")}
         </p>
       )}
 

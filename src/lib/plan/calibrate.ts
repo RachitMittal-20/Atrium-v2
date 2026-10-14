@@ -5,7 +5,9 @@
  * `trueDistance / |p1 − p2|`, and every PLAN-SPACE length is multiplied by it ABOUT AN ORIGIN
  * (the plan's own (0, 0) by default), so the drawing keeps its shape and nothing rotates:
  *   scaled   wall endpoints and thickness; opening offsets and widths; takeoff points and
- *            cutouts; imported items' plan positions (x and z of Item.position).
+ *            cutouts; imported items' plan positions (x and z of Item.position); and the imported
+ *            drawing's mapping (step M.2c, Plan.background), scaled about the same origin, so the
+ *            drawing stays under the walls it described instead of drifting by the factor.
  *   NOT      wall heights, opening sills and heights, an imported model's own size (Item.scale)
  *            and rotation, item heights (Item.position.y), typed references, overrides and notes:
  *            a scale read off the drawing says nothing about them.
@@ -23,13 +25,18 @@
  * A takeoff that was current before stays current: its `wallsHash` is re-stamped against the
  * scaled walls (a stale one stays stale, since its stored hash was already another plan's).
  *
- * Connects to: src/lib/plan/{edit,geometry,validate}.ts, src/lib/takeoff/rows.ts (the hash);
+ * `rescaledText` is the "Rescaled x1.0234" the panels add to "Read from PDF", "Traced,
+ * approximate", "PDF exact" and the From PDF group once the plan has been recalibrated (step M.2c).
+ *
+ * Connects to: src/lib/plan/{edit,geometry,validate}.ts, src/lib/takeoff/rows.ts (the hash),
+ * src/lib/background/mapping.ts;
  * used by src/store/planStore.ts (calibratePlan) and src/store/calibrateStore.ts; tested by
  * scripts/test-calibrate.ts.
  */
+import { scaleAbout } from "@/lib/background/mapping";
 import { lenText } from "@/lib/units/current";
 import { wallsHash } from "@/lib/takeoff/rows";
-import type { Plan, Takeoff, Vec2 } from "@/types/plan";
+import type { Calibration, Plan, Takeoff, Vec2 } from "@/types/plan";
 import { MIN_WALL_LENGTH, openingProblem, type FaceEdit } from "./edit";
 import { wallLength } from "./geometry";
 import { validatePlan } from "./validate";
@@ -86,7 +93,15 @@ export function scalePlan(plan: Plan, factor: number, origin: Vec2 = ORIGIN): Pl
     // An imported model's own size and height stay: only where it stands on the floor moves.
     items: plan.items.map((i) => ({ ...i, position: { x: origin.x + (i.position.x - origin.x) * factor, y: i.position.y, z: origin.y + (i.position.z - origin.y) * factor } })),
     ...(plan.takeoffs && { takeoffs: plan.takeoffs.map((t) => scaleTakeoff(t, factor, origin, hash)) }),
+    // Step M.2c: the drawing is drawn through its mapping, so the mapping scales with the plan.
+    ...(plan.background && { background: { ...plan.background, mapping: scaleAbout(plan.background.mapping, factor, origin) } }),
   };
+}
+
+/** "Rescaled x1.0234": the product of every applied factor, to 4 decimals; null before the first. */
+export function rescaledText(calibrations: Calibration[] | undefined): string | null {
+  if (!calibrations?.length) return null;
+  return `Rescaled x${calibrations.reduce((p, c) => p * c.factor, 1).toFixed(4)}`;
 }
 
 /** Why the scaled plan can't be used, or null. The reason names the first thing that is wrong. */

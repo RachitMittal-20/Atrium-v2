@@ -134,7 +134,7 @@ export default function Studio() {
             </div>
           )}
         </main>
-        <PlanPanel />
+        <PlanPanel view2d={shown !== "3d"} />
       </div>
       <ImportModelDialog />
     </div>

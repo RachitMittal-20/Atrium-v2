@@ -18,7 +18,9 @@
  * same units, references, overrides, stale marker and CSV as the rest. A line under it says that
  * a Set scale changes their measured values, so a row that flags afterwards is the drawing
  * disagreeing with the new scale — which is the signal, not a bug. "Set scale…" starts the
- * two-point flow in the 2D plan (src/store/calibrateStore.ts, CalibrateDialog.tsx).
+ * two-point flow in the 2D plan (src/store/calibrateStore.ts, CalibrateDialog.tsx). Once a Set scale
+ * has been applied (step M.2c), the From PDF heading and every "PDF exact" basis add
+ * "Rescaled x1.0234" (the product of every factor), so a Flagged row reads as a rescaled plan.
  *
  * Connects to: src/lib/takeoff/rows.ts, src/lib/units/format.ts,
  * src/store/{planStore,takeoffStore,unitsStore,calibrateStore}.ts; mounted by PlanPanel.tsx.
@@ -27,6 +29,7 @@ import { useMemo, useRef, useState } from "react";
 import { csvFileName, STATUS_TEXT, tableCells, takeoffRow, toCsv, toTsv, totals, wallsHash, type TakeoffRow, type Units } from "@/lib/takeoff/rows";
 import { MAX_PDF_TAKEOFFS } from "@/lib/pdf/takeoffs";
 import { AREA_LABEL, AREA_UNITS, formatArea, formatLength, LENGTH_LABEL, LENGTH_UNITS, parseAreaInput, parseLengthInput } from "@/lib/units/format";
+import { rescaledText } from "@/lib/plan/calibrate";
 import { useCalibrateStore } from "@/store/calibrateStore";
 import { usePlanStore } from "@/store/planStore";
 import { useTakeoffStore } from "@/store/takeoffStore";
@@ -109,7 +112,7 @@ function Switch<T extends string>({ label, values, names, value, set, testPrefix
 
 /** One table of rows; `group` marks the From PDF one. Module level, so a plan change never
  *  remounts it and a half-typed value in one of its fields is never lost. */
-function RowsTable({ list, group, units, selectedId, select }: { list: TakeoffRow[]; group?: "pdf"; units: Units; selectedId: string | null; select: (id: string) => void }) {
+function RowsTable({ list, group, units, selectedId, select, rescaled }: { list: TakeoffRow[]; group?: "pdf"; units: Units; selectedId: string | null; select: (id: string) => void; rescaled: string | null }) {
   const store = usePlanStore.getState();
     const fmt = (t: Takeoff, v: number | null | undefined) => (v === null || v === undefined ? "–" : t.kind === "length" ? formatLength(v, units.length) : formatArea(v, units.area));
     const signed = (t: Takeoff, v: number | null) => (v === null ? "–" : `${v > 0 ? "+" : ""}${fmt(t, v)}`);
@@ -151,6 +154,7 @@ function RowsTable({ list, group, units, selectedId, select }: { list: TakeoffRo
                   <td className="px-2 py-1.5">{t.kind === "length" ? "Length" : "Area"}</td>
                   <td className="px-2 py-1.5" data-testid="takeoff-basis">
                     {r.basis}
+                    {r.basis === "PDF exact" && rescaled && ` · ${rescaled}`}
                   </td>
                   <td className="px-2 py-1.5 whitespace-nowrap" data-testid="takeoff-measured">
                     {fmt(t, r.measured)}
@@ -224,6 +228,7 @@ function RowsTable({ list, group, units, selectedId, select }: { list: TakeoffRo
 
 export function TakeoffPanel() {
   const plan = usePlanStore((s) => s.plan);
+  const rescaled = rescaledText(plan.calibrations); // step M.2c
   const units = useUnitsStore();
   const { selectedId, show, select, setShow } = useTakeoffStore();
   const [open, setOpen] = useState(true);
@@ -296,7 +301,7 @@ export function TakeoffPanel() {
                   className="flex min-h-9 w-full items-center justify-between rounded text-left hover:bg-limestone"
                 >
                   <span>
-                    From PDF ({pdfRows.length}) · {flagged} flagged
+                    From PDF ({pdfRows.length}) · {flagged} flagged{rescaled && ` · ${rescaled}`}
                   </span>
                   <span className="text-smoke" aria-hidden>
                     {openPdf ? "▾" : "▸"}
@@ -305,7 +310,7 @@ export function TakeoffPanel() {
               </h3>
               {openPdf && (
                 <div id="takeoff-pdf-body" className="flex min-w-0 flex-col gap-2">
-                  <RowsTable list={pdfRows} group="pdf" units={units} selectedId={selectedId} select={select} />
+                  <RowsTable list={pdfRows} group="pdf" units={units} selectedId={selectedId} select={select} rescaled={rescaled} />
                   <p className="text-[11px] text-smoke" data-testid="takeoff-pdf-note">
                     These are the drawing&apos;s printed dimensions, measured on the model. Set scale changes what they measure, so a row that flags afterwards is the printed numbers disagreeing with the new scale.
                     {pdfRows.length >= MAX_PDF_TAKEOFFS && ` Only the first ${MAX_PDF_TAKEOFFS} dimensions were carried in.`}
@@ -320,7 +325,7 @@ export function TakeoffPanel() {
               No takeoffs of your own yet. Choose Takeoff in the tools (K) and click points, corners or a wall in the 2D plan.
             </p>
           ) : (
-            <RowsTable list={mine} units={units} selectedId={selectedId} select={select} />
+            <RowsTable list={mine} units={units} selectedId={selectedId} select={select} rescaled={rescaled} />
           )}
 
           {rows.length > 0 && (

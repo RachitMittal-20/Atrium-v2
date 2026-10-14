@@ -16,7 +16,8 @@
  * 380 cm and 12'6" all work; anything else puts the old value back and says why.
  * A wall imported from a PDF (step M.1b) says where its numbers came from:
  * "Read from PDF" (exact), "Traced, approximate", or, once changed, "Edited"
- * (its provenance field is kept; the store sets `edited`).
+ * (its provenance field is kept; the store sets `edited`). Once the plan has been recalibrated
+ * (step M.2c) the first two add "· Rescaled x1.0234", the product of every factor; "Edited" stays as it is.
  * Connects to: src/store/{planStore,selectionStore}.ts, src/lib/plan/edit.ts.
  */
 import { useState } from "react";
@@ -27,6 +28,7 @@ import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { useSelectedRun, useSelectionStore } from "@/store/selectionStore";
 import { lengthHint, shouldCommit } from "@/lib/units/format";
 import { lenText } from "@/lib/units/current";
+import { rescaledText } from "@/lib/plan/calibrate";
 import { same, useUnitFormat } from "./useUnitFormat";
 
 /** A text field holding one number. The field always goes back to the stored
@@ -125,7 +127,7 @@ export function WallPanel() {
 
       {wall.provenance && (
         <p data-testid="wall-provenance" data-provenance={wall.provenance} data-edited={wall.edited ? "true" : undefined} className="mb-2 text-xs text-smoke">
-          {wall.edited ? "Edited" : wall.provenance === "vector" ? "Read from PDF" : "Traced, approximate"}
+          {wall.edited ? "Edited" : [wall.provenance === "vector" ? "Read from PDF" : "Traced, approximate", rescaledText(plan.calibrations)].filter(Boolean).join(" · ")}
         </p>
       )}
 

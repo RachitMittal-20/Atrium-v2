@@ -173,7 +173,37 @@ export interface Plan {
   /** Scale changes applied in the studio (step M.2b), oldest first. No timestamps, so a save
    *  of the same plan is always the same bytes. Absent until the first one. */
   calibrations?: Calibration[];
+  /** The imported drawing shown under the 2D plan (step M.2c): a VIEW of the original file,
+   *  never geometry. Absent on plans without one, and on every plan before M.2c. */
+  background?: Background;
   meta: PlanMeta;
+}
+
+/**
+ * An affine map, in SVG matrix order: x' = a·x + c·y + e, y' = b·x + d·y + f.
+ */
+export interface Affine {
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+  e: number;
+  f: number;
+}
+
+/**
+ * The drawing a plan was imported from (step M.2c). The bytes live in the browser's asset store
+ * (src/lib/import/assetStore.ts) under `assetId`, never in the plan or its autosave. `mapping`
+ * takes the drawing's own units — PDF points (page viewport at scale 1, /Rotate applied, y down)
+ * or image pixels (y down) — to plan metres, exactly as the importer built the plan; a
+ * recalibration scales it with the plan, so the drawing stays under the walls it describes.
+ */
+export interface Background {
+  assetId: string;
+  kind: "pdf" | "image";
+  /** The PDF page (1-based); absent for an image. */
+  page?: number;
+  mapping: Affine;
 }
 
 /** One applied recalibration (step M.2b): every plan-space length was multiplied by `factor`. */

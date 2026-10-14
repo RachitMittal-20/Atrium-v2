@@ -19,7 +19,10 @@
  * quantity takeoffs (step M.2a), one undo step each; takeoffs are annotations and
  * never touch walls, rooms or openings. `calibratePlan` rescales the whole plan about its
  * origin (step M.2b, src/lib/plan/calibrate.ts) in one undo step, or refuses with a reason
- * and changes nothing; it is the one edit that keeps the provenance marks as they are.
+ * and changes nothing; it is the one edit that keeps the provenance marks as they are. It scales
+ * the imported drawing's mapping in the same step (step M.2c). `setBackground` and
+ * `clearBackground` set and remove that drawing (a view of the original file, never geometry),
+ * one undo step each; clearing it leaves the file's bytes in the asset store, so Undo brings it back.
  * Connects to:
  * src/types/plan.ts, src/lib/plan/{validate,geometry,rooms,edit}.ts,
  * src/lib/keyboard.ts; the 3D scene, 2D plan and exports read `plan` from here.
@@ -36,7 +39,7 @@ import { deriveRooms, toStoredRoom, type DerivedRoom } from "@/lib/plan/rooms";
 import { validatePlan } from "@/lib/plan/validate";
 import { isIdentityTransform } from "@/lib/import/transform";
 import { wallsHash } from "@/lib/takeoff/rows";
-import type { ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Takeoff, TakeoffValue, Vec2, Vec3, Wall } from "@/types/plan";
+import type { Background, ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Takeoff, TakeoffValue, Vec2, Vec3, Wall } from "@/types/plan";
 
 enablePatches();
 
@@ -109,6 +112,10 @@ interface PlanState {
    * One undo step, and redo puts it back; provenance and the "Edited" marks are untouched.
    */
   calibratePlan: (factor: number, note?: string) => string | null;
+  /** The drawing shown under the 2D plan (step M.2c): its asset id, kind, page and mapping. One undo step. */
+  setBackground: (background: Background) => void;
+  /** Remove the drawing from the plan; its bytes stay in the asset store. One undo step. */
+  clearBackground: () => void;
 
   /** Run `fn`; every edit inside becomes a single undo step. Synchronous only. */
   transaction: (fn: () => void) => void;
@@ -385,10 +392,19 @@ export const usePlanStore = create<PlanState>((set, get) => {
         d.openings = scaled.openings;
         d.items = scaled.items;
         if (scaled.takeoffs) d.takeoffs = scaled.takeoffs;
+        if (scaled.background) d.background = scaled.background; // the drawing stays under its walls
         (d.calibrations ??= []).push({ factor, ...(note?.trim() && { note: note.trim() }) });
       }, { keepMarks: true });
       return null;
     },
+    setBackground: (background) =>
+      edit((d) => {
+        d.background = { assetId: background.assetId, kind: background.kind, ...(background.page !== undefined && { page: background.page }), mapping: { ...background.mapping } };
+      }),
+    clearBackground: () =>
+      edit((d) => {
+        delete d.background;
+      }),
 
     transaction: (fn) => {
       if (tx) {

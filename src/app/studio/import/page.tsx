@@ -36,7 +36,15 @@
  * Takeoff panel keeps checking the model against the drawing's own numbers; the summary says
  * how many, and when the 200-row cap bit. Scanned pages and images carry none.
  *
- * Nothing is kept except the plan loaded into the store, which autosaves to
+ * Step M.2c: Build model also keeps the drawing for the studio's 2D background. The file the
+ * user picked (the whole PDF, or the image) goes into the I.1a asset store (IndexedDB), and the
+ * plan gets `background` = its asset id, kind, page and the mapping from the drawing's own units
+ * to plan metres, taken from the very numbers this build used (src/lib/background/mapping.ts):
+ * the vector build's Coverage, or the image pipeline's downscale, deskew, origin and scale. When
+ * storage is refused the build still completes, with the note "The drawing could not be kept for
+ * the background".
+ *
+ * Nothing else is kept except the plan loaded into the store, which autosaves to
  * the browser (src/store/persistence.ts). Editing walls
  * here is a later piece; this screen only reviews.
  */
@@ -50,6 +58,9 @@ import { usePlanStore } from "@/store/planStore";
 import { flushSavedPlan, usePersistenceReady } from "@/store/persistence";
 import { dimensionRows, modelRows, rowsToCsv, type Overrides } from "@/lib/pdf/dimensions";
 import { buildPdfPlan, planToPixels, type PdfBuild } from "@/lib/pdf/snap";
+import { buildMapping } from "@/lib/background/mapping";
+import { keepDrawing } from "@/lib/background/keep";
+import { assetStore } from "@/lib/import/assetCache";
 import { approximateIndexes, MAX_PDF_TAKEOFFS, pdfTakeoffs } from "@/lib/pdf/takeoffs";
 import { wallsHash } from "@/lib/takeoff/rows";
 import type { PlanScale } from "@/types/blueprint";
@@ -121,6 +132,9 @@ export default function ImportPage() {
   const [picking, setPicking] = useState(false);
   const [points, setPoints] = useState<Vec2[]>([]);
   const [built, setBuilt] = useState<Built | null>(null);
+  const [drawingNote, setDrawingNote] = useState<string | null>(null);
+  /** The file being read, kept for the 2D background at Build model (step M.2c). */
+  const sourceRef = useRef<{ name: string; blob: Blob; kind: "pdf" | "image" } | null>(null);
   const [buildError, setBuildError] = useState<string | null>(null);
   const [thumbs, setThumbs] = useState<Record<number, string>>({});
   const [overrides, setOverrides] = useState<Overrides>({});
@@ -136,14 +150,17 @@ export default function ImportPage() {
     setPicking(false);
     setPoints([]);
     setBuilt(null);
+    setDrawingNote(null);
+    sourceRef.current = null;
     setBuildError(null);
     setThumbs({});
     setOverrides({});
     setModelOverrides({});
   };
 
-  async function start(blob: Blob) {
+  async function start(blob: Blob, name: string) {
     reset();
+    sourceRef.current = { name, blob, kind: "image" };
     setPhase({ kind: "busy", stage: null, fraction: 0 });
     try {
       const pixels = await decodeImage(blob);
@@ -164,6 +181,7 @@ export default function ImportPage() {
   /** Reads a PDF in its worker: the page picker for several pages, else straight to page 1. */
   function startPdf(file: File) {
     reset();
+    sourceRef.current = { name: file.name, blob: file, kind: "pdf" };
     setPhase({ kind: "busy", stage: null, fraction: 0, pdf: true });
     const job = runPdf(file, {
       pages: (count, listed) => (count === 1 ? job.page(1) : setPhase({ kind: "pages", count, listed })),
@@ -190,14 +208,14 @@ export default function ImportPage() {
       reset();
       setPhase({ kind: "error", message: problem });
     } else if (isPdf(file)) startPdf(file);
-    else void start(file);
+    else void start(file, file.name);
   }
 
   async function trySample() {
     try {
       const res = await fetch("/samples/sample-plan.png");
       if (!res.ok) throw new Error();
-      await start(await res.blob());
+      await start(await res.blob(), "sample-plan.png");
     } catch {
       setPhase({ kind: "error", message: "The sample plan couldn't be loaded. Check your connection and try again." });
     }
@@ -222,15 +240,27 @@ export default function ImportPage() {
     }
   }, [results, scaleInUse?.pxPerM]); // eslint-disable-line react-hooks/exhaustive-deps -- the scale's value, not its object
 
-  function build(analysis: Analysis, pdf?: PdfInfo) {
+  async function build(analysis: Analysis, original: { width: number; height: number }, pdf?: PdfInfo) {
     if (!chosen) return;
+    let next: Built;
     try {
-      setBuilt(withPdfTakeoffs(buildFor(analysis, pdf, chosen), pdf, overrides));
+      next = withPdfTakeoffs(buildFor(analysis, pdf, chosen), pdf, overrides);
       setBuildError(null);
     } catch (e) {
       setBuilt(null);
       setBuildError(e instanceof Error ? e.message : "The model couldn't be built from this reading.");
+      return;
     }
+    // Step M.2c: keep the drawing for the 2D background; storage refused only adds a note.
+    const source = sourceRef.current;
+    let note: string | null = null;
+    if (source) {
+      const kept = await keepDrawing(next.plan, { name: source.name, bytes: new Uint8Array(await source.blob.arrayBuffer()), kind: source.kind, page: pdf?.pageNumber }, buildMapping(next, analysis, pdf, chosen, original), assetStore());
+      next = { ...next, plan: kept.plan };
+      note = kept.note;
+    }
+    setBuilt(next);
+    setDrawingNote(note);
   }
 
   function openInStudio() {
@@ -403,12 +433,12 @@ export default function ImportPage() {
               clearPoints={() => setPoints([])}
             />
 
-            <button type="button" className={primaryBtn} disabled={!chosen} onClick={() => build(phase.analysis, phase.pdf)}>
+            <button type="button" className={primaryBtn} disabled={!chosen} onClick={() => void build(phase.analysis, phase.original, phase.pdf)}>
               Build model
             </button>
             {!chosen && <p className="-mt-2 text-sm text-smoke">Choose a scale first.</p>}
             {buildError && <p role="alert">{buildError}</p>}
-            {built && <Summary built={built} carried={phase.pdf?.scale?.matches.length ?? 0} onOpen={openInStudio} />}
+            {built && <Summary built={built} carried={phase.pdf?.scale?.matches.length ?? 0} drawingNote={drawingNote} onOpen={openInStudio} />}
 
             <button type="button" className={`${secondaryBtn} self-start`} onClick={reset}>
               Try another file
@@ -443,7 +473,7 @@ function Tables(p: { pdf: PdfInfo; chosen: PlanScale | null; review: PdfBuild | 
 }
 
 /** What the build made, in plain words, and the way into the studio. */
-function Summary({ built, carried, onOpen }: { built: Built; carried: number; onOpen: () => void }) {
+function Summary({ built, carried, drawingNote, onOpen }: { built: Built; carried: number; drawingNote: string | null; onOpen: () => void }) {
   const { plan, report } = built;
   useUnitsStore((st) => st.length); // re-render when the display unit changes (the notes below quote lengths)
   const count = (k: string) => plan.openings.filter((o) => o.kind === k).length;
@@ -480,6 +510,11 @@ function Summary({ built, carried, onOpen }: { built: Built; carried: number; on
         <p className="text-sm text-smoke" data-testid="summary-takeoffs" data-takeoffs={plan.takeoffs!.length}>
           {n(plan.takeoffs!.length, "printed dimension", "printed dimensions")} carried into the studio as takeoffs, to check against the model there.
           {carried > MAX_PDF_TAKEOFFS && ` Only the first ${MAX_PDF_TAKEOFFS} of ${carried} were carried.`}
+        </p>
+      )}
+      {drawingNote && (
+        <p className="text-sm text-smoke" data-testid="summary-drawing-note">
+          {drawingNote}
         </p>
       )}
       {notes.length > 0 && (
