@@ -6,7 +6,7 @@
  *   - TakeoffOverlay (inside PlanCanvas's <svg>, screen space through the same camera): every
  *     takeoff in the plan while "Show takeoffs" is on, a length as a dashed line with end dots,
  *     an area with a light fill (its cutouts left clear) and each with its value; the selected
- *     one in gilt. While the tool is active: the points placed so far, the line to where the next
+ *     one in gilt (the label text itself comes from the layout pass, see below). While the tool is active: the points placed so far, the line to where the next
  *     would land with the live running total and last segment (Length) or area and perimeter
  *     (Area), the snap marker, and in Wall mode the wall line under the pointer with its length,
  *     the room on that side and how many pieces the straight wall has.
@@ -15,43 +15,30 @@
  *     Undo point and Cancel (the touch path for Enter, Backspace and Escape), plus "Add cutout"
  *     for a selected area.
  * The values are rounded once, here, in the units chosen in src/store/unitsStore.ts.
+ * Step L.1: a takeoff's own label is not placed here. It comes from the layout pass
+ * (src/lib/plan2d/labelLayout.ts, run by PlanCanvas) as a `DrawnLabel`, so two takeoffs
+ * that print on the same spot are stacked or one is hidden and counted instead of overprinting.
+ * The live labels (running total, snap word, wall-hover lines) follow the pointer and stay here.
+ * TakeoffBar is no longer drawn over the plan: PlanCanvas docks it in a strip above the canvas.
  * Connects to: src/store/{takeoffStore,planStore,unitsStore}.ts, src/lib/takeoff/*,
- * src/lib/units/format.ts; mounted by src/components/plan2d/PlanCanvas.tsx.
+ * src/lib/units/format.ts, src/lib/plan2d/labels.ts; mounted by src/components/plan2d/PlanCanvas.tsx.
  */
-import { pointInPolygon, polylabel } from "@/lib/plan/rooms";
+import { useLayoutEffect, useRef } from "react";
 import { areaWithCutouts, perimeter, polylineLength, type Pt, type Side } from "@/lib/takeoff/geometry";
 import { formatArea, formatLength } from "@/lib/units/format";
+import { midway, type DrawnLabel } from "@/lib/plan2d/labels";
 import { worldToScreen, type View } from "@/lib/plan2d/view";
+import { LabelText } from "./LabelText";
 import { usePlanStore } from "@/store/planStore";
 import { useTakeoffStore, type TakeoffMode } from "@/store/takeoffStore";
 import { useUnitsStore } from "@/store/unitsStore";
-import type { Takeoff, Vec2 } from "@/types/plan";
+import type { Vec2 } from "@/types/plan";
 
 const halo = { paintOrder: "stroke", strokeWidth: 3, strokeLinejoin: "round" } as const;
 const GLYPH_PX = 6.6; // text-xs average glyph width, to keep a label inside the pane
 const SNAP_WORDS: Record<string, string> = { corner: "face corner", endpoint: "wall end", jamb: "jamb", midpoint: "middle", grid: "grid", free: "" };
 
-/** The point halfway along a polyline, for its label. */
-function midway(points: Pt[]): Pt {
-  const total = polylineLength(points).value ?? 0;
-  let left = total / 2;
-  for (let i = 1; i < points.length; i++) {
-    const [p, q] = [points[i - 1], points[i]];
-    const l = Math.hypot(q[0] - p[0], q[1] - p[1]);
-    if (l >= left && l > 0) return [p[0] + ((q[0] - p[0]) * left) / l, p[1] + ((q[1] - p[1]) * left) / l];
-    left -= l;
-  }
-  return points[0];
-}
-
-/** A label inside an area that is not inside a cutout: the outline's pole of inaccessibility, else its first corner. */
-function areaLabelAt(t: Takeoff): Pt {
-  const v = polylabel(t.points.map(([x, y]) => ({ x, y })));
-  const inCut = (t.cutouts ?? []).some((c) => pointInPolygon(v, c.map(([x, y]) => ({ x, y }))));
-  return inCut ? t.points[0] : [v.x, v.y];
-}
-
-export function TakeoffOverlay({ view, active, size }: { view: View; active: boolean; size: { width: number; height: number } }) {
+export function TakeoffOverlay({ view, active, size, labels }: { view: View; active: boolean; size: { width: number; height: number }; labels: Map<string, DrawnLabel> }) {
   const takeoffs = usePlanStore((s) => s.plan.takeoffs) ?? [];
   const { draft, hover, wallHover, selectedId, show, mode } = useTakeoffStore();
   const units = useUnitsStore();
@@ -90,8 +77,8 @@ export function TakeoffOverlay({ view, active, size }: { view: View; active: boo
         takeoffs.map((t) => {
           const on = t.id === selectedId;
           const stroke = on ? "stroke-gilt" : "stroke-cyanotype";
+          const label = labels.get(`takeoff:${t.id}`);
           if (t.kind === "length") {
-            const m = polylineLength(t.points);
             return (
               <g key={t.id} data-testid="takeoff-shape" data-takeoff={t.id} data-selected={on} pointerEvents="none">
                 <path d={path(t.points)} fill="none" className="stroke-limestone" strokeWidth={5} />
@@ -99,17 +86,16 @@ export function TakeoffOverlay({ view, active, size }: { view: View; active: boo
                 {[t.points[0], t.points[t.points.length - 1]].map((p, i) => (
                   <circle key={i} cx={S(p).x} cy={S(p).y} r={3.5} className={on ? "fill-gilt" : "fill-cyanotype"} />
                 ))}
-                {m.ok && text(midway(t.points), `${t.name}: ${len(m.value)}`)}
+                {label && <LabelText label={label} className="fill-iron stroke-limestone" />}
               </g>
             );
           }
-          const a = areaWithCutouts(t.points, t.cutouts);
           const d = path(t.points, true) + (t.cutouts ?? []).map((c) => path(c, true)).join("");
           return (
             <g key={t.id} data-testid="takeoff-shape" data-takeoff={t.id} data-selected={on} pointerEvents="none">
               <path d={d} fillRule="evenodd" className={on ? "fill-gilt" : "fill-cyanotype"} fillOpacity={on ? 0.2 : 0.12} />
               <path d={d} fill="none" className={stroke} strokeWidth={on ? 2.5 : 1.5} strokeDasharray="6 4" />
-              {a.ok && text(areaLabelAt(t), `${t.name}: ${area(a.value)}`)}
+              {label && <LabelText label={label} className="fill-iron stroke-limestone" />}
             </g>
           );
         })}
@@ -160,8 +146,18 @@ const MODES: { id: TakeoffMode; label: string }[] = [
 
 const btn = "min-h-10 rounded border border-stone bg-vellum px-3 text-xs text-iron shadow hover:bg-limestone";
 
-export function TakeoffBar() {
+/**
+ * `onHeight` is told the bar's height in every commit of THIS component, which is when it changes (the bar
+ * re-renders on its own store subscription, a commit PlanCanvas is not part of), so PlanCanvas can move the
+ * camera by the same amount before the browser paints. See PlanCanvas.tsx, "strip".
+ */
+export function TakeoffBar({ onHeight }: { onHeight?: (height: number) => void }) {
   const { mode, draft, wallSide, cutoutFor, selectedId, message } = useTakeoffStore();
+  const box = useRef<HTMLDivElement>(null);
+  // No dependency list on purpose: any commit can change the bar's height (a mode, a draft, a hint that wraps).
+  useLayoutEffect(() => {
+    if (box.current) onHeight?.(box.current.offsetHeight);
+  });
   const st = useTakeoffStore.getState();
   const selected = usePlanStore((s) => s.plan.takeoffs?.find((t) => t.id === selectedId));
   const hint =
@@ -182,7 +178,7 @@ export function TakeoffBar() {
             ? "Area: click the first corner"
             : "Click the first corner, Enter or Finish to close it");
   return (
-    <div data-testid="takeoff-bar" className="absolute left-2 right-14 top-2 flex flex-wrap items-center gap-2">
+    <div ref={box} data-testid="takeoff-bar" className="flex flex-wrap items-center gap-2 border-b border-stone bg-limestone px-2 py-1.5">
       <div role="group" aria-label="Takeoff mode" className="flex rounded border border-stone bg-vellum p-0.5 text-xs shadow">
         {MODES.map((m) => (
           <button key={m.id} type="button" data-testid={`takeoff-mode-${m.id}`} aria-pressed={mode === m.id} onClick={() => st.setMode(m.id)} className={`min-h-9 rounded-sm px-2.5 ${mode === m.id ? "bg-cyanotype text-vellum" : "text-iron hover:bg-limestone"}`}>

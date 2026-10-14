@@ -15,7 +15,7 @@ export function DrawingControls({ prefix, className = "" }: { prefix: string; cl
   const opacity = useBackgroundStore((s) => s.opacity);
   const percent = Math.round(opacity * 100);
   return (
-    <div role="group" aria-label="Drawing under the plan" className={`flex items-center gap-2 ${className}`}>
+    <div role="group" aria-label="Drawing under the plan" data-plan-obstacle="drawing" className={`flex items-center gap-2 ${className}`}>
       <button
         type="button"
         data-testid={`${prefix}-drawing-toggle`}

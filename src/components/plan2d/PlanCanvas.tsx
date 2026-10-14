@@ -82,12 +82,24 @@
  * Its "Drawing" toggle and opacity slider (DrawingControls.tsx) sit beside "Set scale…" when the
  * plan has a drawing.
  *
+ * Labels (step L.1): none of the plan's labels is drawn where it "naturally" belongs any more. Room
+ * names and areas, takeoff labels and model names are built as data (src/lib/plan2d/labels.ts) and
+ * placed by src/lib/plan2d/labelLayout.ts, in screen space, once the camera has been still for
+ * SETTLE_MS (the drawing's debounce) or the plan, units, selection or Labels setting change; never per frame.
+ * A placement is kept as an offset from the label's point, so a pan carries labels with the plan. While
+ * a drag read-out is live the last placement is kept and only the live label moves. A label that fits
+ * nowhere is hidden and counted ("N hidden" beside the Labels control, data-labels-hidden). The
+ * scale bar and a placed Measure value are obstacles; live read-outs follow the pointer and are drawn on
+ * top. The Takeoff tool's mode bar is docked in its own strip above the canvas instead of over it.
+ *
  * Pan/zoom lives here, not in the store. Nothing animates, so
  * prefers-reduced-motion needs no special case.
  * Mounted by src/app/studio/page.tsx (2D view and the 2D half of Split).
  */
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { lengthHint, niceScaleBarFor } from "@/lib/units/format";
+import { layoutLabels, type LayoutResult } from "@/lib/plan2d/labelLayout";
+import { buildLabels, controlObstacles, effectiveDetail, keepsLayout, resolveLabels, scaleBarObstacle, toLayout, type ControlBox, type PlanLabel } from "@/lib/plan2d/labels";
 import { useUnitFormat } from "@/components/studio/useUnitFormat";
 import { floorColor } from "@/data/materials";
 import {
@@ -139,17 +151,19 @@ import { pointInPolygon } from "@/lib/plan/rooms";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { useSelectedRun, useSelectionStore } from "@/store/selectionStore";
 import { useCalibrateStore } from "@/store/calibrateStore";
+import { useBackgroundStore } from "@/store/backgroundStore";
+import { useLabelsStore } from "@/store/labelsStore";
+import { useUnitsStore } from "@/store/unitsStore";
 import { useTakeoffStore, type TakeoffPointer } from "@/store/takeoffStore";
 import { useToolStore } from "@/store/toolStore";
 import { CalibrateDialog } from "@/components/studio/CalibrateDialog";
-import { BackgroundLayer } from "./BackgroundLayer";
+import { BackgroundLayer, SETTLE_MS } from "./BackgroundLayer";
 import { DrawingControls } from "./DrawingControls";
+import { LabelControls } from "./LabelControls";
+import { LabelText } from "./LabelText";
 import { TakeoffBar, TakeoffOverlay } from "./TakeoffLayer";
 import type { Opening, OpeningKind, Vec2, Wall } from "@/types/plan";
 
-const NAME_PX = 15; // text-sm
-const AREA_PX = 13; // text-xs
-const GLYPH = 0.55; // average glyph width / font size, to guess a label's width
 const GRID_MIN_PX = 8; // grid lines closer than this are hidden; they fade in over the next 8 px
 const GAP_OVERSHOOT_PX = 1.2; // the gap paint pokes past the wall edges so no hairline of wall shows
 const KEY_PAN_PX = 40;
@@ -260,10 +274,14 @@ export function PlanCanvas() {
 
   const [view, setView] = useState<View>({ scale: 1, tx: 0, ty: 0 });
   const [size, setSize] = useState({ width: 0, height: 0 });
+  /** The camera the label layout last ran at: `view` once it has been still for SETTLE_MS, or at once after a fit (step L.1). */
+  const [settled, setSettled] = useState<View>(view);
   /** The live drag read-out: the snap marker, the length and any limit message. */
   const [hud, setHud] = useState<{ at: Vec2; snap: Snap | null; text: string; message?: string } | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const userMoved = useRef(false); // once true, resizing no longer refits (same rule as the 3D FitCamera)
+  const stripH = useRef(0); // its height at the last commit
+  const stripShifted = useRef(false); // the next resize is the strip's: the plan was moved with it, so do not refit
   const pointers = useRef(new Map<number, Vec2>()); // active touches / mouse, in canvas pixels
   const drag = useRef<Drag | null>(null);
   const live = useRef(false); // a preview edit is sitting on top of history, ready to roll back
@@ -289,13 +307,39 @@ export function PlanCanvas() {
     const measure = () => {
       const s = { width: el.clientWidth, height: el.clientHeight };
       setSize(s);
-      if (!userMoved.current && s.width > 0 && s.height > 0) setView(fit(s));
+      if (stripShifted.current) {
+        stripShifted.current = false;
+        return;
+      }
+      if (!userMoved.current && s.width > 0 && s.height > 0) {
+        const v = fit(s);
+        setView(v);
+        setSettled(v); // a fit is not a pan in progress: lay the labels out for it now
+      }
     };
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     measure();
     return () => ro.disconnect();
   }, []);
+
+  // The Takeoff strip sits above the canvas, so whenever its height changes (it appears or goes away with the tool,
+  // or a narrow pane wraps its buttons onto another row for a mode) the canvas under it changes by the same amount.
+  // Left alone, a refit would then move the plan under the pointer, or under a finger about to tap. So the camera is
+  // shifted by exactly that amount, in the same commit and before the browser paints, and the plan stays where it is
+  // on the page. (The bar used to float over the plan, which moved nothing: nothing may move now.)
+  const shiftForStrip = (now: number) => {
+    const was = stripH.current;
+    stripH.current = now;
+    if (now === was) return;
+    stripShifted.current = true; // the resize this causes is accounted for: do not refit
+    setView((v) => ({ ...v, ty: v.ty - (now - was) }));
+  };
+  // TakeoffBar reports its own height in every commit (it re-renders on its own store, a commit this component is not in);
+  // leaving the tool removes the strip in this component's commit.
+  useLayoutEffect(() => {
+    if (tool !== "takeoff") shiftForStrip(0);
+  }, [tool]);
 
   // Wheel needs a non-passive listener: React's onWheel is passive and cannot preventDefault.
   useEffect(() => {
@@ -318,8 +362,14 @@ export function PlanCanvas() {
   };
   const refit = () => {
     userMoved.current = false; // pressing Fit puts auto-fit back on
-    setView(fit(size));
+    const v = fit(size);
+    setView(v);
+    setSettled(v);
   };
+  useEffect(() => {
+    const t = setTimeout(() => setSettled(view), SETTLE_MS); // the same debounce as the drawing's render
+    return () => clearTimeout(t);
+  }, [view]);
   const zoomBy = (factor: number) => change((v) => zoomAt(v, { x: size.width / 2, y: size.height / 2 }, factor));
 
   // ---- editing through the store
@@ -858,6 +908,75 @@ export function PlanCanvas() {
     act();
   };
 
+  // ---- labels (step L.1): built at the settled camera, placed in screen space, drawn at the current one
+  const unitsLength = useUnitsStore((s) => s.length);
+  const unitsArea = useUnitsStore((s) => s.area);
+  const showTakeoffs = useTakeoffStore((s) => s.show);
+  const selectedTakeoffId = useTakeoffStore((s) => s.selectedId);
+  const drawingShown = useBackgroundStore((s) => s.visible) && hasDrawing;
+  const choice = useLabelsStore((s) => s.choice);
+  const detail = effectiveDetail(choice, drawingShown);
+  const laidRef = useRef<View>(settled); // the camera the layout last ran at: kept through a pan of a few pixels
+  if (!keepsLayout(laidRef.current, settled)) laidRef.current = settled;
+  const laidView = laidRef.current;
+  const labels = useMemo<PlanLabel[]>(
+    () =>
+      buildLabels(
+        { rooms, takeoffs: plan.takeoffs ?? [], showTakeoffs, selectedTakeoffId, items: footprints, selectedItemId: itemId, units: { length: unitsLength, area: unitsArea }, detail },
+        laidView,
+      ),
+    [rooms, plan.takeoffs, showTakeoffs, selectedTakeoffId, footprints, itemId, unitsLength, unitsArea, detail, laidView],
+  );
+  // The scale bar and a placed Measure value are in the way of every other label, and never move.
+  const settledBar = niceScaleBarFor(laidView.scale, unitsLength);
+  const pillRect = tool === "measure" && measurement?.b ? measurePill(worldToScreen(laidView, measurement.a), worldToScreen(laidView, measurement.b), measureDistance(measurement.a, measurement.b), size) : null;
+  const [controls, setControls] = useState<ControlBox[]>([]); // the controls floating over the plan, in pane pixels (measured below)
+  const lastLayout = useRef<LayoutResult | null>(null); // kept while a drag read-out is live: only the live label moves then
+  const dragging = hud !== null;
+  const layout = useMemo<LayoutResult>(() => {
+    if (dragging && lastLayout.current) return lastLayout.current;
+    const fixed = [scaleBarObstacle(size, settledBar.metres * laidView.scale, settledBar.label)];
+    if (pillRect) fixed.push({ id: "measure-value", kind: "live", priority: 100, anchor: { x: pillRect.x, y: pillRect.y }, width: pillRect.w, height: pillRect.h });
+    fixed.push(...controlObstacles(controls));
+    return layoutLabels([...toLayout(labels, laidView), ...fixed], { x0: 0, y0: 0, x1: size.width, y1: size.height });
+    // pillRect and settledBar are derived from the deps below
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragging, labels, laidView, size, unitsLength, tool, measurement, controls]);
+  if (!dragging) lastLayout.current = layout;
+  const drawn = resolveLabels(labels, layout, view);
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
+    (window as unknown as { __plan2d?: unknown }).__plan2d = { labels: { detail, placed: layout.placed, hidden: layout.hidden, offscreen: layout.offscreen, settled: settled === view } };
+    return () => {
+      delete (window as unknown as { __plan2d?: unknown }).__plan2d;
+    };
+  }, [detail, layout, settled, view]);
+
+  // The zoom buttons, "Set scale…", the Labels control, its "N hidden" and the Drawing group float over the plan: each is
+  // marked data-plan-obstacle and measured here, relative to the pane, and re-measured when the pane or any of them
+  // changes size (a resize, a wrap, the count appearing). A layout effect, so a label never paints under a button first.
+  const anyHidden = layout.hidden.length > 0;
+  useLayoutEffect(() => {
+    const el = root.current;
+    if (!el) return;
+    const measureControls = () => {
+      const base = el.getBoundingClientRect();
+      const next = [...el.querySelectorAll<HTMLElement>("[data-plan-obstacle]")]
+        .map((e) => {
+          const r = e.getBoundingClientRect();
+          return { id: `control:${e.dataset.planObstacle}`, x: r.left - base.left, y: r.top - base.top, width: r.width, height: r.height };
+        })
+        .filter((b) => b.width > 0 && b.height > 0);
+      const same = (a: ControlBox[]) => a.length === next.length && a.every((b, i) => b.id === next[i].id && Math.abs(b.x - next[i].x) < 0.5 && Math.abs(b.y - next[i].y) < 0.5 && Math.abs(b.width - next[i].width) < 0.5 && Math.abs(b.height - next[i].height) < 0.5);
+      setControls((prev) => (same(prev) ? prev : next));
+    };
+    measureControls();
+    const ro = new ResizeObserver(measureControls);
+    ro.observe(el);
+    el.querySelectorAll("[data-plan-obstacle]").forEach((e) => ro.observe(e));
+    return () => ro.disconnect();
+  }, [size, hasDrawing, anyHidden, tool, calibrating]);
+
   // ---- drawing, in screen space
   const S = (p: Vec2) => worldToScreen(view, p);
   const visible = size.width > 0 && size.height > 0;
@@ -940,6 +1059,9 @@ export function PlanCanvas() {
   const barPx = barMetres * view.scale;
 
   return (
+    <div className="absolute inset-0 flex flex-col bg-limestone">
+      {/* Takeoff's mode bar has its own strip: the canvas below it gets shorter instead of being covered (step L.1) */}
+      {tool === "takeoff" && <TakeoffBar onHeight={shiftForStrip} />}
     <div
       ref={root}
       tabIndex={0}
@@ -966,7 +1088,11 @@ export function PlanCanvas() {
       data-drawing={chain ? "true" : "false"}
       onKeyDown={onKeyDown}
       style={{ outlineOffset: -3 }} // inside the box, so the overflow clip doesn't cut the focus ring
-      className="absolute inset-0 touch-none select-none overflow-hidden bg-limestone"
+      data-labels-detail={detail}
+      data-labels-hidden={layout.hidden.length}
+      data-labels-placed={layout.placed.length}
+      data-labels-settled={settled === view ? "true" : "false"}
+      className="relative min-h-0 flex-1 touch-none select-none overflow-hidden bg-limestone"
     >
       {/* the imported drawing, under everything (step M.2c) */}
       {visible && <BackgroundLayer view={view} size={size} />}
@@ -996,6 +1122,14 @@ export function PlanCanvas() {
             if (tool === "takeoff") useTakeoffStore.getState().finish();
           }}
         >
+          {/* the backing plate under every label: the pane's own colour at 80%, over the label's text box only, so the layout's rectangles do not change */}
+          <defs>
+            <filter id="label-plate" x="-0.02" y="-0.05" width="1.04" height="1.1">
+              <feFlood style={{ floodColor: "var(--color-limestone)" }} floodOpacity={0.8} result="plate" />
+              <feComposite in="SourceGraphic" in2="plate" operator="over" />
+            </filter>
+          </defs>
+
           {/* room floors, tinted by the floor material */}
           {rooms.map((r) => (
             <polygon key={r.id} points={pts(r.polygon.map(S))} fill={floorColor(r.floorMaterial)} fillOpacity={0.4} data-testid="plan-floor" />
@@ -1048,14 +1182,12 @@ export function PlanCanvas() {
           {/* imported 3D models: a dashed footprint and the name; gilt when selected */}
           {footprints.map((f) => {
             const poly = f.poly.map(S);
-            const c = { x: poly.reduce((n, p) => n + p.x, 0) / 4, y: poly.reduce((n, p) => n + p.y, 0) / 4 };
+            const label = drawn.get(`item:${f.id}`);
             const on = f.id === itemId;
             return (
               <g key={`item-${f.id}`} data-testid="plan-item" data-item={f.id} data-selected={on}>
                 <polygon points={pts(poly)} className={on ? "fill-gilt stroke-gilt" : "fill-none stroke-iron"} fillOpacity={on ? 0.12 : 0} strokeWidth={on ? 2 : 1.2} strokeDasharray="6 4" />
-                <text x={c.x} y={c.y} textAnchor="middle" dominantBaseline="middle" className="fill-iron stroke-limestone text-xs" style={{ paintOrder: "stroke", strokeWidth: 3 }}>
-                  {f.name}
-                </text>
+                {label && <LabelText label={label} className="fill-iron stroke-limestone" />}
               </g>
             );
           })}
@@ -1152,25 +1284,19 @@ export function PlanCanvas() {
             </g>
           )}
 
-          {/* room labels: constant size, hidden when the room is too small on screen to hold them */}
+          {/* leader lines of labels the layout moved away from their point, under every label */}
+          <g data-testid="plan-label-leaders" pointerEvents="none">
+            {[...drawn.values()].map((l) => l.leader && <line key={l.id} x1={l.leader.x1} y1={l.leader.y1} x2={l.leader.x2} y2={l.leader.y2} className="stroke-smoke" strokeWidth={0.75} data-leader={l.id} />)}
+          </g>
+
+          {/* room labels: a name and an area, each placed by the layout pass; a room too small on screen to hold them has none */}
           {rooms.map((r) => {
-            const xs = r.polygon.map((p) => p.x);
-            const ys = r.polygon.map((p) => p.y);
-            const wPx = (Math.max(...xs) - Math.min(...xs)) * view.scale;
-            const hPx = (Math.max(...ys) - Math.min(...ys)) * view.scale;
-            const area = fmt.area(r.area);
-            const textW = Math.max(r.name.length * NAME_PX, area.length * AREA_PX) * GLYPH;
-            if (wPx < textW || hPx < NAME_PX + AREA_PX + 8) return null;
-            const p = S(r.labelPoint);
-            const halo = { paintOrder: "stroke", strokeWidth: 3, strokeLinejoin: "round" } as const;
+            const [name, area] = [drawn.get(`room-name:${r.id}`), drawn.get(`room-area:${r.id}`)];
+            if (!name && !area) return null;
             return (
-              <g key={r.id} textAnchor="middle" data-testid="plan-room-label" className="font-sans">
-                <text x={p.x} y={p.y - 2} className="fill-iron stroke-limestone text-sm" style={halo}>
-                  {r.name}
-                </text>
-                <text x={p.x} y={p.y + AREA_PX + 2} className="fill-smoke stroke-limestone text-xs" style={halo}>
-                  {area}
-                </text>
+              <g key={r.id} data-testid="plan-room-label" className="font-sans">
+                {name && <LabelText label={name} className="fill-iron stroke-limestone" />}
+                {area && <LabelText label={area} className="fill-smoke stroke-limestone" />}
               </g>
             );
           })}
@@ -1208,7 +1334,7 @@ export function PlanCanvas() {
           )}
 
           {/* takeoffs: every one in the plan (Show takeoffs), and the tool's draft and hover */}
-          <TakeoffOverlay view={view} active={tool === "takeoff"} size={size} />
+          <TakeoffOverlay view={view} active={tool === "takeoff"} size={size} labels={drawn} />
 
           {/* Set scale (step M.2b): the points picked so far, the span between them, and where the next would land */}
           {calibrating && (
@@ -1256,12 +1382,14 @@ export function PlanCanvas() {
         <button
           type="button"
           data-testid="plan-set-scale"
+          data-plan-obstacle="set-scale"
           aria-pressed={calibrating}
           onClick={() => useCalibrateStore.getState().start()}
           className={`pointer-events-auto min-h-11 shrink-0 rounded border px-3 text-xs shadow ${calibrating ? "border-cyanotype bg-cyanotype text-vellum" : "border-stone bg-vellum text-iron hover:bg-limestone"}`}
         >
           Set scale…
         </button>
+        <LabelControls detail={detail} hidden={layout.hidden.length} className="pointer-events-auto rounded border border-stone bg-vellum/90 shadow" />
         {hasDrawing && <DrawingControls prefix="plan" className="pointer-events-auto rounded border border-stone bg-vellum/90 pr-2 shadow" />}
       </div>
 
@@ -1310,9 +1438,6 @@ export function PlanCanvas() {
         </div>
       )}
 
-      {/* Takeoff tool: Length | Area | Wall, and Finish / Undo point / Cancel for touch */}
-      {tool === "takeoff" && <TakeoffBar />}
-
       {/* Wall tool: what to do next, and Finish for touch screens with no Escape key */}
       {tool === "wall" && (
         <div data-testid="draw-bar" className="absolute left-2 right-14 top-2 flex flex-wrap items-center gap-2">
@@ -1328,7 +1453,7 @@ export function PlanCanvas() {
       )}
 
       {/* Fit, +, − : a column at the top right, outside the plan's fitted area */}
-      <div className="absolute right-2 top-2 flex flex-col gap-1">
+      <div data-plan-obstacle="zoom" className="absolute right-2 top-2 flex flex-col gap-1">
         {[
           { id: "fit", label: "Fit plan to view", on: refit, glyph: <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /> },
           { id: "zoom-in", label: "Zoom in", on: () => zoomBy(KEY_ZOOM), glyph: <path d="M12 5v14M5 12h14" /> },
@@ -1350,7 +1475,36 @@ export function PlanCanvas() {
         ))}
       </div>
     </div>
+    </div>
   );
+}
+
+/**
+ * Where the Measure value's label goes, for the two points `a` and `b` in screen pixels: its centre and
+ * size, the line's end ticks, and the text. The label sits off the line's upper side, far enough that its
+ * own box clears the line at any angle, clamped inside the canvas. PlanCanvas also asks it for the label's
+ * rectangle, as an obstacle for the layout pass (step L.1), so the two always agree.
+ */
+function measurePill(a: Vec2, b: Vec2, metres: number, size: { width: number; height: number }) {
+  const text = formatMeasure(metres);
+  const w = text.length * MEASURE_GLYPH_PX + 18;
+  const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  const dir = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+  let n = { x: -dir.y, y: dir.x }; // a normal; take the one pointing up the screen (right for a vertical line)
+  if (n.y > 1e-9 || (Math.abs(n.y) <= 1e-9 && n.x < 0)) n = { x: -n.x, y: -n.y };
+  const tick = (p: Vec2) => [add(p, n, MEASURE_TICK_PX), add(p, n, -MEASURE_TICK_PX)];
+  // Far enough off the line that the label's own box clears it, whatever the angle.
+  const off = (Math.abs(n.x) * w) / 2 + (Math.abs(n.y) * MEASURE_PILL_H) / 2 + 8;
+  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  return {
+    text,
+    w,
+    h: MEASURE_PILL_H,
+    x: Math.min(Math.max(mid.x + n.x * off, w / 2 + 4), Math.max(w / 2 + 4, size.width - w / 2 - 4)),
+    y: Math.min(Math.max(mid.y + n.y * off, MEASURE_PILL_H / 2 + 4), Math.max(MEASURE_PILL_H / 2 + 4, size.height - MEASURE_PILL_H / 2 - 4)),
+    tickA: tick(a),
+    tickB: tick(b),
+  };
 }
 
 /**
@@ -1363,26 +1517,8 @@ export function PlanCanvas() {
  * upper side), clear of it, and is clamped inside the canvas so it never clips.
  */
 function MeasureOverlay({ a, b, metres, size, world }: { a: Vec2; b: Vec2 | null; metres: number; size: { width: number; height: number }; world: { a: Vec2; b: Vec2 | null } }) {
-  const text = b ? formatMeasure(metres) : "";
-  const w = text.length * MEASURE_GLYPH_PX + 18;
-  let pill = { x: 0, y: 0 };
-  let tickA: Vec2[] = [];
-  let tickB: Vec2[] = [];
-  if (b) {
-    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-    const dir = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
-    let n = { x: -dir.y, y: dir.x }; // a normal; take the one pointing up the screen (right for a vertical line)
-    if (n.y > 1e-9 || (Math.abs(n.y) <= 1e-9 && n.x < 0)) n = { x: -n.x, y: -n.y };
-    const tick = (p: Vec2) => [add(p, n, MEASURE_TICK_PX), add(p, n, -MEASURE_TICK_PX)];
-    [tickA, tickB] = [tick(a), tick(b)];
-    // Far enough off the line that the label's own box clears it, whatever the angle.
-    const off = (Math.abs(n.x) * w) / 2 + (Math.abs(n.y) * MEASURE_PILL_H) / 2 + 8;
-    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-    pill = {
-      x: Math.min(Math.max(mid.x + n.x * off, w / 2 + 4), Math.max(w / 2 + 4, size.width - w / 2 - 4)),
-      y: Math.min(Math.max(mid.y + n.y * off, MEASURE_PILL_H / 2 + 4), Math.max(MEASURE_PILL_H / 2 + 4, size.height - MEASURE_PILL_H / 2 - 4)),
-    };
-  }
+  const geo = b ? measurePill(a, b, metres, size) : null;
+  const [text, w, pill, tickA, tickB] = [geo?.text ?? "", geo?.w ?? 0, { x: geo?.x ?? 0, y: geo?.y ?? 0 }, geo?.tickA ?? [], geo?.tickB ?? []] as const;
   const line = (p: Vec2, q: Vec2, cls: string, sw: number, testId?: string) => <line x1={p.x} y1={p.y} x2={q.x} y2={q.y} className={cls} strokeWidth={sw} strokeLinecap="round" data-testid={testId} />;
   const dot = (p: Vec2, id: string) => (
     <g>

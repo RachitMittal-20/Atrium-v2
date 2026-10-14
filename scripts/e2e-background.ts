@@ -146,7 +146,7 @@ async function inkAlignment(page: Page, tag: string, tol: number, prefix = "plan
   await slider.focus();
   await page.keyboard.press("End"); // 100%
   await waitUntil(page, `${tag}: the drawing did not go to 100%`, `getComputedStyle(document.querySelector('[data-testid="plan-background"]')).opacity === "1"`);
-  const hide = await page.addStyleTag({ content: '[data-testid="plan-svg"] { visibility: hidden !important; }' });
+  const hide = await page.addStyleTag({ content: '[data-testid="plan-svg"] { visibility: hidden !important; } [data-testid="plan-svg"] [data-label] { display: none !important; }' }); // step L.1b: a label's backing plate is an SVG filter, which Chromium paints even under visibility:hidden, so the labels go too
   const shot = await page.screenshot();
   await hide.evaluate((e) => (e as Element).remove());
   await slider.focus();
