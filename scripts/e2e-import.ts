@@ -3,9 +3,7 @@
  * src/app/studio/import/page.tsx, with Playwright's Chromium.
  *
  * Not in npm test. It needs the dev server running (npm run dev; E2E_URL
- * overrides http://localhost:3000) and, on the first run, the network: the
- * browser's tesseract.js fetches its worker and English language data from
- * the jsdelivr CDN.
+ * overrides http://localhost:3000). OCR's files come from /tesseract/ (step O.1).
  *
  *   a. /studio/import at 1440×900 and 390×844: the drop zone shows and the
  *      page has no horizontal scroll.

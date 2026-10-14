@@ -149,10 +149,12 @@ export async function analysePdfPage(
   // read by OCR at 300 dpi for its dimensions and room names; the same scale rules apply.
   const outlined = meaningfulLines(vector) && vector.texts.length < OUTLINED_TEXT_MAX;
   let texts = vector.texts;
+  let ocrError: string | null = null; // why OCR could not run (a missing OCR file is named), said in the notes
   if (outlined) {
     const k = scanRasterScale(vector);
     const ocr = await (opts.ocr ?? ((p: PlanPixels) => ocrPlan(p, [])))(await opts.render(page, k));
     texts = ocrTexts(ocr.words, k);
+    ocrError = ocr.error;
   }
   const scale = pdfScale({ ...vector, texts }, outlined ? "ocr" : "pdf");
   const pxPerPt = vectorRasterScale(vector, scale.mPerPt);
@@ -168,7 +170,8 @@ export async function analysePdfPage(
   const notes = [
     "Read from PDF vectors.",
     ...(vector.kind === "mixed" ? ["This page mixes a picture with line work. It was read as vector line work; the picture was ignored."] : []),
-    ...(outlined ? ["The text on this page is drawn as shapes, so it was read by OCR. Check the dimensions marked \"read by OCR\"."] : []),
+    ...(outlined && ocrError ? [`The text on this page is drawn as shapes and could not be read. ${ocrError}.`] : []),
+    ...(outlined && !ocrError ? ["The text on this page is drawn as shapes, so it was read by OCR. Check the dimensions marked \"read by OCR\"."] : []),
     vectorWalls
       ? `Walls are read exactly from the PDF's lines; any the lines don't explain are traced at about ${Math.round(traceMm!)} mm.`
       : "Without a scale the PDF's lines can't be read as walls, so walls are traced from a picture of the page.",

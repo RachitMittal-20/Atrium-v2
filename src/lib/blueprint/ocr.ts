@@ -8,12 +8,11 @@
  *     dimensions and work out pixels per metre.
  * Call it on the deskewed, UNFILLED image (see CLAUDE.md Conventions).
  *
- * tesseract.js is dynamically imported so it (and the language file it fetches
- * from the jsdelivr CDN on first use) never loads until a blueprint is actually
- * analysed. The same code runs in the browser and under Node: the image is
- * cropped and scaled here in plain JS and handed over as PGM bytes, so no
- * canvas is needed. Under Node the language file is cached as
- * ./eng.traineddata (git-ignored); the first run needs the network.
+ * tesseract.js is dynamically imported so it (and the files it loads) never
+ * loads until a blueprint is actually analysed. Its worker, core and English
+ * language data are all served from /tesseract/ (ocrAssets.ts), never a CDN.
+ * The same code runs in the browser and under Node: the image is cropped and
+ * scaled here in plain JS and handed over as PGM bytes, so no canvas is needed.
  *
  * Plan labels are small text sitting among wall lines, doors and
  * furniture icons — exactly what a generic OCR pass reads worst. Reading
@@ -36,6 +35,7 @@
 
 import type { OcrWord, PixelRect, PlanPixels } from "@/types/blueprint";
 import type { PlanLabel } from "./roomLabels";
+import { missingOcrFile, OcrLoadError, ocrOptions } from "./ocrAssets";
 
 /** Below this, a line is treated as noise rather than a room name. */
 const MIN_CONFIDENCE = 55;
@@ -53,7 +53,7 @@ export interface PlanOcr {
   labels: PlanLabel[];
   /** Every word of the whole-image passes, unfiltered, in the given image's pixel space. */
   words: OcrWord[];
-  /** Why OCR could not run (blocked CDN, ...), or null. `labels` and `words` are then empty. */
+  /** Why OCR could not run (an OCR file missing or blocked, ...), or null. `labels` and `words` are then empty. */
   error: string | null;
   /** Every second read (see ocrPlan): both readings and which one `words` kept. */
   rereads: { first: string; firstConfidence: number; second: string; secondConfidence: number; kept: "first" | "second" }[];
@@ -157,8 +157,10 @@ export function pickReading(first: { text: string; confidence: number }, second:
  *  blocked CDN fetch yields empty lists plus `error`. */
 export async function ocrPlan(pixels: PlanPixels, regions: PixelRect[], rotatedPass = true): Promise<PlanOcr> {
   try {
+    const missing = await missingOcrFile();
+    if (missing) throw new OcrLoadError(missing);
     const { createWorker, PSM } = await import("tesseract.js");
-    const worker = await createWorker("eng");
+    const worker = await createWorker("eng", undefined, ocrOptions());
     try {
       await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT });
       const rereads: PlanOcr["rereads"] = [];
@@ -261,13 +263,15 @@ export async function ocrPlan(pixels: PlanPixels, regions: PixelRect[], rotatedP
     }
   } catch (error) {
     console.warn("[blueprint] OCR unavailable, falling back to guessed room names", error);
-    return { labels: [], words: [], error: error instanceof Error ? error.message : String(error), rereads: [] };
+    // Plain words for the page: a missing or blocked file (named) versus a worker that started badly.
+    const why = error instanceof OcrLoadError ? `The OCR files could not be loaded: ${error.file}` : "The OCR worker failed to start";
+    return { labels: [], words: [], error: why, rereads: [] };
   }
 }
 
 /** Reads every room label it can find, in the whole image and again in a
  *  padded crop of each given region. Never throws — a plan with no
- *  readable text, or a blocked CDN fetch, just yields an empty list, and
+ *  readable text, or a missing OCR file, just yields an empty list, and
  *  the caller falls back to guessed names exactly as before OCR existed. */
 export async function ocrPlanLabels(pixels: PlanPixels, regions: PixelRect[]): Promise<PlanLabel[]> {
   return (await ocrPlan(pixels, regions, false)).labels;

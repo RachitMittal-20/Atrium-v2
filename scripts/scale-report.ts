@@ -5,8 +5,7 @@
  * Prints per image the labels read, each sample, the median, spread,
  * confidence and reason, and a summary table at the end.
  *
- * Not in npm test: tesseract.js downloads its English language data from the
- * jsdelivr CDN on the first run (cached afterwards as ./eng.traineddata).
+ * Not in npm test. OCR reads its files from public/tesseract/ (step O.1); no network.
  *
  * Known truths checked: 03 must give 100 px/m within 3%; 01 and 02 print no
  * sizes and must give "none". 04 is the same house as a fake scan and is held

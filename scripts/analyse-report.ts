@@ -7,8 +7,7 @@
  * otherwise the manual values below (read off the plans by hand), and 05 and 07
  * are skipped with "no usable scale".
  *
- * Not in npm test: tesseract.js downloads its English language data from the
- * jsdelivr CDN on the first run (cached afterwards as ./eng.traineddata).
+ * Not in npm test. OCR reads its files from public/tesseract/ (step O.1); no network.
  * Run: npx tsx scripts/analyse-report.ts
  */
 import { readdirSync } from "node:fs";

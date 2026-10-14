@@ -23,7 +23,7 @@
  * It prints, per label: the parsed sizes, every ray's two hits, the two
  * implied scales for both assignments and the exact rejection reason; per
  * single length, every row followed and why it was or was not the line.
- * Needs the network once for tesseract's language data. Not in npm test.
+ * OCR reads its files from public/tesseract/ (step O.1). Not in npm test.
  * Run: npx tsx scripts/scale-debug.ts [file-prefix ...]   (default: 06 08)
  */
 import { mkdirSync, readdirSync } from "node:fs";

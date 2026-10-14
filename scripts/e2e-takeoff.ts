@@ -32,6 +32,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync } from "node:fs";
 import { chromium, type Page } from "playwright";
+import { step, waitForHook, waitForScene3d, warmRoutes, watchErrors, withSuiteTimeout } from "./e2e-helpers";
 import { samplePlan } from "../src/data/samplePlan";
 import { wallOutline } from "../src/lib/plan/geometry";
 import { deriveRooms } from "../src/lib/plan/rooms";
@@ -81,11 +82,12 @@ async function open(width: number, height: number, touch: boolean) {
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: touch, acceptDownloads: true });
   const page = await context.newPage();
   const tag = `${width}`;
-  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
-  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  watchErrors(page, tag, errors);
   await page.goto(`${BASE}/studio`);
   await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" }); // the dev badge swallows phone taps
   await tid(page, "plan-name").waitFor();
+  await waitForHook(page, "__planStore", "the studio has just been opened");
+  await waitForHook(page, "__takeoffStore", "the studio has just been opened");
   return { browser, page };
 }
 
@@ -101,6 +103,7 @@ async function disabledIn3d(page: Page, tag: string) {
 
 async function desktop() {
   const tag = "1440";
+  step("1440 takeoffs");
   const { browser, page } = await open(1440, 900, false);
   const press = (k: string) => page.keyboard.press(k);
   const click = async (p: Pt) => page.mouse.click(p.x, p.y);
@@ -250,8 +253,7 @@ async function desktop() {
 
   // ---- walk: switches to Select and disables Takeoff
   await tid(page, "view-split").click();
-  await page.waitForSelector("canvas");
-  await page.waitForTimeout(800);
+  await waitForScene3d(page, "Split was chosen, to enter Walk");
   await press("k");
   assert.equal(await tool(page), "takeoff", `${tag}: K picks Takeoff`);
   await tid(page, "camera-walk").click();
@@ -306,6 +308,7 @@ async function desktop() {
 }
 
 async function phone() {
+  step("390 takeoffs");
   const tag = "390";
   const { browser, page } = await open(390, 844, true);
   const tap = async (p: Pt) => page.touchscreen.tap(p.x, p.y);
@@ -370,6 +373,7 @@ async function phone() {
 }
 
 async function main() {
+  await warmRoutes(["/studio"]);
   mkdirSync(OUT, { recursive: true });
   await desktop();
   await phone();
@@ -377,7 +381,7 @@ async function main() {
   console.log("e2e-takeoff: OK");
 }
 
-main().catch((e) => {
+withSuiteTimeout("e2e-takeoff", 15 * 60_000, main).catch((e) => {
   console.error(e);
   process.exit(1);
 });

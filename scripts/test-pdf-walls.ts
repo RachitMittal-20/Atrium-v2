@@ -33,7 +33,7 @@
  *     (10 mm long); the overall line without ticks says "line length";
  *   - OCR: an outlined page with only a title block read by OCR stays "check"; OCR words
  *     at the printed places give "good", every row "read by OCR"; with tesseract's
- *     language file cached (./eng.traineddata) the real OCR reads plan-outlined;
+ *     the language file in public/tesseract/ (O.1: always there) the real OCR reads plan-outlined;
  *   - model versus printed: plan-filled's 11 dimensions are centre to centre and OK to
  *     0.5 mm; a misprint is flagged; traced walls make a row "approximate"; both checks
  *     reach the CSV;
@@ -399,7 +399,7 @@ async function main() {
     const b = buildPdfPlan(all.analysis, all.pdf, { pxPerM: all.analysis.scale.pxPerM!, source: "pdf" });
     assert.equal(b.coverage.exact, t.planWalls.length, "outlined: the walls are still read exactly");
     console.log(`outlined (OCR words placed where the text is printed): title block alone ${titleOnly.pdf.scale!.confidence}; all words ${s.confidence}, ${s.matches.length} rows "read by OCR", ${b.coverage.exact}/${b.coverage.walls} walls exact`);
-    if (existsSync(join(__dirname, "../eng.traineddata"))) {
+    if (existsSync(join(__dirname, "../public/tesseract/eng.traineddata.gz"))) {
       const t0 = Date.now();
       const real = await analysePdfPage(pdfjs, page, { pageCount: 1, render: renderNode });
       const rs = real.pdf.scale!;
@@ -407,7 +407,7 @@ async function main() {
       assert.equal(rs.confidence, "good", `real OCR: ${rs.reason}`);
       const rb = buildPdfPlan(real.analysis, real.pdf, { pxPerM: real.analysis.scale.pxPerM!, source: "pdf" });
       console.log(`outlined, real tesseract: ${rs.matches.length}/${t.dims.length} dimensions read by OCR, scale ${rs.confidence}; rooms ${rb.plan.rooms.map((r) => r.name).join(", ")}; ${((Date.now() - t0) / 1000).toFixed(1)} s`);
-    } else console.log("outlined, real tesseract: skipped (no cached ./eng.traineddata; the first OCR run needs the network)");
+    } else console.log("outlined, real tesseract: skipped (public/tesseract/eng.traineddata.gz is missing)");
     await doc.loadingTask.destroy();
   }
 

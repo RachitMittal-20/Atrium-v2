@@ -10,7 +10,8 @@
  * (PlanViewer.tsx), one line per analysis warning, and the scale panel
  * (ScalePanel.tsx) → "Build model" (enabled only once a scale is chosen)
  * runs buildFromAnalysis and shows a summary → "Open in studio" calls the
- * plan store's loadPlan and goes to /studio.
+ * plan store's loadPlan, writes it to storage at once (flushSavedPlan, step
+ * F.1) and goes to /studio.
  *
  * A PDF (step M.1a) goes to src/workers/pdf.worker.ts instead, which does all
  * the PDF work: a file with several pages first shows the page picker
@@ -46,7 +47,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
 import { buildFromAnalysis, STAGES, type Analysis, type AnalysisWarning, type Stage } from "@/lib/blueprint/analyse";
 import { usePlanStore } from "@/store/planStore";
-import { usePersistenceReady } from "@/store/persistence";
+import { flushSavedPlan, usePersistenceReady } from "@/store/persistence";
 import { dimensionRows, modelRows, rowsToCsv, type Overrides } from "@/lib/pdf/dimensions";
 import { buildPdfPlan, planToPixels, type PdfBuild } from "@/lib/pdf/snap";
 import { approximateIndexes, MAX_PDF_TAKEOFFS, pdfTakeoffs } from "@/lib/pdf/takeoffs";
@@ -235,6 +236,7 @@ export default function ImportPage() {
   function openInStudio() {
     if (!built) return;
     usePlanStore.getState().loadPlan(built.plan);
+    flushSavedPlan(); // in storage before we navigate: a restore in the new document must not bring the previous plan back (step F.1)
     router.push("/studio");
   }
 

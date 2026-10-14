@@ -26,6 +26,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { chromium, type Page } from "playwright";
+import { step, waitForHook, warmRoutes, watchErrors, withSuiteTimeout } from "./e2e-helpers";
 import { samplePlan } from "../src/data/samplePlan";
 import type { Plan } from "../src/types/plan";
 
@@ -85,12 +86,12 @@ const textOf = (page: Page, id: string) =>
     .evaluate((e) => `${(e as HTMLElement).innerText}\n${[...e.querySelectorAll("input")].map((i) => (i as HTMLInputElement).value).join("\n")}`);
 
 async function run(width: number, height: number, touch: boolean) {
+  step(`${width} units`);
   const tag = String(width);
   const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: touch, acceptDownloads: true });
   const page = await context.newPage();
-  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
-  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  watchErrors(page, tag, errors);
   const press = (l: ReturnType<typeof tid>) => (touch ? l.tap() : l.click());
   const tap = (p: Pt) => (touch ? page.touchscreen.tap(p.x, p.y) : page.mouse.click(p.x, p.y));
   await page.goto(`${BASE}/studio`);
@@ -304,6 +305,7 @@ async function run(width: number, height: number, touch: boolean) {
 }
 
 async function main() {
+  await warmRoutes(["/studio"]);
   mkdirSync(OUT, { recursive: true });
   assert.equal(samplePlan.rooms.length, 4);
   await run(1440, 900, false);
@@ -313,7 +315,7 @@ async function main() {
   console.log("OK");
 }
 
-main().catch((e) => {
+withSuiteTimeout("e2e-units", 15 * 60_000, main).catch((e) => {
   console.error(e);
   process.exit(1);
 });

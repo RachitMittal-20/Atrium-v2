@@ -68,6 +68,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright";
+import { afterFrames, step, waitForScene3d, warmRoutes, watchErrors, withSuiteTimeout } from "./e2e-helpers";
 import sharp from "sharp";
 import { makeStlBinary, writeFixtures } from "./make-import-fixtures";
 
@@ -102,6 +103,7 @@ type Win = Window & {
 
 const errors: string[] = [];
 const tid = (page: Page, id: string) => page.getByTestId(id);
+/** afterFrames first where a reader looks at drawn geometry: the scene follows the store by a frame. */
 const debug = <T>(page: Page, fn: (d: ImportDebug, arg: string) => T, arg = "") => page.evaluate(([f, a]) => new Function("d", "a", `return (${f})(d, a)`)((window as Win).__importDebug, a), [fn.toString(), arg] as const) as Promise<Awaited<T>>;
 const plan = (page: Page) => page.evaluate(() => (window as Win).__planStore!.getState().plan);
 const pastLength = (page: Page) => page.evaluate(() => (window as Win).__planStore!.getState().past.length);
@@ -131,18 +133,17 @@ function tmpFiles() {
 
 async function run(width: number, height: number) {
   const touch = width < 640;
+  step(`${width} import 3D models`);
   const tag = String(width);
   const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: touch });
   const page = await context.newPage();
-  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
-  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  watchErrors(page, tag, errors);
   const open = async () => {
     await page.goto(`${BASE}/studio`);
     await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" }); // the dev badge swallows phone taps
     await tid(page, "plan-name").waitFor();
-    await page.waitForSelector("canvas");
-    await page.waitForTimeout(1500); // first frames and the camera fit
+    await waitForScene3d(page, "the studio has just been opened");
   };
   const press = async (id: string) => {
     if (touch) await tid(page, id).tap();
@@ -166,7 +167,9 @@ async function run(width: number, height: number) {
   };
   const view = async (v: "3d" | "2d" | "split") => {
     await press(`view-${v}`);
-    await page.waitForTimeout(600);
+    // A 2D-only view unmounts the canvas with the hooks its tree installs; any other brings them back.
+    if (v === "2d") await page.waitForTimeout(600);
+    else await waitForScene3d(page, `the ${v} view was chosen`);
   };
   const type = async (id: string, value: string) => {
     await sheet();
@@ -251,6 +254,7 @@ async function run(width: number, height: number) {
   const cube = await confirmImport();
   assert.equal(await pastLength(page), past0 + 1, `${tag}: Import is one undo step`);
   assert.equal(await itemSel(page), cube, `${tag}: and selects the new model`);
+  await afterFrames(page);
   let wb = (await debug(page, (d, id) => d.worldBox(id), cube))!;
   near(wb.min[1], 0, 0.001, `${tag}: the model sits on the floor (world min y)`);
   near((wb.min[0] + wb.max[0]) / 2, 5, 0.001, `${tag}: at the centre of the plan, x`);
@@ -266,6 +270,7 @@ async function run(width: number, height: number) {
   await type("item-x", "2");
   await type("item-y", "2");
   await type("item-height", "3");
+  await afterFrames(page);
   wb = (await debug(page, (d, id) => d.worldBox(id), cube))!;
   near((wb.min[0] + wb.max[0]) / 2, 2, 0.001, `${tag}: typed x moves the 3D object`);
   near((wb.min[2] + wb.max[2]) / 2, 2, 0.001, `${tag}: typed y moves it along the plan's y (world z)`);
@@ -394,6 +399,7 @@ async function run(width: number, height: number) {
   assert.equal(await tid(page, "import-up-z").isChecked(), true, `${tag}: and its Z up`);
   assert.equal((await tid(page, "import-chosen-size").innerText()).trim(), "It will be 4.4 × 0.9 × 1.6 m", `${tag}: the room's size`);
   const room = await confirmImport();
+  await afterFrames(page);
   wb = (await debug(page, (d, id) => d.worldBox(id), room))!;
   near(wb.max[1] - wb.min[1], 1.6, 0.001, `${tag}: Z up: the lamp's 160 cm is the height`);
   near(wb.min[1], 0, 0.001, `${tag}: on the floor`);
@@ -468,6 +474,7 @@ async function run(width: number, height: number) {
   }, 15000);
   assert.ok(back, `${tag}: after a reload both models are drawn again`);
   assert.deepEqual((await names()).visible.sort(), ["Lamp", "Sofa"], `${tag}: with Table still hidden`);
+  await afterFrames(page);
   wb = (await debug(page, (d, id) => d.worldBox(id), cube))!;
   near((wb.min[0] + wb.max[0]) / 2, 2, 0.001, `${tag}: the cube where it was put`);
   near(wb.min[1], 0, 0.001, `${tag}: on the floor`);
@@ -521,13 +528,13 @@ const STL_LIT_MIN = 60;
 const OUTLINE_DIFF_MIN = 4;
 
 async function checkTools(width: number, height: number) {
+  step(`${width} Move, Rotate, Scale and parts`);
   const touch = width < 640;
   const tag = `${width} tools`;
   const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: touch });
   const page = await context.newPage();
-  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
-  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  watchErrors(page, tag, errors);
   const cdp = touch ? await context.newCDPSession(page) : null;
   const touchAt = (type: "touchStart" | "touchMove" | "touchEnd", p?: Pt) => cdp!.send("Input.dispatchTouchEvent", { type, touchPoints: p ? [{ x: p.x, y: p.y }] : [] });
 
@@ -535,8 +542,7 @@ async function checkTools(width: number, height: number) {
     await page.goto(`${BASE}/studio`);
     await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
     await tid(page, "plan-name").waitFor();
-    await page.waitForSelector("canvas");
-    await page.waitForTimeout(1500);
+    await waitForScene3d(page, "the studio has just been opened");
   };
   const press = async (id: string) => {
     if (touch) await tid(page, id).tap();
@@ -574,8 +580,8 @@ async function checkTools(width: number, height: number) {
     await until(async () => !(await cam()).gliding, 5000);
     await page.waitForTimeout(250);
   };
-  const box = (id: string) => debug(page, (d, a) => d.worldBox(a), id) as Promise<Box | null>;
-  const partBox = (id: string, path: string) => page.evaluate(([i, p]) => (window as unknown as { __importDebug: { partWorldBox(i: string, p: string): Box | null } }).__importDebug.partWorldBox(i, p), [id, path] as const);
+  const box = async (id: string) => (await afterFrames(page), debug(page, (d, a) => d.worldBox(a), id) as Promise<Box | null>);
+  const partBox = async (id: string, path: string) => (await afterFrames(page), page.evaluate(([i, p]) => (window as unknown as { __importDebug: { partWorldBox(i: string, p: string): Box | null } }).__importDebug.partWorldBox(i, p), [id, path] as const));
   const project = (p: V3) => page.evaluate((q) => (window as Win).__studio3d!.project({ x: q[0], y: q[1], z: q[2] }), p);
   const itemOf = async (id: string) => (await page.evaluate(() => (window as Win).__planStore!.getState().plan.items)).find((i) => i.id === id) as unknown as ItemLike;
   const label = async (k: string) => ((await tid(page, `item-label-${k}`).innerText().catch(() => "")) ?? "").trim();
@@ -988,7 +994,7 @@ async function checkTools(width: number, height: number) {
   await press("tool-move");
   await sheet(false);
   await settle();
-  const pivotOf = (path: string) => page.evaluate(([i, p]) => (window as unknown as { __importDebug: { partPivot(i: string, p: string): { x: number; y: number; z: number } | null } }).__importDebug.partPivot(i, p), [nest, path] as const);
+  const pivotOf = async (path: string) => (await afterFrames(page), page.evaluate(([i, p]) => (window as unknown as { __importDebug: { partPivot(i: string, p: string): { x: number; y: number; z: number } | null } }).__importDebug.partPivot(i, p), [nest, path] as const));
   const a0 = (await partBox(nest, aPath))!;
   const bBox0 = await partBox(nest, bPath);
   const pa0 = (await pivotOf(aPath))!;
@@ -1033,6 +1039,7 @@ async function checkTools(width: number, height: number) {
 }
 
 async function main() {
+  await warmRoutes(["/studio"]);
   mkdirSync(OUT, { recursive: true });
   await writeFixtures();
   for (const [w, h] of [
@@ -1048,7 +1055,7 @@ async function main() {
   console.log("NOT covered: FBX and 3DS success paths, big real-world files, a real phone, Safari and Firefox.");
 }
 
-main().catch((e) => {
+withSuiteTimeout("e2e-import3d", 20 * 60_000, main).catch((e) => {
   console.error(e);
   process.exit(1);
 });

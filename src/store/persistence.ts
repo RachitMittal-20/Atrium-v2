@@ -11,17 +11,21 @@
  *
  * Called by src/app/studio/page.tsx and src/app/studio/import/page.tsx, so a
  * plan imported on the import page is saved too and not overwritten by an older
- * save when the editor opens. Connects to: src/store/planStore.ts.
+ * save when the editor opens. `flushSavedPlan()` (step F.1) is how the import
+ * page makes that save certain before it navigates. Connects to:
+ * src/store/planStore.ts.
  */
 import { useEffect } from "react";
 import { create } from "zustand";
-import { browserStorage, createAutosaver, loadSavedPlan, type KeyValueStore, type SaveStatus } from "@/lib/persist/planStorage";
+import { browserStorage, createAutosaver, loadSavedPlan, type Autosaver, type KeyValueStore, type SaveStatus } from "@/lib/persist/planStorage";
 import { usePlanStore } from "./planStore";
 
 /** `status` is for the small "Saved" read-out in the top bar; `ready` flips once the saved plan (if any) is in the plan store. */
 export const useSaveStatus = create<{ status: SaveStatus; ready: boolean }>(() => ({ status: "idle", ready: false }));
 
 let started = false;
+/** The live autosaver, so a plan can be made durable before the page navigates (step F.1). */
+let autosaver: Autosaver | null = null;
 
 /**
  * Put the saved plan into the store. False (store untouched, so the sample or
@@ -50,6 +54,7 @@ export function startPersistence(): void {
   restoreSavedPlan(storage);
 
   const saver = createAutosaver({ storage, onStatus: (status) => useSaveStatus.setState({ status }) });
+  autosaver = saver;
   let previous = usePlanStore.getState().plan;
   usePlanStore.subscribe((state) => {
     if (state.plan === previous) return; // undo history changes alone are not plan changes
@@ -61,6 +66,21 @@ export function startPersistence(): void {
   window.addEventListener("pagehide", saver.flush);
   document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && saver.flush());
   useSaveStatus.setState({ ready: true });
+}
+
+/**
+ * Writes the plan now instead of after the autosave's quiet time.
+ *
+ * The import page calls it between `loadPlan` and the navigation to /studio.
+ * For those 800 ms storage still holds the PREVIOUS plan, so any new document
+ * in that window — a reload, a hard navigation, Fast Refresh giving up — would
+ * restore the older plan over the one Build model just made. Two PDFs that
+ * build the same geometry hide that completely except for a stale "Edited" mark
+ * on a wall, which is the one-off failure logged in docs/HANDOFF.md (step F.1).
+ * Writing on `pagehide` is not enough: it needs the old document to get a turn.
+ */
+export function flushSavedPlan(): void {
+  autosaver?.flush();
 }
 
 /**

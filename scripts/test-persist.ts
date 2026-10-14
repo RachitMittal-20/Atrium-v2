@@ -25,7 +25,7 @@ import {
 import { JOINT_EPS, wallLength } from "../src/lib/plan/geometry";
 import { deriveRooms, pointInPolygon } from "../src/lib/plan/rooms";
 import { validatePlan } from "../src/lib/plan/validate";
-import { restoreSavedPlan, startPersistence, useSaveStatus } from "../src/store/persistence";
+import { flushSavedPlan, restoreSavedPlan, startPersistence, useSaveStatus } from "../src/store/persistence";
 import { usePlanStore } from "../src/store/planStore";
 import { useSelectionStore } from "../src/store/selectionStore";
 import { useToolStore } from "../src/store/toolStore";
@@ -404,6 +404,46 @@ async function checkWiring() {
   useSelectionStore.getState().hover(null);
   delete g.window;
   delete g.document;
+  return storage; // step F.1 reuses it: startPersistence is one-shot, so its autosaver is bound to this storage
+}
+
+/**
+ * Step F.1 — Build model's plan must reach storage BEFORE the page navigates.
+ *
+ * The import page calls loadPlan(built.plan) and then router.push("/studio").
+ * The autosave only writes 800 ms later, so until then storage still holds the
+ * PREVIOUS plan. Any new document in that window — a reload, a hard navigation,
+ * Fast Refresh giving up — restores the previous plan over the built one. Two
+ * PDFs that build the same geometry hide it completely except for the stale
+ * "Edited" mark on a wall, which is the failure logged in docs/HANDOFF.md.
+ *
+ * Deterministic: no timers are advanced, nothing is retried.
+ */
+async function checkBuildReachesStorage(storage: ReturnType<typeof fakeStorage>): Promise<void> {
+  const vector = (p: Plan): Plan => ({ ...p, walls: p.walls.map((w) => ({ ...w, provenance: "vector" as const })) });
+  // What the previous import left behind: the same plan with one wall edited in the studio.
+  const previous = vector(structuredClone(samplePlan));
+  previous.walls = previous.walls.map((w, i) => (i === 0 ? { ...w, height: 3, edited: true as const } : w));
+  storage.data.set(STORAGE_KEY, serializePlan(previous));
+  s().loadPlan(structuredClone(previous)); // the restore on the import page, at its page load
+  assert.equal(parseStoredPlan(storage.getItem(STORAGE_KEY)!)!.walls[0].edited, true, "the previous import's edited plan is what is saved");
+
+  // Build model → Open in studio, on the import page.
+  const built = vector(structuredClone(samplePlan));
+  s().loadPlan(built);
+  flushSavedPlan(); // what openInStudio does before it navigates; without it nothing is written for 800 ms
+
+  const saved = parseStoredPlan(storage.getItem(STORAGE_KEY)!);
+  assert.ok(saved, "the built plan is in storage");
+  assert.ok(saved!.walls.every((w) => !w.edited), "with no wall left marked edited by the previous import");
+  assert.deepEqual(saved, s().plan, "and it is exactly the plan Build model loaded");
+
+  // So a fresh document restores the built plan, not the previous one.
+  s().loadPlan(structuredClone(samplePlan));
+  assert.equal(restoreSavedPlan(storage), true);
+  assert.ok(s().plan.walls.every((w) => !w.edited), "a reload right after Build model restores the built plan");
+  assert.equal(s().plan.walls[0].height, samplePlan.walls[0].height, "not the previous one with its edited wall");
+  console.log("build-then-restore: Build model's plan is in storage before the page navigates, so a restore cannot bring the previous plan back");
 }
 
 // ---- step M.1b: wall provenance. Old plans (no provenance) load unchanged; a stored provenance
@@ -530,7 +570,9 @@ async function checkWiring() {
 }
 
 // (async because the debounce is waited out in real time; the CJS test runner has no top-level await)
-checkWiring().then(
+checkWiring()
+  .then(checkBuildReachesStorage)
+  .then(
   () => console.log("OK"),
   (e) => {
     console.error(e);

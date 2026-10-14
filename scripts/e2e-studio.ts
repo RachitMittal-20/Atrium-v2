@@ -96,6 +96,7 @@ import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { chromium, type Page } from "playwright";
 import sharp from "sharp";
+import { afterFrames, step, waitForScene3d, waitUntil, warmRoutes, watchErrors, withSuiteTimeout } from "./e2e-helpers";
 
 const BASE = process.env.E2E_URL ?? "http://localhost:3000";
 const OUT = "/tmp/studio";
@@ -142,6 +143,13 @@ const tid = (page: Page, id: string) => page.getByTestId(id);
 
 const errors: string[] = [];
 
+/** The 3D scene has caught up with the store: a mesh for every wall in the plan. */
+const sceneHasEveryWall = (page: Page) =>
+  waitUntil(page, "the 3D scene has not drawn every wall in the plan", "window.__scene3d && window.__scene3d.wallIds().length === window.__planStore.getState().plan.walls.length");
+/** The same for doors and windows. */
+const sceneHasEveryOpening = (page: Page) =>
+  waitUntil(page, "the 3D scene has not drawn every door and window in the plan", "window.__scene3d && window.__scene3d.openings().length === window.__planStore.getState().plan.openings.length");
+
 // ---- 2D plan helpers
 const box = async (page: Page, testId: string): Promise<Rect> => (await tid(page, testId).boundingBox())!;
 /** Union of every wall polygon's on-screen box = the drawn plan. */
@@ -174,6 +182,7 @@ const near = (a: number, b: number, eps: number, msg: string) => assert.ok(Math.
  * `shot` is the screenshot path, taken right after the Fit checks.
  */
 async function check2d(page: Page, tag: string, wide: boolean, shot: string) {
+  step(`${tag} 2D`);
   await tid(page, "view-2d").click();
   await tid(page, "plan-svg").waitFor();
   assert.equal(await page.locator("canvas").count(), 0, `${tag}: 2D has no 3D canvas`);
@@ -297,11 +306,12 @@ async function touchDrag(page: Page, from: Pt, to: Pt, hold?: () => Promise<void
  * phone the 3D check switches views instead. `touch` sends real touch events.
  */
 async function checkSelect(page: Page, tag: string, wide: boolean, touch: boolean) {
+  step(`${tag} select and edit`);
   if (wide) {
     await tid(page, "view-split").click();
-    await page.waitForSelector("canvas");
+    await waitForScene3d(page, "Split was chosen");
     await tid(page, "plan-svg").waitFor();
-    await page.waitForTimeout(600);
+    await page.waitForTimeout(600); // the 2D plan is sized and fitted beside it
   }
   if (!wide) {
     await page.getByRole("button", { name: /Plan details/ }).click(); // the phone sheet holds the panel
@@ -433,6 +443,7 @@ async function checkSelect(page: Page, tag: string, wide: boolean, touch: boolea
   await page.keyboard.press("Control+z");
   assert.deepEqual((await plan(page)).walls, before.walls, `${tag}: undo restored it`);
   await tap(await toScreen(page, mid(await wallOf(page, "w-HI"))));
+  await waitUntil(page, `${tag}: the tap did not select w-HI`, "window.__selectionStore.getState().selectedId === 'w-HI'");
   await tid(page, "plan-canvas").press("Delete");
   assert.equal((await plan(page)).walls.some((w) => w.id === "w-HI"), false, `${tag}: the Delete key removes it too`);
   await page.keyboard.press("Control+z");
@@ -443,8 +454,7 @@ async function checkSelect(page: Page, tag: string, wide: boolean, touch: boolea
   if (!wide) {
     await page.getByRole("button", { name: /Plan details/ }).click(); // close the sheet
     await tid(page, "view-3d").click();
-    await page.waitForSelector("canvas");
-    await page.waitForTimeout(800);
+    await waitForScene3d(page, "the phone switched to the 3D view to click a wall");
   }
   const scene = await box(page, "pane-3d");
   let hit: string | null = null;
@@ -478,6 +488,7 @@ async function checkSelect(page: Page, tag: string, wide: boolean, touch: boolea
  * neighbour. Leaves the plan as it found it. `touch` sends real touch events.
  */
 async function checkRuns(page: Page, tag: string, wide: boolean, touch: boolean) {
+  step(`${tag} wall runs`);
   if (wide) {
     await tid(page, "view-split").click();
   } else {
@@ -571,6 +582,7 @@ async function chooseTool(page: Page, id: string, touch: boolean) {
  * it, with the Select tool active. `touch` sends real touch events.
  */
 async function checkDraw(page: Page, tag: string, wide: boolean, touch: boolean) {
+  step(`${tag} draw walls`);
   const pickTool = (id: string) => chooseTool(page, id, touch);
 
   // Picking Wall while only 3D shows brings the 2D plan up: Split, or 2D on a phone.
@@ -600,10 +612,13 @@ async function checkDraw(page: Page, tag: string, wide: boolean, touch: boolean)
   const redo = async () => (wide ? page.keyboard.press("Control+Shift+z") : tid(page, "redo").click());
   /** On a phone the 3D model only shows in the 3D view: switch there to read its meshes, then back. */
   const meshes = async () => {
-    if (wide) return scene();
+    if (wide) {
+      await sceneHasEveryWall(page);
+      return scene();
+    }
     await tid(page, "view-3d").click();
-    await page.waitForSelector("canvas");
-    await page.waitForTimeout(500);
+    await waitForScene3d(page, "the phone switched to the 3D view to read its meshes");
+    await sceneHasEveryWall(page);
     const ids = await scene();
     await tid(page, "view-2d").click();
     await tid(page, "plan-svg").waitFor();
@@ -743,6 +758,7 @@ async function checkDraw(page: Page, tag: string, wide: boolean, touch: boolean)
  * the Select tool active. `touch` sends real touch events.
  */
 async function checkOpenings(page: Page, tag: string, wide: boolean, touch: boolean) {
+  step(`${tag} doors and windows`);
   const past = () => page.evaluate(() => (window as Win).__planStore!.getState().past.length);
   const openingSel = () => page.evaluate(() => (window as Win).__selectionStore!.getState().openingId);
   const scene = () => page.evaluate(() => (window as Win).__scene3d?.openings() ?? null);
@@ -761,10 +777,13 @@ async function checkOpenings(page: Page, tag: string, wide: boolean, touch: bool
   };
   /** The 3D openings, read from the live scene; a phone shows 3D only in the 3D view. */
   const openings3d = async () => {
-    if (wide) return scene();
+    if (wide) {
+      await sceneHasEveryOpening(page);
+      return scene();
+    }
     await tid(page, "view-3d").click();
-    await page.waitForSelector("canvas");
-    await page.waitForTimeout(500);
+    await waitForScene3d(page, "the phone switched to the 3D view to read its openings");
+    await sceneHasEveryOpening(page);
     const out = await scene();
     await tid(page, "view-2d").click();
     await tid(page, "plan-svg").waitFor();
@@ -972,6 +991,7 @@ async function checkOpenings(page: Page, tag: string, wide: boolean, touch: bool
  * call. Leaves nothing selected and the plan untouched.
  */
 async function checkOpeningSelect(page: Page, tag: string, wide: boolean, touch: boolean) {
+  step(`${tag} opening selection`);
   await tid(page, "view-2d").click();
   await tid(page, "plan-svg").waitFor();
   if (!wide) await page.getByRole("button", { name: /Plan details/ }).click(); // the phone sheet holds the inspector
@@ -1095,6 +1115,7 @@ const editorState = (page: Page) =>
  * (taps and drags), otherwise the mouse. Leaves the Select tool active, 2D shown.
  */
 async function checkMeasure(page: Page, tag: string, wide: boolean, touch: boolean) {
+  step(`${tag} measure`);
   await tid(page, "view-2d").click();
   await tid(page, "plan-svg").waitFor();
   await tid(page, "plan-fit").click();
@@ -1299,11 +1320,11 @@ async function checkMeasure(page: Page, tag: string, wide: boolean, touch: boole
  * each checked to be forgotten, along with the 2D zoom and the undo history.
  */
 async function checkAutosave() {
+  step("autosave");
   const tag = "1440 autosave";
   const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
-  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  watchErrors(page, tag, errors);
   const stored = () => page.evaluate(() => localStorage.getItem("atrium-v2:plan")); // read only
   const status = () => tid(page, "save-status").getAttribute("data-state");
   const open = async () => {
@@ -1422,12 +1443,12 @@ async function checkAutosave() {
  * call by this test: localStorage and the store are only READ.
  */
 async function checkSwingPersists(width: number, height: number, touch: boolean) {
+  step(`${width} swing persists`);
   const tag = `${width} swing`;
   const doorId = "d-bed1";
   const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   const page = await browser.newPage({ viewport: { width, height }, hasTouch: touch });
-  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
-  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  watchErrors(page, tag, errors);
   const press = async (q: Pt) => {
     if (touch) await page.touchscreen.tap(q.x, q.y);
     else await page.mouse.click(q.x, q.y);
@@ -1526,16 +1547,15 @@ async function checkSwingPersists(width: number, height: number, touch: boolean)
  * light-blue pixels in a real screenshot.
  */
 async function checkPushPull(width: number, height: number, touch: boolean) {
+  step(`${width} push/pull`);
   const tag = `${width} push/pull`;
   const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   const page = await browser.newPage({ viewport: { width, height }, hasTouch: touch });
-  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
-  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  watchErrors(page, tag, errors);
   await page.goto(`${BASE}/studio`);
   await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" }); // the dev badge swallows phone taps
   await tid(page, "plan-name").waitFor();
-  await page.waitForSelector("canvas");
-  await page.waitForTimeout(1500); // the scene's first frames and the camera fit
+  await waitForScene3d(page, "the studio has just been opened");
 
   const RUN = ["w-FG", "w-LF", "w-EL"]; // the south wall: three pieces of one straight wall
   const MID = { x: 5.5, y: 2.7, z: 8 }; // the middle of w-LF's top
@@ -1547,7 +1567,8 @@ async function checkPushPull(width: number, height: number, touch: boolean) {
   const past = () => page.evaluate(() => (window as Win).__planStore!.getState().past.length);
   const hoverFace = () => page.evaluate(() => (window as Win).__pushPullDebug!.hoverFace);
   const active = () => page.evaluate(() => (window as Win).__pushPullDebug!.active);
-  const meshTop = async (id: string) => (await page.evaluate((i) => (window as Win).__studio3d!.wallBox(i), id))!.maxY;
+  // afterFrames: the scene is drawn from React's committed state, so a mesh read follows the store by a frame.
+  const meshTop = async (id: string) => (await afterFrames(page), await page.evaluate((i) => (window as Win).__studio3d!.wallBox(i), id))!.maxY;
   const readLabel = async () => {
     const d = (await tid(page, "pushpull-distance").innerText()).trim();
     const h = (await tid(page, "pushpull-height").innerText()).trim();
@@ -1853,16 +1874,15 @@ async function checkPushPull(width: number, height: number, touch: boolean) {
  * drag, and Walk.
  */
 async function checkOpenings3d(width: number, height: number, touch: boolean) {
+  step(`${width} openings in 3D`);
   const tag = `${width} openings 3D`;
   const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   const page = await browser.newPage({ viewport: { width, height }, hasTouch: touch });
-  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
-  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  watchErrors(page, tag, errors);
   await page.goto(`${BASE}/studio`);
   await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" }); // the dev badge swallows phone taps
   await tid(page, "plan-name").waitFor();
-  await page.waitForSelector("canvas");
-  await page.waitForTimeout(1500); // the scene's first frames and the camera fit
+  await waitForScene3d(page, "the studio has just been opened");
 
   const W3 = { x: 0, y: 0, z: 0 };
   type P3 = typeof W3;
@@ -1870,7 +1890,8 @@ async function checkOpenings3d(width: number, height: number, touch: boolean) {
   const op = async (id: string) => (await plan(page)).openings.find((o) => o.id === id)!;
   const past = () => page.evaluate(() => (window as Win).__planStore!.getState().past.length);
   const debug = () => page.evaluate(() => { const d = (window as Win).__pushPullDebug!; return { tool: d.tool, hover: d.hover, active: d.active }; });
-  const meshBox = async (id: string) => (await page.evaluate((i) => (window as Win).__studio3d!.openingBox(i), id))!;
+  // afterFrames: the scene is drawn from React's committed state, so a mesh read follows the store by a frame.
+  const meshBox = async (id: string) => (await afterFrames(page), await page.evaluate((i) => (window as Win).__studio3d!.openingBox(i), id))!;
   const openingSel = () => page.evaluate(() => (window as Win).__selectionStore!.getState().openingId);
   const text = async (id: string) => ((await tid(page, `pushpull-${id}`).count()) ? (await tid(page, `pushpull-${id}`).innerText()).trim() : "");
   const unit = (a: Pt, b: Pt) => { const n = Math.hypot(b.x - a.x, b.y - a.y); return { x: (b.x - a.x) / n, y: (b.y - a.y) / n }; };
@@ -2152,16 +2173,15 @@ async function checkOpenings3d(width: number, height: number, touch: boolean) {
  * (a phone has no Shift key), and a real phone.
  */
 async function checkWalls3d(width: number, height: number, touch: boolean) {
+  step(`${width} walls in 3D`);
   const tag = `${width} walls 3D`;
   const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   const page = await browser.newPage({ viewport: { width, height }, hasTouch: touch });
-  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
-  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  watchErrors(page, tag, errors);
   await page.goto(`${BASE}/studio`);
   await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" }); // the dev badge swallows phone taps
   await tid(page, "plan-name").waitFor();
-  await page.waitForSelector("canvas");
-  await page.waitForTimeout(1500); // the scene's first frames and the camera fit
+  await waitForScene3d(page, "the studio has just been opened");
 
   type P3 = { x: number; y: number; z: number };
   const proj = (p: P3) => page.evaluate((q) => (window as Win).__studio3d!.project(q), p);
@@ -2245,6 +2265,7 @@ async function checkWalls3d(width: number, height: number, touch: boolean) {
     near(w.a.y + w.thickness / 2, 8.1 + mid.distance, 1e-9, `${tag}: ${id}'s outer face moved out by the distance`);
   }
   // the real 3D mesh too: w-LF sits between two T-junctions (square ends), so its box spans exactly its two faces
+  await afterFrames(page);
   const mesh = (await page.evaluate(() => (window as Win).__studio3d!.wallBox("w-LF")))!;
   near(mesh.minZ, 7.9, 1e-4, `${tag}: the mesh's inner face is still at z = 7.90`);
   near(mesh.maxZ, 8.1 + mid.distance, 1e-4, `${tag}: the mesh's outer face moved out by the distance`);
@@ -2405,20 +2426,18 @@ async function checkWalls3d(width: number, height: number, touch: boolean) {
 }
 
 async function run(width: number, height: number) {
+  step(`${width} opening the studio`);
   const tag = String(width);
   const wide = width >= 768;
   const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   const page = await browser.newPage({ viewport: { width, height }, hasTouch: !wide }); // the phone run uses real touch events
-  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
-  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  watchErrors(page, tag, errors);
   if (process.env.E2E_DEBUG) page.on("response", (r) => r.status() >= 400 && console.log(`${tag}: HTTP ${r.status()} ${r.url()}`));
   await page.goto(`${BASE}/studio`);
   // Next's dev badge sits bottom left, over the phone tool bar's first button, and swallows taps there.
   await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
   await tid(page, "plan-name").waitFor();
-  await page.waitForSelector("canvas");
-
-  await page.waitForTimeout(800); // first frame
+  await waitForScene3d(page, "the studio has just been opened");
   await page.screenshot({ path: `${OUT}/studio-${tag}-initial.png` });
   const noSideScroll = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth && document.body.scrollWidth <= window.innerWidth);
   assert.ok(await noSideScroll(), `${tag}: no horizontal scroll on load`);
@@ -2541,6 +2560,7 @@ async function run(width: number, height: number) {
 
 async function main() {
   mkdirSync(OUT, { recursive: true });
+  await warmRoutes(["/studio", "/studio/import"]);
   if (process.env.E2E_ONLY === "swing") {
     // just the flipped-door persistence regression (fast: handy when working on the autosave reader)
     await checkSwingPersists(1440, 900, false);
@@ -2583,7 +2603,7 @@ async function main() {
   assert.deepEqual(errors, [], `console errors:\n${errors.join("\n")}`);
   console.log("e2e-studio: ok; screenshots in", OUT);
 }
-main().catch((e) => {
+withSuiteTimeout("e2e-studio", 25 * 60_000, main).catch((e) => {
   console.error(e);
   process.exit(1);
 });

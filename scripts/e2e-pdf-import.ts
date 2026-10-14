@@ -2,8 +2,7 @@
  * e2e-pdf-import.ts — browser test of reading floor-plan PDFs on the import screen
  * (step M.1a), with Playwright's Chromium. NOT in npm test: it needs the dev server
  * (npm run dev on port 3000; E2E_URL overrides) for the dev-only hooks
- * window.__planStore and window.__importPdf, and the scanned fixture's OCR fetches
- * tesseract's language data from its CDN on the first run.
+ * window.__planStore and window.__importPdf. OCR's files come from /tesseract/ (step O.1).
  *
  * Every file goes through the REAL file input. At 1440×900 (mouse) and 390×844
  * (real touch: hasTouch, every press a tap):
@@ -39,8 +38,8 @@
  *   - at 390 the new fixtures (plan-clutter, plan-broken-dims, plan-outlined, plan-single-line) and
  *     plan-filled go through the same checks by touch, and the PDF and scale panels sit
  *     above the dimension tables;
- *   - plan-outlined's text is read by OCR, which downloads tesseract's language data
- *     from its CDN: the only requests leaving the origin for that file (the PDF never does);
+ *   - plan-outlined's text is read by OCR; its files are served from /tesseract/, so no request
+ *     leaves the origin for it either (scripts/e2e-offline-ocr.ts blocks everything non-local);
  *   - the misprinted copy: the model table flags it too, one flagged model row is
  *     overridden, and the CSV holds both tables.
  * Step M.1c (doors, windows and swings from the PDF's lines), plan-doors.pdf at 1440 and
@@ -84,6 +83,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, type Browser, type Locator, type Page } from "playwright";
+import { afterFrames, step, waitForHook, warmRoutes, watchErrors, withSuiteTimeout } from "./e2e-helpers";
 import { samplePlan } from "../src/data/samplePlan";
 import { titleCase } from "../src/lib/blueprint/nameRooms";
 import { formatFeetInches } from "../src/lib/pdf/dimensions";
@@ -126,14 +126,24 @@ const tid = (page: Page, id: string) => page.locator(`[data-testid="${id}"]`);
 const report: string[] = [];
 
 async function session(browser: Browser, width: number, height: number, touch: boolean) {
+  step(`${width} PDF import`);
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: touch, isMobile: touch, acceptDownloads: true });
   // Step U.1: the dimension tables follow the ONE units setting, whose default is metres. These checks read
   // millimetres to 0.1 mm, so this browser starts with the setting a user who works in mm would have saved.
   await context.addInitScript(() => window.localStorage.setItem("atrium.units", JSON.stringify({ length: "mm", area: "m2" })));
+  // Next's dev badge sits bottom left, over the phone tool bar, as the other six suites note. This
+  // one navigates often, so it goes in on every load. (It is NOT why a 390 "Open in studio" tap once
+  // did not navigate: step F.1 measured that button mid-screen with nothing over it.)
+  // As a STRING, not a function: tsx compiles this file with esbuild's keepNames, which wraps a named
+  // inner function as __name(fn, "fn"). Playwright injects only the function's source, so the page
+  // throws "__name is not defined" — 87 page errors in one run, and taps that do nothing, when the
+  // page's own JavaScript dies with it.
+  await context.addInitScript({
+    content: `document.addEventListener("DOMContentLoaded", () => { const s = document.createElement("style"); s.textContent = "nextjs-portal { display: none !important; }"; document.head.append(s); });`,
+  });
   const page = await context.newPage();
   const tag = `${width}`;
-  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
-  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  watchErrors(page, tag, errors);
   let outside: string[] = [];
   page.on("request", (r) => {
     const u = r.url();
@@ -161,7 +171,7 @@ async function session(browser: Browser, width: number, height: number, touch: b
     await tid(page, "summary").waitFor();
     await press(page.getByRole("button", { name: "Open in studio" }));
     await page.waitForURL(/\/studio$/);
-    await page.waitForFunction(() => Boolean((window as Win).__planStore));
+    await waitForHook(page, "__planStore", "Open in studio had just been pressed");
     return page.evaluate(() => (window as Win).__planStore!.getState().plan);
   };
 
@@ -374,9 +384,10 @@ async function session(browser: Browser, width: number, height: number, touch: b
     if (!touch) {
       // 3D: each door's frame and leaf (open about 17° towards its swing) reach out of the wall on the PDF's side only.
       await press(tid(page, "view-3d"));
-      await page.waitForFunction(() => Boolean((window as Win).__studio3d));
-      await page.waitForTimeout(800);
+      await waitForHook(page, "__studio3d", "the 3D view was chosen to read the door meshes");
+      await waitForHook(page, "__scene3d", "the 3D view was chosen to read the door meshes");
       const out: string[] = [];
+      await afterFrames(page);
       for (const f of found.filter((x) => x.to.side && x.op.kind === "door")) {
         const box = await page.evaluate((id) => (window as Win).__studio3d!.openingBox(id), f.id);
         assert.ok(box, `${name}: ${f.to.id} drawn in 3D`);
@@ -391,7 +402,7 @@ async function session(browser: Browser, width: number, height: number, touch: b
       }
       // Step M.1d: each leaf PIVOTS on its own jamb. __scene3d.openings() gives the leaf group's
       // world position, which is the hinge; compare it with the jamb the PDF drew it on.
-      const leafs = await page.evaluate(() => (window as Win).__scene3d!.openings());
+      const leafs = (await afterFrames(page), await page.evaluate(() => (window as Win).__scene3d!.openings()));
       const pivots: string[] = [];
       for (const f of found.filter((x) => x.op.kind === "door" && x.to.hinge)) {
         const got = leafs.find((l) => l.id === f.id);
@@ -427,6 +438,7 @@ async function session(browser: Browser, width: number, height: number, touch: b
   const checkHingeFlip = async (id: string, from: "a" | "b") => {
     const to = from === "a" ? "b" : "a";
     const pivotOf = async () => {
+      await afterFrames(page); // the leaf is drawn from React's committed state, a frame behind the store
       const got = (await page.evaluate(() => (window as Win).__scene3d!.openings())).find((l) => l.id === id);
       assert.ok(got?.leafPivot, "the leaf is in the scene");
       return { p: got!.leafPivot!, turn: got!.leafTurn! };
@@ -501,7 +513,7 @@ async function session(browser: Browser, width: number, height: number, touch: b
       const found = await tid(page, "scale-found").count();
       line += `; raster route at 300 dpi; OCR scale: ${found ? (await tid(page, "suggested-scale").textContent()) + " px/m" : "none"} (${await page.locator("[data-testid=scale-found] p, [data-testid=scale-none]").first().innerText()})`;
     } else {
-      // An outlined page's text is read by OCR, which fetches tesseract's language data from its CDN; nothing else leaves.
+      // An outlined page's text is read by OCR; since O.1 its files are served from /tesseract/, so nothing leaves the origin.
       if (file === "plan-outlined.pdf") assert.ok(outside.every((u) => /jsdelivr|tesseract|unpkg/.test(u)), `${file}: only OCR's language data left the origin: ${outside.join(", ")}`);
       else assert.deepEqual(outside, [], `${file}: no request left the origin`);
       assert.ok(notes.includes("Read from PDF vectors."), `${file}: vector note`);
@@ -672,10 +684,37 @@ async function session(browser: Browser, width: number, height: number, touch: b
       console.log(report[report.length - 1]);
     }
   }
+  // ------------------------------------------------- step F.1: Build model's plan wins over a restore
+  // The failure logged in docs/HANDOFF.md: on the SECOND PDF in one browser, a wall's panel said
+  // "Edited". plan-filled and plan-lines build the same geometry, so only that stale mark gives away
+  // that the plan in the studio came from the autosave of the PREVIOUS file and not from Build model.
+  // Deterministic here, with no sleep and no retry: the autosave must hold the built plan the moment
+  // the studio opens — 800 ms before the debounce would have written it — and a reload must keep it.
+  if (!touch) {
+    step("1440 Build model wins over a restore");
+    await upload(join(DIR, "plan-filled.pdf"));
+    const first = await buildAndOpen();
+    const wallId = first.walls.find((w) => w.provenance === "vector")!.id;
+    await page.evaluate((id) => (window as Win).__planStore!.getState().updateWall(id, { height: 3 }), wallId);
+    await page.waitForFunction(() => (localStorage.getItem("atrium-v2:plan") ?? "").includes('"edited":true'));
+
+    await upload(join(DIR, "plan-lines.pdf"));
+    const built = await buildAndOpen();
+    assert.ok(built.walls.every((w) => !w.edited), "F.1: the studio shows the built plan, with no wall left marked Edited by the file before it");
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("atrium-v2:plan")!) as { plan: { walls: PlanWall[] } });
+    assert.deepEqual(saved.plan.walls, built.walls, "F.1: and the autosave already holds exactly that plan");
+    await page.reload();
+    await waitForHook(page, "__planStore", "the studio was reloaded right after Build model");
+    const afterReload = await page.evaluate(() => (window as Win).__planStore!.getState().plan);
+    assert.ok(afterReload.walls.every((w) => !w.edited), "F.1: a reload right after Build model restores the built plan, not the previous one");
+    assert.deepEqual(afterReload.walls, built.walls, "F.1: wall for wall");
+    console.log("1440 F.1: Build model's plan is in the autosave before the studio opens, and a reload keeps it");
+  }
   await context.close();
 }
 
 async function main() {
+  await warmRoutes(["/studio/import", "/studio"]);
   mkdirSync(OUT, { recursive: true });
   mkdirSync(TMP, { recursive: true });
   writeFileSync(join(TMP, "plan-misprinted.pdf"), await misprintedPdf());
@@ -691,7 +730,7 @@ async function main() {
   console.log("OK");
 }
 
-main().catch((e) => {
+withSuiteTimeout("e2e-pdf-import", 20 * 60_000, main).catch((e) => {
   console.error(e);
   process.exit(1);
 });

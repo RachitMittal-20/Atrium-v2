@@ -37,6 +37,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, type Browser, type Locator, type Page } from "playwright";
+import { step, waitForHook, warmRoutes, watchErrors, withSuiteTimeout } from "./e2e-helpers";
 import { parseTypedLength } from "../src/lib/units/typed";
 import type { Opening, Plan, Wall } from "../src/types/plan";
 
@@ -72,12 +73,12 @@ async function toScreen(page: Page, p: Pt): Promise<Pt> {
 }
 
 async function session(browser: Browser, width: number, height: number, touch: boolean, unit?: string) {
+  step(`${width} calibrate`);
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: touch, isMobile: touch, acceptDownloads: true });
   if (unit) await context.addInitScript(`window.localStorage.setItem("atrium.units", ${JSON.stringify(JSON.stringify({ length: unit, area: "m2" }))})`);
   const page = await context.newPage();
   const tag = `${width}`;
-  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
-  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  watchErrors(page, tag, errors);
   const press = (l: Locator) => (touch ? l.tap() : l.click());
   const tap = async (p: Pt) => (touch ? page.touchscreen.tap(p.x, p.y) : page.mouse.click(p.x, p.y));
 
@@ -334,6 +335,7 @@ async function localPlans(browser: Browser) {
 }
 
 async function main() {
+  await warmRoutes(["/studio/import", "/studio"]);
   mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   try {
@@ -349,7 +351,7 @@ async function main() {
   console.log("e2e-calibrate: OK");
 }
 
-main().catch((e) => {
+withSuiteTimeout("e2e-calibrate", 15 * 60_000, main).catch((e) => {
   console.error(e);
   process.exit(1);
 });

@@ -22,6 +22,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { chromium, type Page } from "playwright";
+import { step, waitForScene3d, warmRoutes, watchErrors, withSuiteTimeout } from "./e2e-helpers";
 
 const BASE = process.env.E2E_URL ?? "http://localhost:3000";
 const OUT = "/tmp/studio";
@@ -63,15 +64,14 @@ async function minClearanceDuring(page: Page, ms: number): Promise<number> {
 
 async function check(width: number, height: number, touch: boolean) {
   const tag = `${width} walk`;
+  step(tag);
   const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   const page = await browser.newPage({ viewport: { width, height }, hasTouch: touch });
-  page.on("pageerror", (e) => errors.push(`${tag} pageerror: ${e.message}`));
-  page.on("console", (m) => m.type() === "error" && errors.push(`${tag} console: ${m.text().slice(0, 200)}`));
+  watchErrors(page, tag, errors);
   await page.goto(`${BASE}/studio`);
   await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" }); // the dev badge swallows phone taps
   await tid(page, "plan-name").waitFor();
-  await page.waitForSelector("canvas");
-  await page.waitForTimeout(1500); // the scene's first frames and the camera fit
+  await waitForScene3d(page, "the studio has just been opened");
   const press = async (id: string) => {
     if (touch) await tid(page, id).tap();
     else await tid(page, id).click();
@@ -151,12 +151,13 @@ async function check(width: number, height: number, touch: boolean) {
 
 async function main() {
   mkdirSync(OUT, { recursive: true });
+  await warmRoutes(["/studio"]);
   await check(1440, 900, false);
   await check(390, 844, true);
   assert.deepEqual(errors, [], `console errors:\n${errors.join("\n")}`);
   console.log("e2e-walk: ok; screenshots in", OUT);
 }
-main().catch((e) => {
+withSuiteTimeout("e2e-walk", 15 * 60_000, main).catch((e) => {
   console.error(e);
   process.exit(1);
 });
