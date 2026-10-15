@@ -101,6 +101,27 @@ assert.deepEqual(summary(dangling), summary(samplePlan), "dangling walls don't c
   assert.deepEqual(deriveRooms(s().plan).map((r) => r.name), ["Studio"], "U room keeps its name");
 }
 
+// --- step X.1: a closed loop whose walls are as thick as the loop is deep. Its floor outline,
+// pulled in by half of each wall's thickness, is a sliver about 1e-15 m tall. polylabel sized its
+// first grid by that side, ~6e11 cells, and the import page's tab ran out of memory (the
+// four walls are exactly what plan-test.pdf's merge produced in its last validator round).
+{
+  const P = (x: number, y: number) => ({ x, y });
+  const walls: Wall[] = [
+    { id: "v1", a: P(9.1255, 6.6847), b: P(9.1255, 7.0747), thickness: 0.6, height: 2.7 },
+    { id: "v8", a: P(7.9505, 6.6847), b: P(7.9505, 7.0747), thickness: 0.55, height: 2.7 },
+    { id: "v21", a: P(7.9505, 6.6847), b: P(9.1255, 6.6847), thickness: 0.39, height: 2.7 },
+    { id: "v24", a: P(7.9505, 7.0747), b: P(9.1255, 7.0747), thickness: 0.39, height: 2.7 },
+  ];
+  const t0 = performance.now();
+  const sliver = deriveRooms({ ...samplePlan, walls, openings: [], rooms: [] });
+  const ms = performance.now() - t0;
+  assert.equal(sliver.length, 1, "the sliver loop is still one face");
+  assert.ok(ms < 200, `a sliver room's label point is found at once (${ms.toFixed(0)} ms)`);
+  assert.ok(Number.isFinite(sliver[0].labelPoint.x) && Number.isFinite(sliver[0].labelPoint.y), "with a finite label point");
+  console.log(`sliver room: derived in ${ms.toFixed(1)} ms, area ${sliver[0].area.toExponential(1)} m²`);
+}
+
 // --- the sample's four rooms still match by name through the store
 s().loadPlan(structuredClone(samplePlan));
 assert.deepEqual(

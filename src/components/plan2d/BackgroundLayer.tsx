@@ -25,14 +25,15 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { apply, compose, invert, unitScale } from "@/lib/background/mapping";
+import { MAX_EDGE } from "@/lib/pdf/render";
 import type { View } from "@/lib/plan2d/view";
 import { useBackgroundStore } from "@/store/backgroundStore";
 import { usePlanStore } from "@/store/planStore";
 import type { Affine } from "@/types/plan";
 import type { BackgroundReply, BackgroundRequest } from "@/workers/background.worker";
 
-/** Longest side of a rendered bitmap, in device pixels. */
-export const MAX_SIDE = 4096;
+/** Longest side of a rendered bitmap, in device pixels: render.ts's edge cap, so a square region is exactly its pixel budget. */
+export const MAX_SIDE = MAX_EDGE;
 /** How long the camera must be still before the page is rendered again. */
 export const SETTLE_MS = 300;
 
@@ -142,6 +143,12 @@ function PdfDrawing(p: { bytes: Uint8Array; page: number; mapping: Affine; view:
   useEffect(() => {
     const w = new Worker(new URL("../../workers/background.worker.ts", import.meta.url), { type: "module" });
     worker.current = w;
+    const failed = (message: string) => {
+      console.warn("[background]", message);
+      pendingReq.current.clear();
+      lastAsked.current = ""; // let the next change try again
+      hook.pending = false;
+    };
     w.onmessage = (e: MessageEvent<BackgroundReply>) => {
       const msg = e.data;
       if (!msg || typeof msg !== "object" || "sourceName" in msg) return; // pdf.js's own handshake
@@ -151,13 +158,11 @@ function PdfDrawing(p: { bytes: Uint8Array; page: number; mapping: Affine; view:
         for (const id of pendingReq.current.keys()) if (id <= msg.id) pendingReq.current.delete(id); // this one, and any it replaced
         if (msg.id !== latest.current || !req) return msg.bitmap.close(); // stale: a newer one is coming
         setShot({ bitmap: msg.bitmap, ...req });
-      } else if (msg.type === "error") {
-        console.warn("[background]", msg.message);
-        pendingReq.current.clear();
-        lastAsked.current = ""; // let the next change try again
-        hook.pending = false;
-      }
+      } else if (msg.type === "error") failed(msg.message);
     };
+    // A worker that fails to start or dies (step X.1) is handled like a failed render, never left pending.
+    w.onerror = (e) => failed(`the drawing's worker failed (${e.message || "no details"})`);
+    w.onmessageerror = () => failed("the drawing's worker sent a reply that couldn't be read");
     const reqs = pendingReq.current;
     const copy = p.bytes.slice().buffer; // the store keeps its own copy; this one is transferred
     w.postMessage({ type: "open", bytes: copy, page: p.page } satisfies BackgroundRequest, [copy]);

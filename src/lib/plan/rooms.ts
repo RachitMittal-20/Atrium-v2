@@ -83,7 +83,10 @@ export function polylabel(poly: Vec2[], precision = 0.01): Vec2 {
   const ys = poly.map((p) => p.y);
   const [minX, minY, maxX, maxY] = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
   const size = Math.min(maxX - minX, maxY - minY);
-  if (size <= 0) return poly[0];
+  // A sliver thinner than the precision (walls as thick as the loop is deep, pulled in to ~1e-15 m)
+  // has no better point to find, and a first grid of `size` cells would be (long side / 1e-15)
+  // cells: step X.1's out-of-memory crash on the import page. mapbox's polylabel has the same rule.
+  if (size <= precision) return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
 
   // Signed distance to the outline: positive inside, negative outside.
   const signedDist = (p: Vec2) => {

@@ -15,16 +15,40 @@
  *   - planSize: the size of the whole plan at a given scale, for the sanity
  *     checks in ScalePanel.tsx.
  * Messages here are shown to the user as they are.
+ *
+ * Every way a worker can fail reaches the page as one of those messages (step X.1):
+ * an error it reports, a script error (onerror), a reply that can't be read
+ * (onmessageerror), or silence: a worker that sends nothing for STALL_MS is stopped
+ * and reported, so a runaway loop never leaves the page waiting forever. A worker
+ * that runs out of memory takes the tab down with it before any of these can run;
+ * the page reader's pixel budget and caps (src/lib/pdf/render.ts, extract.ts) are
+ * what keep it from getting there.
  */
 import type { Analysis, Stage } from "@/lib/blueprint/analyse";
 import { parseLength } from "@/lib/blueprint/scale";
 import type { PlanPixels } from "@/types/blueprint";
 import { MAX_PDF_BYTES, PDF_MESSAGES } from "@/lib/pdf/open";
+import { MAX_EDGE, overBudget, PIXEL_BUDGET } from "@/lib/pdf/render";
 import type { PdfInfo } from "@/types/pdf";
 import type { AnalyseReply, AnalyseRequest } from "@/workers/analyse.worker";
 import type { PdfReply, PdfRequest } from "@/workers/pdf.worker";
 
 const MAX_BYTES = 25 * 1024 * 1024;
+/** A worker that sends nothing for this long has stalled (step X.1). OCR on a big scan reports each stage, never minutes apart. */
+export const STALL_MS = 180_000;
+const STALLED = "Reading this plan stopped responding, so it was cancelled. Export just the floor plan, or a smaller sheet, and try again.";
+
+/** Calls `onStall` once if `poke` isn't called for STALL_MS; `stop` ends it. */
+function watchdog(onStall: () => void) {
+  let timer = setTimeout(onStall, STALL_MS);
+  return {
+    poke: () => {
+      clearTimeout(timer);
+      timer = setTimeout(onStall, STALL_MS);
+    },
+    stop: () => clearTimeout(timer),
+  };
+}
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
 
 export const isPdf = (file: File) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
@@ -39,10 +63,18 @@ export function checkFile(file: File): string | null {
   return null;
 }
 
+/** Decodes an image, held to the pixel budget (step X.1): a bigger one is scaled down, keeping its
+ *  shape, before any canvas is made. analyse.ts reads at most 2400 px a side anyway. */
 export async function decodeImage(blob: Blob): Promise<PlanPixels> {
   let bitmap: ImageBitmap;
   try {
     bitmap = await createImageBitmap(blob);
+    if (overBudget(bitmap.width, bitmap.height)) {
+      const f = Math.min(MAX_EDGE / Math.max(bitmap.width, bitmap.height), Math.sqrt(PIXEL_BUDGET / (bitmap.width * bitmap.height)));
+      const big = bitmap;
+      bitmap = await createImageBitmap(big, { resizeWidth: Math.max(1, Math.floor(big.width * f)), resizeHeight: Math.max(1, Math.floor(big.height * f)), resizeQuality: "high" });
+      big.close();
+    }
   } catch {
     throw new Error("That image couldn't be opened. It may be damaged, or saved in a format your browser can't read.");
   }
@@ -70,12 +102,21 @@ export function runAnalysis(pixels: PlanPixels, onProgress: (stage: Stage, fract
   const worker = new Worker(new URL("../../../workers/analyse.worker.ts", import.meta.url), { type: "module" });
   let cancel = () => {};
   const result = new Promise<Analysis>((resolve, reject) => {
-    const finish = () => worker.terminate();
+    const fail = (message: string) => {
+      finish();
+      reject(new Error(message));
+    };
+    const dog = watchdog(() => fail(STALLED));
+    const finish = () => {
+      dog.stop();
+      worker.terminate();
+    };
     cancel = () => {
       finish();
       reject(new Cancelled());
     };
     worker.onmessage = (e: MessageEvent<AnalyseReply>) => {
+      dog.poke();
       const msg = e.data;
       if (msg.type === "progress") return onProgress(msg.stage, msg.fraction);
       finish();
@@ -84,8 +125,11 @@ export function runAnalysis(pixels: PlanPixels, onProgress: (stage: Stage, fract
     };
     worker.onerror = (e) => {
       console.error("[import] analysis worker failed", e);
-      finish();
-      reject(new Error("Your browser couldn't start the plan reader. Reload the page and try again."));
+      fail("Your browser couldn't start the plan reader. Reload the page and try again.");
+    };
+    worker.onmessageerror = (e) => {
+      console.error("[import] analysis worker's reply couldn't be read", e);
+      fail("Something went wrong while reading this plan. Try another image, or a cleaner scan of it.");
     };
   });
   const request: AnalyseRequest = { type: "analyse", pixels };
@@ -110,16 +154,28 @@ export function runPdf(
   const worker = new Worker(new URL("../../../workers/pdf.worker.ts", import.meta.url), { type: "module" });
   const urls: string[] = [];
   let over = false;
+  // Silence counts only while the worker owes an answer: not while the page picker waits for a choice.
+  let waiting = true;
   const finish = () => {
     over = true;
+    dog.stop();
     worker.terminate();
   };
+  const fail = (message: string) => {
+    if (over) return;
+    finish();
+    on.error(message);
+  };
+  const dog = watchdog(() => waiting && fail(STALLED));
   worker.onmessage = (e: MessageEvent<PdfReply>) => {
     const msg = e.data;
     // pdf.js's core, imported in the worker, also posts its own handshake here: skip anything not ours.
     if (over || !msg || typeof msg !== "object" || "sourceName" in msg) return;
-    if (msg.type === "pages") on.pages(msg.count, msg.listed);
-    else if (msg.type === "thumb") {
+    dog.poke();
+    if (msg.type === "pages") {
+      waiting = msg.count === 1; // one page is read at once; several wait for the picker
+      on.pages(msg.count, msg.listed);
+    } else if (msg.type === "thumb") {
       const url = URL.createObjectURL(msg.blob);
       urls.push(url);
       on.thumb(msg.number, url);
@@ -132,8 +188,11 @@ export function runPdf(
   };
   worker.onerror = (e) => {
     console.error("[import] PDF worker failed", e);
-    finish();
-    on.error("Your browser couldn't start the PDF reader. Reload the page and try again.");
+    fail("Your browser couldn't start the PDF reader. Reload the page and try again.");
+  };
+  worker.onmessageerror = (e) => {
+    console.error("[import] PDF worker's reply couldn't be read", e);
+    fail("Something went wrong while reading this PDF. Try another file, or export the plan page as an image.");
   };
   file.arrayBuffer().then(
     (bytes) => {
@@ -146,7 +205,11 @@ export function runPdf(
     },
   );
   return {
-    page: (n) => worker.postMessage({ type: "page", number: n } satisfies PdfRequest),
+    page: (n) => {
+      waiting = true;
+      dog.poke();
+      worker.postMessage({ type: "page", number: n } satisfies PdfRequest);
+    },
     cancel: () => {
       finish();
       urls.forEach((u) => URL.revokeObjectURL(u));

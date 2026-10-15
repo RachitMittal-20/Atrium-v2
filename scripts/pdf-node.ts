@@ -10,7 +10,7 @@ import path from "node:path";
 import * as pdfjsLegacy from "pdfjs-dist/legacy/build/pdf.mjs";
 import * as core from "pdfjs-dist/legacy/build/pdf.worker.mjs";
 import { openPdf, type PdfJs } from "../src/lib/pdf/open";
-import { renderPage, type MakeCanvas } from "../src/lib/pdf/render";
+import { renderPage, type MakeCanvas, type PixelRegion } from "../src/lib/pdf/render";
 import type { PDFPageProxy } from "pdfjs-dist";
 
 (globalThis as { pdfjsWorker?: unknown }).pdfjsWorker = core;
@@ -22,4 +22,4 @@ export const nodeCanvas: MakeCanvas = (w, h) => {
   return { canvas, context: canvas.getContext("2d") as unknown as ReturnType<MakeCanvas>["context"] };
 };
 export const openNode = (bytes: Uint8Array) => openPdf(pdfjs, bytes, { wasmUrl: WASM_URL });
-export const renderNode = (page: PDFPageProxy, pxPerPt: number) => renderPage(page, pxPerPt, nodeCanvas);
+export const renderNode = (page: PDFPageProxy, pxPerPt: number, region?: PixelRegion) => renderPage(page, pxPerPt, nodeCanvas, region);

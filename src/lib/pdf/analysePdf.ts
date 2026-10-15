@@ -6,14 +6,24 @@
  * (kind, route, scale, dimension texts, notes).
  *
  * Routes:
- *   - "scanned" page: rendered at 300 dpi (at most 40 megapixels) and sent
- *     through analyseBlueprint UNCHANGED, OCR included. Note: "Scanned PDF:
+ *   - "scanned" page: rendered at 300 dpi (within render.ts's pixel budget) and
+ *     sent through analyseBlueprint UNCHANGED, OCR included. Note: "Scanned PDF:
  *     measurements are approximate."
- *   - "vector" and "mixed" pages: the scale comes from the PDF (scale.ts). The
- *     page is rendered at TARGET_PX_PER_M pixels per metre of the found scale
- *     (the pipeline's fixtures are drawn at 100 px/m), capped so the longer
- *     side stays under RASTER_MAX_SIDE (so analyseBlueprint never downscales);
- *     with no scale, at that cap. analyseBlueprint then runs on that raster
+ *   - "vector" and "mixed" pages: the scale comes from the PDF (scale.ts). A
+ *     small drawing on a big sheet (its CONTENT BOX, `contentBox`: the extent of
+ *     its strokes and text grown by CONTENT_MARGIN_PT, under CROP_BELOW of the
+ *     sheet's longer side) has only that box rendered, in whole pixels (step
+ *     X.1), so a small plan on a big, mostly empty sheet costs a small raster
+ *     and keeps its resolution; any other page renders whole, as before. The
+ *     resolution is chosen for what is rendered: TARGET_PX_PER_M pixels per metre of the
+ *     found scale (the pipeline's fixtures are drawn at 100 px/m), capped so the
+ *     longer side stays under RASTER_MAX_SIDE (so analyseBlueprint never
+ *     downscales); with no scale, at that cap. A raster pixel is then
+ *     (point − rasterOrigin) × pxPerPt EXACTLY: the box's top-left is a whole
+ *     pixel of the full page's raster, so the crop's pixels are the full
+ *     render's pixels there, and every point ↔ pixel conversion (the labels and
+ *     scale boxes here, snap.ts, the review overlay, the background mapping)
+ *     goes through rasterOrigin. analyseBlueprint then runs on that raster
  *     with `straighten: false` (the page's own axes are kept) and, in place of
  *     OCR, the PDF's own text: every text line that is not a dimension, a bare
  *     number or the title-block scale becomes a room-name label at its centre
@@ -45,13 +55,15 @@ import { BlueprintError, type OcrWord, type PixelWall, type PlanPixels } from "@
 import type { PdfInfo, PdfScale, PdfText, VectorPage } from "@/types/pdf";
 import { extractVectorPage, meaningfulLines } from "./extract";
 import { PDF_MESSAGES, type PdfJs } from "./open";
+import { fullRegion, MAX_EDGE, PIXEL_BUDGET, type PixelRegion } from "./render";
 import { parseDimension, parseTitleScale, pdfScale, textLines } from "./scale";
 import { readVectorWalls } from "./walls";
 
 export const TARGET_PX_PER_M = 100;
 export const RASTER_MAX_SIDE = 2400; // analyse.ts's default maxSide
 export const SCAN_DPI = 300;
-export const MAX_RASTER_PX = 40_000_000;
+/** Room left around the drawing's strokes and text when only its content box is rendered: 10 mm on paper. */
+export const CONTENT_MARGIN_PT = (10 / 25.4) * 72;
 /** Under this many text items, a page with meaningful line work has its text drawn as outlines. */
 export const OUTLINED_TEXT_MAX = 3;
 /** An OCR box is the glyphs' height, so the font size is the box over the share of an em they
@@ -62,16 +74,72 @@ const OCR_X = 0.52;
 const emShare = (word: string) => (/^[acemnorsuvwxz]+$/.test(word) ? OCR_X : OCR_CAP);
 const FOOT = 0.3048;
 
-export type RenderPage = (page: PDFPageProxy, pxPerPt: number) => Promise<PlanPixels>;
+export type RenderPage = (page: PDFPageProxy, pxPerPt: number, region?: PixelRegion) => Promise<PlanPixels>;
 
-/** Raster pixels per point for a vector page: the found scale at TARGET_PX_PER_M, under the side cap. */
-export function vectorRasterScale(page: Pick<VectorPage, "width" | "height">, mPerPt: number | null): number {
-  const fit = (RASTER_MAX_SIDE - 1) / Math.max(page.width, page.height);
-  return Math.min(mPerPt ? TARGET_PX_PER_M * mPerPt : fit, fit);
+type Box = { x0: number; y0: number; x1: number; y1: number };
+
+/**
+ * The drawing's content box in page points (step X.1): every stroke (its ends, grown by half its
+ * width) and every text item (its four corners, turned by its rotation; the height above the
+ * baseline, the margin covers descenders), grown by `margin` and clipped to the page. Pictures
+ * are left out: a vector page reads its line work, and a mixed page's picture is ignored. Null
+ * when the page has neither strokes nor text.
+ */
+export function contentBox(page: Pick<VectorPage, "width" | "height" | "segments" | "texts">, margin = CONTENT_MARGIN_PT): Box | null {
+  let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+  const add = (x: number, y: number, r = 0) => {
+    x0 = Math.min(x0, x - r);
+    y0 = Math.min(y0, y - r);
+    x1 = Math.max(x1, x + r);
+    y1 = Math.max(y1, y + r);
+  };
+  for (const g of page.segments) {
+    add(g.x1, g.y1, g.width / 2);
+    add(g.x2, g.y2, g.width / 2);
+  }
+  for (const t of page.texts) {
+    const a = (t.rotation * Math.PI) / 180;
+    const [ux, uy] = [Math.cos(a), Math.sin(a)]; // along the baseline
+    const [vx, vy] = [uy, -ux]; // up from the baseline (y points down)
+    for (const [s, h] of [[0, 0], [t.width, 0], [0, t.height], [t.width, t.height]]) add(t.x + ux * s + vx * h, t.y + uy * s + vy * h);
+  }
+  if (x0 > x1) return null;
+  return { x0: Math.max(0, x0 - margin), y0: Math.max(0, y0 - margin), x1: Math.min(page.width, x1 + margin), y1: Math.min(page.height, y1 + margin) };
 }
 
-/** Raster pixels per point for a scanned page: 300 dpi, at most MAX_RASTER_PX pixels. */
-export const scanRasterScale = (page: Pick<VectorPage, "width" | "height">) => Math.min(SCAN_DPI / 72, Math.sqrt(MAX_RASTER_PX / (page.width * page.height)));
+/** A drawing whose content box spans less than this share of the sheet's longer side is
+ *  rendered alone (step X.1). Anything bigger renders the whole page, exactly as before. */
+export const CROP_BELOW = 0.5;
+
+/**
+ * What to render of a vector page (header): a small drawing on a big sheet (its content box under
+ * CROP_BELOW of the sheet's longer side) renders only that box, at the found scale's
+ * TARGET_PX_PER_M under the side cap, as whole pixels of the full page's raster at that scale (the
+ * cap leaves 3 px for rounding the box out to whole pixels, so no side reaches RASTER_MAX_SIDE).
+ * Every other page renders whole, as before step X.1: on an A4 plan the box is most of the sheet
+ * and a crop would only trade the tracing that every fixture's results were read from for a
+ * slightly finer one.
+ */
+export function vectorRaster(page: Pick<VectorPage, "width" | "height" | "segments" | "texts">, mPerPt: number | null): { pxPerPt: number; region: PixelRegion } {
+  const content = contentBox(page);
+  const box = content && Math.max(content.x1 - content.x0, content.y1 - content.y0) < CROP_BELOW * Math.max(page.width, page.height) ? content : null;
+  if (!box) {
+    // The whole page, exactly as before step X.1 (its side never reaches the cap: ceil of at most 2399).
+    const k = Math.min(mPerPt ? TARGET_PX_PER_M * mPerPt : Infinity, (RASTER_MAX_SIDE - 1) / Math.max(page.width, page.height));
+    return { pxPerPt: k, region: fullRegion(page, k) };
+  }
+  const fit = (RASTER_MAX_SIDE - 3) / Math.max(box.x1 - box.x0, box.y1 - box.y0);
+  const k = Math.min(mPerPt ? TARGET_PX_PER_M * mPerPt : fit, fit);
+  const full = fullRegion(page, k);
+  const [left, top] = [Math.max(0, Math.floor(box.x0 * k)), Math.max(0, Math.floor(box.y0 * k))];
+  const [right, bottom] = [Math.min(full.width, Math.ceil(box.x1 * k)), Math.min(full.height, Math.ceil(box.y1 * k))];
+  return { pxPerPt: k, region: { left, top, width: right - left, height: bottom - top } };
+}
+
+/** Raster pixels per point for a whole page read as a picture (a scan, or outlined text for OCR):
+ *  300 dpi, held to render.ts's pixel budget and edge cap (step X.1; before it, 40 megapixels). */
+export const scanRasterScale = (page: Pick<VectorPage, "width" | "height">) =>
+  Math.min(SCAN_DPI / 72, Math.sqrt(PIXEL_BUDGET / (page.width * page.height)) * 0.999, (MAX_EDGE - 1) / Math.max(page.width, page.height));
 
 /** OCR words (pixels of a raster at pxPerPt) as page text in points. A word read
  *  from the turned copy reads bottom to top: rotation -90, its baseline on the
@@ -88,15 +156,17 @@ export function ocrTexts(words: OcrWord[], pxPerPt: number): PdfText[] {
     });
 }
 
-/** Room-name labels from the page's text, in raster pixels (header). */
-export function pdfLabels(page: Pick<VectorPage, "texts">, pxPerPt: number): PlanLabel[] {
+const ZERO = { x: 0, y: 0 };
+
+/** Room-name labels from the page's text, in raster pixels (header); `origin` is the raster's top-left in points. */
+export function pdfLabels(page: Pick<VectorPage, "texts">, pxPerPt: number, origin = ZERO): PlanLabel[] {
   return textLines(page.texts)
     .filter((l) => !parseTitleScale(l.text) && parseDimension(l.text) === null && !/^\d+(?:\.\d+)?$/.test(l.text))
-    .map((l) => ({ text: l.text, x: l.centre.x * pxPerPt, y: l.centre.y * pxPerPt, confidence: 100 }));
+    .map((l) => ({ text: l.text, x: (l.centre.x - origin.x) * pxPerPt, y: (l.centre.y - origin.y) * pxPerPt, confidence: 100 }));
 }
 
-/** The PDF's scale as the image pipeline's ScaleEstimate, in pixels per metre of the raster. */
-export function toScaleEstimate(s: PdfScale, pxPerPt: number, walls: PixelWall[]): ScaleEstimate {
+/** The PDF's scale as the image pipeline's ScaleEstimate, in pixels per metre of the raster whose top-left is `origin` (points). */
+export function toScaleEstimate(s: PdfScale, pxPerPt: number, walls: PixelWall[], origin = ZERO): ScaleEstimate {
   const px = (mPerPt: number) => pxPerPt / mPerPt;
   let unitless: ScaleEstimate["unitless"] = null;
   if (s.unitless && walls.length) {
@@ -119,7 +189,7 @@ export function toScaleEstimate(s: PdfScale, pxPerPt: number, walls: PixelWall[]
     confidence: s.confidence,
     samples: s.matches
       .filter((m) => m.counted)
-      .map((m) => ({ source: "dimension" as const, text: m.text, pxPerM: px(m.metres / m.lengthPt), box: { x0: m.box.x0 * pxPerPt, y0: m.box.y0 * pxPerPt, x1: m.box.x1 * pxPerPt, y1: m.box.y1 * pxPerPt } })),
+      .map((m) => ({ source: "dimension" as const, text: m.text, pxPerM: px(m.metres / m.lengthPt), box: { x0: (m.box.x0 - origin.x) * pxPerPt, y0: (m.box.y0 - origin.y) * pxPerPt, x1: (m.box.x1 - origin.x) * pxPerPt, y1: (m.box.y1 - origin.y) * pxPerPt } })),
     spreadPct: s.dimensions.spreadPct,
     reason: s.reason,
     rejected: s.rejected,
@@ -133,7 +203,13 @@ export function toScaleEstimate(s: PdfScale, pxPerPt: number, walls: PixelWall[]
 export async function analysePdfPage(
   pdfjs: PdfJs,
   page: PDFPageProxy,
-  opts: { pageCount: number; render: RenderPage; onProgress?: (stage: string, fraction: number) => void; ocr?: (p: PlanPixels) => Promise<OcrResult>; maxPathOps?: number },
+  opts: {
+    pageCount: number;
+    render: RenderPage;
+    onProgress?: (stage: string, fraction: number) => void;
+    ocr?: (p: PlanPixels) => Promise<OcrResult>;
+    maxPathOps?: number;
+  },
 ): Promise<{ analysis: Analysis; pdf: PdfInfo; vector: VectorPage }> {
   const vector = await extractVectorPage(pdfjs, page, { maxPathOps: opts.maxPathOps });
   if (!vector.segments.length && !vector.texts.length && !vector.images.length) throw new BlueprintError(PDF_MESSAGES.blank);
@@ -157,11 +233,13 @@ export async function analysePdfPage(
     ocrError = ocr.error;
   }
   const scale = pdfScale({ ...vector, texts }, outlined ? "ocr" : "pdf");
-  const pxPerPt = vectorRasterScale(vector, scale.mPerPt);
-  const labels = pdfLabels({ texts }, pxPerPt);
+  // Only the drawing's content box, at the scale's resolution (header, step X.1).
+  const { pxPerPt, region } = vectorRaster({ ...vector, texts }, scale.mPerPt);
+  const rasterOrigin = { x: region.left / pxPerPt, y: region.top / pxPerPt };
+  const labels = pdfLabels({ texts }, pxPerPt, rasterOrigin);
   const fromPdf = async (): Promise<OcrResult> => ({ labels, words: [], error: null, rereads: [] });
-  const analysis = await analyseBlueprint(await opts.render(page, pxPerPt), { onProgress: opts.onProgress, ocr: fromPdf, straighten: false, maxSide: RASTER_MAX_SIDE });
-  analysis.scale = toScaleEstimate(scale, pxPerPt, analysis.walls);
+  const analysis = await analyseBlueprint(await opts.render(page, pxPerPt, region), { onProgress: opts.onProgress, ocr: fromPdf, straighten: false, maxSide: RASTER_MAX_SIDE });
+  analysis.scale = toScaleEstimate(scale, pxPerPt, analysis.walls, rasterOrigin);
   analysis.warnings = analysis.warnings.filter((w) => w.code !== "no-scale" && w.code !== "check-scale");
 
   // Walls from the PDF's own lines need a scale to read thicknesses in metres.
@@ -176,5 +254,6 @@ export async function analysePdfPage(
       ? `Walls are read exactly from the PDF's lines; any the lines don't explain are traced at about ${Math.round(traceMm!)} mm.`
       : "Without a scale the PDF's lines can't be read as walls, so walls are traced from a picture of the page.",
   ];
-  return { analysis, vector, pdf: { ...base, route: "vector", pxPerPt, scale, traceMm, notes, vectorWalls, ocrText: outlined } };
+  const rasterSize = { width: region.width, height: region.height };
+  return { analysis, vector, pdf: { ...base, route: "vector", pxPerPt, rasterOrigin, rasterSize, scale, traceMm, notes, vectorWalls, ocrText: outlined } };
 }

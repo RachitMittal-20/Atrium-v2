@@ -71,7 +71,15 @@
  * row per file printed: classification, walls total, exact and traced, openings exact,
  * traced and unclassified, arcs not used, and (step M.1d) how many doors are hinged at each
  * jamb once it is built, the out-of-range gaps with their sizes, dimensions read, flagged in
- * each table, time.
+ * each table, time. Its built plan and PdfInfo are written to /tmp/atrium-pdf/<file>.plan.json
+ * for comparing with a truth file by hand (step X.1; nothing is committed).
+ * Step X.1 (a real-style PDF crashed the tab):
+ *   - a crashed tab fails the suite with "page crashed while importing <file> at stage <stage>",
+ *     the stage being what the import screen last showed (and whether the PDF worker had
+ *     finished), instead of a bare "page.waitForSelector: Target crashed";
+ *   - plan-small-on-big.pdf (plan-filled on an A0 sheet) goes through every fixture check;
+ *   - one more line per file read at 1440, fixtures and test-plans/ alike: classification,
+ *     walls exact, walls traced, openings exact, openings traced, dimensions read, flagged, time.
  * Screenshots in /tmp/studio/: pdf-review-1440.png, pdf-dimension-check-1440.png,
  * pdf-fit-warning-1440.png, pdf-review-390.png, pdf-coverage-1440.png,
  * pdf-model-check-1440.png, pdf-clutter-1440.png, pdf-traced-1440.png, and (M.1c)
@@ -141,9 +149,24 @@ async function session(browser: Browser, width: number, height: number, touch: b
   await context.addInitScript({
     content: `document.addEventListener("DOMContentLoaded", () => { const s = document.createElement("style"); s.textContent = "nextjs-portal { display: none !important; }"; document.head.append(s); });`,
   });
+  // Step X.1: what the import screen shows, reported to the test as it changes (a string: see the note above).
+  await context.addInitScript({
+    content: `(() => { let last = ""; const read = () => { const p = document.querySelector("[data-testid=progress]"); const now = p ? (p.querySelector("[aria-current=step]") || p.querySelector("li"))?.textContent : document.querySelector("[data-testid=results]") ? "review screen" : document.querySelector("[data-testid=error]") ? "error shown" : ""; if (now && now !== last && window.__e2eStage) { last = now; window.__e2eStage(now); } }; new MutationObserver(read).observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); })();`,
+  });
   const page = await context.newPage();
   const tag = `${width}`;
   watchErrors(page, tag, errors);
+  // Step X.1: a crashed tab fails with the file and the stage, not a bare "Target crashed".
+  let importing = "(no file yet)";
+  let stage = "(not started)";
+  await page.exposeBinding("__e2eStage", (_source, text: string) => {
+    stage = text;
+  });
+  page.on("worker", (w) => w.on("close", () => !stage.endsWith("(its worker had finished)") && (stage += " (its worker had finished)")));
+  const crashed = new Promise<never>((_, reject) => page.on("crash", () => reject(new Error(`page crashed while importing ${importing} at stage ${stage}`))));
+  crashed.catch(() => {}); // reported through guard()
+  /** A wait that fails with the file and the stage if the tab crashes meanwhile. */
+  const guard = <T>(p: Promise<T>) => Promise.race([p, crashed]);
   let outside: string[] = [];
   page.on("request", (r) => {
     const u = r.url();
@@ -155,12 +178,13 @@ async function session(browser: Browser, width: number, height: number, touch: b
   const upload = async (path: string, pick?: number) => {
     await page.goto(`${BASE}/studio/import`);
     outside = [];
+    importing = path.split("/").pop()!;
     await tid(page, "file-input").setInputFiles(path);
     if (pick) {
-      await tid(page, "page-picker").waitFor({ timeout: 60_000 });
+      await guard(tid(page, "page-picker").waitFor({ timeout: 60_000 }));
       await press(tid(page, `page-${pick}`));
     }
-    await page.waitForSelector("[data-testid=results], [data-testid=error]", { timeout: LONG });
+    await guard(page.waitForSelector("[data-testid=results], [data-testid=error]", { timeout: LONG }));
     if (await tid(page, "error").count()) assert.fail(`${path}: error "${await tid(page, "error-message").textContent()}"`);
   };
 
@@ -168,10 +192,10 @@ async function session(browser: Browser, width: number, height: number, touch: b
   const buildAndOpen = async () => {
     await press(tid(page, "scale-found").getByRole("button", { name: /^(Use this scale|Confirm this scale)$/ }));
     await press(page.getByRole("button", { name: "Build model" }));
-    await tid(page, "summary").waitFor();
+    await guard(tid(page, "summary").waitFor());
     await press(page.getByRole("button", { name: "Open in studio" }));
-    await page.waitForURL(/\/studio$/);
-    await waitForHook(page, "__planStore", "Open in studio had just been pressed");
+    await guard(page.waitForURL(/\/studio$/));
+    await guard(waitForHook(page, "__planStore", "Open in studio had just been pressed"));
     return page.evaluate(() => (window as Win).__planStore!.getState().plan);
   };
 
@@ -468,6 +492,13 @@ async function session(browser: Browser, width: number, height: number, touch: b
     return `hinge ${from} → ${to} by a real click moved the 3D leaf ${moved.toFixed(2)} m and mirrored its turn; Ctrl+Z restored both`;
   };
 
+  /** Step X.1: the extra line per file, read from the review screen before anything is built. */
+  const summaryLine = async (file: string, ms: number) => {
+    const pdf = await page.evaluate(() => (window as Win).__importPdf);
+    const attr = async (id: string, name: string) => ((await tid(page, id).count()) ? await tid(page, id).getAttribute(name) : "-");
+    return `  ${file}: ${pdf?.kind ?? "not read"}, walls exact ${await attr("coverage-line", "data-exact")}, walls traced ${await attr("coverage-line", "data-traced")}, openings exact ${await attr("coverage-openings-line", "data-exact")}, openings traced ${await attr("coverage-openings-line", "data-traced")}, dimensions read ${await tid(page, "dim-row").count()}, flagged ${await page.locator("[data-testid=dim-row][data-status=flagged]").count()}, ${(ms / 1000).toFixed(1)} s`;
+  };
+
   /** The dimension table against the truth: values within 0.1 mm, all OK. */
   const checkTable = async (file: string, t: Truth) => {
     const rows = tid(page, "dim-row");
@@ -492,15 +523,17 @@ async function session(browser: Browser, width: number, height: number, touch: b
     if (t.pages > 1) {
       await page.goto(`${BASE}/studio/import`);
       outside = []; // as upload() does; a file before this one (plan-outlined's OCR) may have fetched
+      importing = file;
       await tid(page, "file-input").setInputFiles(join(DIR, file));
-      await tid(page, "page-picker").waitFor({ timeout: 60_000 });
+      await guard(tid(page, "page-picker").waitFor({ timeout: 60_000 }));
       assert.equal(await page.locator("[data-testid^=page-]:not([data-testid=page-picker])").count(), t.pages, `${file}: every page listed`);
       await page.locator(`[data-testid=page-1] img`).waitFor({ timeout: 30_000 });
       assert.ok(await page.locator(`[data-testid=page-1] img`).evaluate((img: HTMLImageElement) => img.naturalWidth > 0), `${file}: page 1 thumbnail drawn`);
       await press(tid(page, `page-${t.planPage}`));
-      await page.waitForSelector("[data-testid=results], [data-testid=error]", { timeout: LONG });
+      await guard(page.waitForSelector("[data-testid=results], [data-testid=error]", { timeout: LONG }));
     } else await upload(join(DIR, file));
     const ms = Date.now() - t0;
+    const extra = touch ? null : await summaryLine(file, ms);
 
     assert.equal((await tid(page, "pdf-badge").textContent())?.trim(), KIND[t.kind], `${file}: badge`);
     const pdf = (await page.evaluate(() => (window as Win).__importPdf))!;
@@ -545,8 +578,8 @@ async function session(browser: Browser, width: number, height: number, touch: b
       // apply to it. Its own check is the gap report.
       if (file === GAP_FILE) {
         line += `; ${await checkGapsReview(t)}`;
-        report.push(`${line}; ${(ms / 1000).toFixed(1)} s`);
-        console.log(report[report.length - 1]);
+        report.push(`${line}; ${(ms / 1000).toFixed(1)} s`, ...(extra ? [extra] : []));
+        console.log(report.slice(extra ? -2 : -1).join("\n"));
         continue;
       }
       const cov = await checkCoverage(file, t);
@@ -594,8 +627,8 @@ async function session(browser: Browser, width: number, height: number, touch: b
         if (DOOR_FILES.includes(file)) line += `; ${await checkDoorsStudio(file, plan, t)}`;
       }
     }
-    report.push(`${line}; ${(ms / 1000).toFixed(1)} s`);
-    console.log(report[report.length - 1]);
+    report.push(`${line}; ${(ms / 1000).toFixed(1)} s`, ...(extra ? [extra] : []));
+    console.log(report.slice(extra ? -2 : -1).join("\n"));
   }
 
   // ---------------------------------------------------------------- a misprinted dimension, overridden, and the CSV
@@ -648,12 +681,14 @@ async function session(browser: Browser, width: number, height: number, touch: b
     for (const f of local) {
       const t0 = Date.now();
       await page.goto(`${BASE}/studio/import`);
+      importing = f;
       await tid(page, "file-input").setInputFiles(join("test-plans", f));
-      await page.waitForSelector("[data-testid=page-picker], [data-testid=results], [data-testid=error]", { timeout: LONG });
+      await guard(page.waitForSelector("[data-testid=page-picker], [data-testid=results], [data-testid=error]", { timeout: LONG }));
       if (await tid(page, "page-picker").count()) {
         await press(tid(page, "page-1"));
-        await page.waitForSelector("[data-testid=results], [data-testid=error]", { timeout: LONG });
+        await guard(page.waitForSelector("[data-testid=results], [data-testid=error]", { timeout: LONG }));
       }
+      const extra = await summaryLine(`test-plans/${f}`, Date.now() - t0);
       const err = (await tid(page, "error").count()) ? await tid(page, "error-message").textContent() : null;
       const pdf = await page.evaluate(() => (window as Win).__importPdf);
       const rows = await tid(page, "dim-row").count();
@@ -674,14 +709,15 @@ async function session(browser: Browser, width: number, height: number, touch: b
       if (!err && (await tid(page, "scale-found").count())) {
         try {
           const built = await buildAndOpen();
+          writeFileSync(join(TMP, `${f}.plan.json`), JSON.stringify({ plan: built, pdf }, null, 1)); // for a by-hand truth comparison (step X.1)
           const doors = built.openings.filter((o) => o.kind === "door");
           hinges = `hinge a ${doors.filter((o) => (o.hinge ?? "a") === "a").length}, hinge b ${doors.filter((o) => o.hinge === "b").length}`;
         } catch (e) {
           hinges = `not built (${String(e).slice(0, 80)})`;
         }
       }
-      report.push(`test-plans/${f}: ${err ? `error "${err}"` : `${pdf?.kind}, ${walls}, ${openings}, ${hinges}, ${gaps}, ${rows} dimensions read, ${flagged} flagged in the first table, ${flagged2} in the second`}, ${((Date.now() - t0) / 1000).toFixed(1)} s`);
-      console.log(report[report.length - 1]);
+      report.push(`test-plans/${f}: ${err ? `error "${err}"` : `${pdf?.kind}, ${walls}, ${openings}, ${hinges}, ${gaps}, ${rows} dimensions read, ${flagged} flagged in the first table, ${flagged2} in the second`}, ${((Date.now() - t0) / 1000).toFixed(1)} s`, extra);
+      console.log(report.slice(-2).join("\n"));
     }
   }
   // ------------------------------------------------- step F.1: Build model's plan wins over a restore

@@ -26,8 +26,12 @@
  * width 0, stays 0). Text items come from getTextContent: position = the start
  * of the baseline, rotation from the text matrix's x axis, height from its y axis.
  *
- * Cap: more than `maxPathOps` path commands (MAX_PATH_OPS by default) is
- * refused with a plain message, before any segment is built.
+ * Caps: more than `maxPathOps` path commands (MAX_PATH_OPS by default) is
+ * refused with a plain message, before any segment is built. Step X.1 adds the
+ * two counts that can grow past the commands: flattened segments (a few curve
+ * commands can flatten into millions of pieces), MAX_SEGMENTS, refused as soon
+ * as the count passes it; and text items, MAX_TEXT_ITEMS. Every array the
+ * readers build after this is bounded by these.
  *
  * Kind (CLASSIFY):
  *   - line work is "meaningful" with at least 40 segments whose total length is
@@ -46,6 +50,10 @@ import type { PdfSegment, PdfText, VectorPage } from "@/types/pdf";
 import type { PdfJs } from "./open";
 
 export const MAX_PATH_OPS = 500_000;
+/** Most straight segments a page may flatten into (step X.1). */
+export const MAX_SEGMENTS = 500_000;
+/** Most text items a page may have (step X.1). */
+export const MAX_TEXT_ITEMS = 50_000;
 export const FLATTEN_PT = 0.05;
 const CLASSIFY = { minSegments: 40, scanCover: 0.4 };
 
@@ -87,11 +95,19 @@ export const meaningfulLines = (p: Pick<VectorPage, "segments" | "lineLength" | 
 export const tooManyOps = (max: number) =>
   `This page has more than ${max.toLocaleString("en-GB")} drawing commands, too many to read in the browser. Export just the floor plan from your drawing program, or simplify it, and try again.`;
 
-export async function extractVectorPage(pdfjs: PdfJs, page: PDFPageProxy, opts: { maxPathOps?: number } = {}): Promise<VectorPage> {
+export const tooManySegments = (max: number) =>
+  `This page's drawing has more than ${max.toLocaleString("en-GB")} line pieces, too many to read in the browser. Export just the floor plan from your drawing program, or simplify it, and try again.`;
+
+export const tooManyTexts = (max: number) =>
+  `This page has more than ${max.toLocaleString("en-GB")} pieces of text, too many to read in the browser. Export just the floor plan from your drawing program, and try again.`;
+
+export async function extractVectorPage(pdfjs: PdfJs, page: PDFPageProxy, opts: { maxPathOps?: number; maxSegments?: number; maxTexts?: number } = {}): Promise<VectorPage> {
   const { OPS } = pdfjs;
   // pdf.js's path command codes inside constructPath (its DrawOPS, not exported).
   const DRAW = { moveTo: 0, lineTo: 1, curveTo: 2, quadraticCurveTo: 3, closePath: 4 };
   const maxPathOps = opts.maxPathOps ?? MAX_PATH_OPS;
+  const maxSegments = opts.maxSegments ?? MAX_SEGMENTS;
+  const maxTexts = opts.maxTexts ?? MAX_TEXT_ITEMS;
   const viewport = page.getViewport({ scale: 1 });
   const base = viewport.transform as M; // user space -> viewport points, /Rotate included
   const { width, height } = viewport;
@@ -142,7 +158,9 @@ export async function extractVectorPage(pdfjs: PdfJs, page: PDFPageProxy, opts: 
     let sy = 0;
     let open = false; // a subpath has started
     const seg = (x1: number, y1: number, x2: number, y2: number, curve = false) => {
-      if (x1 !== x2 || y1 !== y2) segments.push({ x1, y1, x2, y2, width: w, filled, path, curve });
+      if (x1 === x2 && y1 === y2) return;
+      if (segments.length >= maxSegments) throw new BlueprintError(tooManySegments(maxSegments));
+      segments.push({ x1, y1, x2, y2, width: w, filled, path, curve });
     };
     const close = () => {
       if (open) seg(cx, cy, sx, sy);
@@ -219,6 +237,7 @@ export async function extractVectorPage(pdfjs: PdfJs, page: PDFPageProxy, opts: 
 
   const texts: PdfText[] = [];
   const content = await page.getTextContent();
+  if (content.items.length > maxTexts) throw new BlueprintError(tooManyTexts(maxTexts));
   for (const item of content.items) {
     if (!("str" in item) || !item.str.trim()) continue;
     const t = item.transform as number[];

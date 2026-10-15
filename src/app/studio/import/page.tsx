@@ -387,7 +387,7 @@ export default function ImportPage() {
               traced={
                 review && scaleInUse
                   ? review.coverage.tracedWalls.map((w) => {
-                      const px = planToPixels(review.coverage, scaleInUse.pxPerM);
+                      const px = planToPixels(review.coverage, scaleInUse.pxPerM, phase.pdf?.rasterOrigin);
                       return { id: w.id, a: px(w.a), b: px(w.b), thickness: w.thickness * scaleInUse.pxPerM };
                     })
                   : undefined
@@ -395,7 +395,7 @@ export default function ImportPage() {
               openingMarks={
                 review && scaleInUse
                   ? (() => {
-                      const px = planToPixels(review.coverage, scaleInUse.pxPerM);
+                      const px = planToPixels(review.coverage, scaleInUse.pxPerM, phase.pdf?.rasterOrigin);
                       const toPx = (m: { id: string; a: Vec2; b: Vec2; thickness: number }) => ({ id: m.id, a: px(m.a), b: px(m.b), thickness: m.thickness * scaleInUse.pxPerM });
                       // Step M.1d: the gaps outside 0.45–4 m are highlighted too; `size` is dropped, the box is the gap.
                       return { traced: review.coverage.tracedOpenings.map(toPx), unclassified: review.coverage.unclassifiedOpenings.map(toPx), gaps: review.coverage.outOfRangeGaps.map((g, i) => toPx({ id: `gap${i + 1}`, ...g })) };

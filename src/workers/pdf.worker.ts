@@ -120,7 +120,7 @@ self.onmessage = async (e: MessageEvent<PdfRequest>) => {
       post({ type: "progress", stage: null, fraction: 0 });
       const { analysis, pdf } = await analysePdfPage(pdfjs, await doc.getPage(msg.number), {
         pageCount: doc.numPages,
-        render: (page, k) => renderPage(page, k, offscreen),
+        render: (page, k, region) => renderPage(page, k, offscreen, region),
         onProgress: (stage, fraction) => post({ type: "progress", stage: stage as Stage, fraction }),
       });
       post({ type: "done", analysis, pdf }, [analysis.pixels.rgba.buffer as ArrayBuffer]);

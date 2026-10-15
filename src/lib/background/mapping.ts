@@ -13,7 +13,9 @@
  *     PDF's pixels per point for a page) → analyse.ts's downscale (each axis by its own rounded
  *     size ratio) → deskew.ts's rotation (the forward form of rotatePixels' inverse map, about
  *     the two canvases' centres) → buildPlan's (px − origin) / pxPerM. Every coordinate here is
- *     continuous (a pixel's centre is its index + 0.5), as vectorize.ts's are.
+ *     continuous (a pixel's centre is its index + 0.5), as vectorize.ts's are. A PDF page's
+ *     raster may cover only the drawing's content box (step X.1): its points are first moved by
+ *     −PdfInfo.rasterOrigin, and its size is PdfInfo.rasterSize.
  *
  * Calibration multiplies every plan-space length about an origin; `scaleAbout` is the same map
  * applied after the drawing's, so calibrate.ts keeps the drawing aligned.
@@ -105,18 +107,20 @@ export function rasterMapping(o: {
 export function buildMapping(
   built: { coverage?: { mPerPt: number; origin: Vec2 }; report: { origin: Vec2 } },
   analysis: Pick<Analysis, "imageScale" | "angleDeg"> & { pixels: { width: number; height: number } },
-  pdf: Pick<PdfInfo, "pxPerPt" | "pageSize"> | undefined,
+  pdf: Pick<PdfInfo, "pxPerPt" | "pageSize" | "rasterOrigin" | "rasterSize"> | undefined,
   scale: Pick<PlanScale, "pxPerM">,
   original: { width: number; height: number },
 ): Affine {
   if (built.coverage) return pdfVectorMapping(built.coverage);
-  return rasterMapping({
+  const m = rasterMapping({
     pxPerUnit: pdf ? pdf.pxPerPt : 1,
-    original: pdf ? rasterSize(pdf.pageSize, pdf.pxPerPt) : original,
+    original: pdf ? (pdf.rasterSize ?? rasterSize(pdf.pageSize, pdf.pxPerPt)) : original,
     imageScale: analysis.imageScale,
     angleDeg: analysis.angleDeg,
     processed: { width: analysis.pixels.width, height: analysis.pixels.height },
     origin: built.report.origin,
     pxPerM: scale.pxPerM,
   });
+  // The raster's (0, 0) is the content box's top-left, not the page's (step X.1).
+  return pdf?.rasterOrigin ? compose(m, translation(-pdf.rasterOrigin.x, -pdf.rasterOrigin.y)) : m;
 }

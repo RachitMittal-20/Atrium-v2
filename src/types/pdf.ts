@@ -131,6 +131,11 @@ export interface PdfInfo {
   route: "vector" | "raster";
   /** Raster pixels per page point. */
   pxPerPt: number;
+  /** Step X.1: a vector page's raster covers only the drawing's content box. Its top-left in page
+   *  points, so a raster pixel is (point − rasterOrigin) × pxPerPt; absent means (0, 0), the whole page. */
+  rasterOrigin?: { x: number; y: number };
+  /** Step X.1: that raster's size in pixels; absent means the whole page at pxPerPt. */
+  rasterSize?: { width: number; height: number };
   /** The page's size in points (viewport at scale 1, /Rotate applied), so the raster the image
    *  pipeline read can be mapped back to the page (step M.2c, the drawing under the plan). */
   pageSize: { width: number; height: number };

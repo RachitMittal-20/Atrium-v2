@@ -956,3 +956,106 @@ After the last fix every suite was rerun on the final tree, the whole sweep, one
 - `scripts/e2e-offline-ocr.ts`: phase A aborts and counts every non-local request; phase B uses a browser that resolves only localhost. `context.setOffline(true)` was tried and dropped: it cuts localhost too (the app's lazy chunks), and re-serving localhost through a route stopped React hydrating.
 - `test-pdf-walls.ts`'s real-OCR check now runs whenever `public/tesseract/eng.traineddata.gz` exists (always), instead of needing a cached `./eng.traineddata`; the check itself is unchanged.
 - No suite failed on its rerun, so there is nothing new for the flake-hunt findings.
+
+## 25. X.1 — a real-style PDF crashed the tab: DONE (2026-10-15)
+
+**`test-plans/plan-test.pdf` is ChatGPT-generated (a reportlab script), not a real CAD export.** It is A3 landscape, vector, with real selectable text, walls as paired 0.25 pt face lines, door arcs, a sheet-wide border, a title block, furniture, and 9 dimensions printed as bare numbers. Its truth file (`~/plan-truth.json`) is local and not committed; neither is the PDF.
+
+### The crash, measured before any change
+
+Playwright's Chromium on `npm run dev`, with `page.on('crash')`, console and pageerror logged:
+
+| stage | time after upload | size |
+| --- | --- | --- |
+| PDF read, vector extraction, classification | 0.37 → 0.57 s | A3 1191 × 842 pt; 476 segments, 25 text items, 385 path commands; `vector` |
+| scale | — | 1:100 from the title block only, "check" (the dimensions are bare numbers) |
+| rasterise for analysis (inside the PDF worker) | — | 2399 × 1697 px = 4.1 MP at 2.015 px/pt (57 px/m), the largest canvas |
+| analysis in the worker, which posts "done" and closes | 1.25 s | 27 traced walls, 8 traced openings |
+| **tab crashed** | **26.2 s** | on the main thread, with no worker running |
+
+The snap index and the background render never ran: they only run in the studio. In Node, the same `buildPdfPlan` grew to a 2 GB heap in 8 s and ran out of memory.
+
+### Cause
+
+- **(d) something else — certain.** `polylabel` in `src/lib/plan/rooms.ts` sizes its first grid of cells by the polygon's shorter side.
+  - The page's living-room sofa is drawn as rectangles whose lines are 0.39–0.6 m apart, so `walls.ts` reads it as seven "exact" walls: a closed 1.18 × 0.39 m loop of 0.39–0.6 m thick walls.
+  - In the merge's third validator round, `deriveRooms` traced that loop as a face. Pulled in by half of each wall's thickness, its floor outline is about 1e-15 m tall, which asked for about 6e11 cells.
+  - That happens on the import page's main thread (the review `useMemo` → `buildPdfPlan` → `mergeVector` → `deriveRooms`), so the tab died silently.
+  - Found by bisecting `mergeVector` with temporary timing logs (removed afterwards). Its geometry is reproduced exactly in `test-rooms.ts`, which ran out of memory in 2.5 s before the fix.
+- **(a) an oversized raster — ruled out.** 4.1 MP.
+- **(b) runaway work in a worker — ruled out.** The worker finished in 1.2 s.
+- **(c) the snap index or background — ruled out.** Neither had started.
+
+### The fix
+
+1. **Root cause** (`rooms.ts`): a polygon thinner than the precision (1 cm) returns its box's centre at once, mapbox polylabel's rule. Every room in the studio uses this, so a user who drew such a loop by hand was exposed too. plan-test.pdf now builds in 34 ms.
+2. **The pixel budget** (`src/lib/pdf/render.ts`): 4096 px a side and 4096² (16.8 MP) in all.
+   - `renderPage` refuses anything bigger with a plain message before it makes a canvas, and so does the background worker.
+   - Scans and outlined-text OCR render at 300 dpi held to the budget. Before X.1 they were capped at 40 MP: a scanned A0 page was 7521 × 5320 px.
+   - Images over the budget are scaled down in `decodeImage` before any canvas.
+   - BackgroundLayer's `MAX_SIDE` is the same constant.
+3. **The content box** (`analysePdf.ts`, `contentBox` / `vectorRaster`): strokes and text plus a 10 mm margin.
+   - A drawing under half the sheet's longer side renders only that box, in whole pixels of the full page's raster, at 100 px/m. Every other page renders whole, exactly as before. The user chose this rule over cropping every page, because that made every A4 fixture's trace finer (2.85 → 3.39 px/pt) and broke existing assertions that encode the old trace's mistakes.
+   - `PdfInfo.rasterOrigin` and `rasterSize` carry the crop through the labels, the scale boxes, snap.ts (the traced origin, the fallback's and the naming origin), the review overlay (`planToPixels`) and the background mapping.
+4. **Caps** (`extract.ts`): 500,000 flattened segments and 50,000 text items, beside the existing 500,000 path commands, each with a plain message.
+5. **Worker failures** (`importFile.ts`): `onmessageerror`, and a 180 s stall watchdog that does not count the page picker's wait, now reach the page as plain messages. BackgroundLayer handles a dead worker like a failed render.
+
+### Tests
+
+- **`scripts/test-pdf-budget.ts`** (new, in `npm test`):
+  - the content box;
+  - the budget on A4 to A0 either way up, and `renderPage`'s refusal (11797 × 8344 px);
+  - `plan-small-on-big.pdf`: rendered 1771 × 2398 px (4.2 MP) from (1466, 855) pt at 96 px/m; 14/14 walls exact, worst 0.000 mm; 9 openings snapped; rooms named; the overlay within 0.37 px; the traced mapping within 2.0 mm;
+  - every vector fixture's walls from the PDF within 0.5 mm (worst 0.000 mm on all);
+  - 500,001 path segments refused (0.2 s), 100 curves flattening past 500,000 pieces refused, and too many text items refused.
+- **Failing first:**
+  - `test-rooms.ts`'s sliver loop ran out of memory on the old `rooms.ts`.
+  - On the old tree, `plan-small-on-big.pdf` did **not** crash and did **not** exceed the budget. Its raster was 2399 × 1697 px, the whole A0 sheet squeezed under 2400 px at 0.712 px/pt, so it traced at 20.2 px/m (50 mm a pixel) while its PDF walls were still exact. The new test's 95 px/m check fails there.
+  - The old scan rule's 40 MP A0 raster is the budget overrun, and the test shows that number.
+- **`plan-small-on-big.pdf`** is new in `make-pdf-fixtures.ts`: plan-filled shifted onto an A0 landscape sheet. Every other fixture regenerated byte-identical.
+- **`e2e-pdf-import.ts`:**
+  - A crashed tab now fails with the file and the stage. With the old `rooms.ts` put back temporarily, it said "page crashed while importing plan-test.pdf at stage Working out scale (its worker had finished)".
+  - plan-small-on-big goes through every fixture check.
+  - One extra line is printed per file read at 1440.
+  - test-plans/ files' built plans are written to `/tmp/atrium-pdf/<file>.plan.json` for comparing with a truth file by hand.
+
+### plan-test.pdf now, against its truth
+
+Row: `test-plans/plan-test.pdf: vector, walls 22, exact 12, traced 10, openings exact 5 of 9, traced 4, unclassified 2, arcs not used 2, hinge a 4, hinge b 1, out-of-range gaps 0, 0 dimensions read, 0 flagged in the first table, 0 in the second, 1.7 s`
+
+Extra line: `vector, walls exact 12, walls traced 10, openings exact 5, openings traced 4, dimensions read 0, flagged 0, 1.4 s`
+
+It imports and builds. It no longer crashes, but the reading is poor. Compared with the truth file (aligned on the exact east and south walls):
+
+- **Walls** (9 true centre lines):
+  - Exact: INT_KITCHEN_LIVING (100%) and INT_HALL_LIVING (100%).
+  - Partly exact: EXT_EAST (31% exact; the rest traced as a slanted 600 mm wall) and EXT_SOUTH (42%, exact plus traced within 4.3 mm; the living room's stretch is traced 0.3 m north of its line, 510 mm thick).
+  - Traced: INT_BATH_SOUTH (99%, within 1.2 mm), EXT_WEST (82%, 9.5 mm off, 210 thick) and INT_BEDROOM_HALL (19%, 14 mm off, 260 thick).
+  - Missing as such: EXT_NORTH (only a traced wall slanting 84 mm over 6.7 m) and INT_BEDROOM_SPLIT (traced 59 mm off).
+- **Wrong walls:** the sofa read as seven exact walls (v1, v8, v21, v22, v24, v25, v44; 150–600 mm thick). This is the known M.1b limit on parallel lines closer than 0.6 m, and the loop that crashed the tab. It now gives two 0 m² rooms.
+- **Openings** (5 doors, 4 windows, 1 open passage):
+  - Exact: the entry door D1 and the living door D5, with swing and hinge right (D5 hinged at b); window W1 (14 mm, on a traced wall).
+  - The open passage reads as an "unclassified" door, 1200 mm exact.
+  - Wrong kind: the kitchen window W3 reads as an unclassified door (1500 mm), and the bathroom door D4 as a traced window (890 mm).
+  - Missing: both bedroom doors (D2, D3) and window W2. W4 is traced (1610 mm) on the slanted east wall, more than 50 mm out.
+  - Extra: a traced 1200 mm door on the bedroom/hall wall and a traced 820 mm window on the hall/living wall.
+- **Rooms:** truth Bedroom 1, Bedroom 2, Bathroom, Kitchen, Living, Hall; plan "Bathroom / Kitchen" (14.3 m², two labels in one room), "Living" (18.2 m² against 21.4) and the two sofa slivers. Bedroom 1, Bedroom 2 and Hall never close as rooms. The truth's own wall list has no wall between the bathroom and the kitchen though its rooms need one; the render shows a single line there.
+- **Dimensions:** none of the 9 becomes a table row. They are bare numbers, which since M.1a only feed the "Feet or metres?" question. All 9 match their lines as unitless, at 35.278 units per point with a 0.0001% spread (exactly 1:100 in mm). The scale is "check" from the title block.
+
+### Not covered
+
+- `buildPdfPlan` still runs on the import page's main thread (the review and Build model). This fix removes the one runaway found there, but another would still freeze or kill the tab; the watchdog covers workers only.
+- A dedicated worker runs in the page's renderer process, so a worker that does run out of memory still takes the tab. The budget and caps keep it from getting there; nothing can catch it after.
+- `decodeImage` decodes the whole image before its size is known, so an image of hundreds of megapixels can still crash in the decoder.
+- The crop needs a small drawing. A sheet-wide border or a far-off title block (plan-test.pdf has both), or a page-sized white fill, makes the content box the whole sheet. plan-test.pdf therefore still traces at 57 px/m (17.5 mm a pixel).
+- The background worker's render failures still go only to the console.
+- Furniture drawn as paired lines under 0.6 m apart is still read as walls (M.1b).
+- No real CAD PDF has been read. plan-test.pdf is a generated stand-in.
+
+### Verification
+
+- `npm test` (34 OK, exit 0) and `npx tsc --noEmit` pass.
+- Cold build: `.next` deleted with the dev server stopped, then `perl -e 'alarm 300; exec @ARGV' npm run build`: exit 0 in 12 s.
+- Both greps after the build: `clean`.
+- `npm run dev` restarted (pid 97906, `/studio` 200, no other suite running). e2e-pdf-import (66 s), e2e-background (24 s), e2e-snap (21 s), e2e-takeoff (19 s), e2e-calibrate (42 s) and e2e-studio (147 s) all passed first time, one at a time, with no source edited meanwhile.
+- No suite failed, so there is nothing new for the flake-hunt findings. The one deliberate failure, the crash-message proof with the old `rooms.ts`, was a check on the harness, not a flake.

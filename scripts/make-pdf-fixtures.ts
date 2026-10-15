@@ -17,6 +17,10 @@
  *   plan-single-line.pdf plan-filled with the bathroom's top wall (w-KM) drawn as ONE stroked
  *                      line as thick as the wall, as CAD often draws thin walls: no pair of
  *                      faces, so that wall can only be traced (step M.1b)
+ *   plan-small-on-big.pdf (step X.1) plan-filled at 1:100 on an A0 landscape sheet, the
+ *                      drawing and its title block in the middle and the rest of the sheet
+ *                      empty: the page reader must render only the drawing's content box,
+ *                      within the pixel budget
  *   plan-no-dims.pdf   plan-filled without dimensions: walls, names, title block only
  *   plan-clutter.pdf   plan-lines plus clutter (step M.1b): 45° hatching inside the
  *                      exterior walls, a 1.2 × 0.6 m table, two boxed door tags
@@ -94,6 +98,7 @@ import { renderNode, openNode } from "./pdf-node";
 export const OUT = join(__dirname, "../tests/fixtures/pdf");
 const A4: [number, number] = [595.28, 841.89];
 const LETTER: [number, number] = [612, 792];
+const A0_LANDSCAPE: [number, number] = [3370.39, 2383.94];
 const PT_PER_IN = 72;
 const FT_PER_SAMPLE_M = 3.5; // the imperial plan: one sample metre drawn as 3'-6"
 
@@ -318,6 +323,9 @@ interface Options {
   /** Step M.1d: draw the four decoy arcs. Defaults to true whenever `doors` is given; plan-gaps
    *  turns them off, because it is about gaps, not arcs. */
   decoys?: boolean;
+  /** Step X.1 (plan-small-on-big): the sheet's size in points and where the drawing sits on it
+   *  (added to every user-space position), so a small plan can sit on a big, mostly empty sheet. */
+  sheet?: { name: string; size: [number, number]; shift: [number, number] };
 }
 
 /**
@@ -397,7 +405,8 @@ const fmtImperial = (ft: number, i: number) => {
 
 /** Draws the plan page and returns its truth. */
 async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Omit<Truth, "file" | "pages" | "planPage" | "kind" | "expectedScale" | "mismatchRatio">> {
-  const [W, H] = o.imperial ? LETTER : A4;
+  const [W, H] = o.sheet?.size ?? (o.imperial ? LETTER : A4);
+  const [dx, dy] = o.sheet?.shift ?? [0, 0];
   const page = doc.addPage([W, H]);
   const rotate = o.rotate ?? 0;
   if (rotate) page.setRotation(degrees(rotate));
@@ -405,7 +414,7 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
   const unit = o.imperial ? FT_PER_SAMPLE_M * 0.3048 : 1; // real metres per sample metre
   const ptPerM = o.imperial ? (PT_PER_IN / 0.0254) / 96 : (PT_PER_IN / 0.0254) / 100; // 1:96 or 1:100 on paper
   const s = unit * ptPerM; // points per sample metre
-  const [X0, Y0] = o.imperial ? [150, 600] : [155, 640];
+  const [X0, Y0] = o.imperial ? [150 + dx, 600 + dy] : [155 + dx, 640 + dy];
   const P = (x: number, y: number) => [X0 + x * s, Y0 - y * s]; // plan (sample metres, y down) -> user space
   const cmView = (x: number, y: number): [number, number] => [x * k, y * k];
   const view = (x: number, y: number): [number, number] => {
@@ -596,13 +605,13 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
   }
 
   // Title block, bottom right of the sheet.
-  const [tx, ty] = o.imperial ? [340, 40] : [330, 50];
+  const [tx, ty] = o.imperial ? [340 + dx, 40 + dy] : [330 + dx, 50 + dy];
   pen.poly([[tx, ty], [tx + 230, ty], [tx + 230, ty + 100], [tx, ty + 100]], "stroke", 0.75);
   const titleText = o.imperial ? `SCALE 1/8" = 1'-0"` : "SCALE 1:100";
   pen.text("Two-bedroom house", tx + 10, ty + 75, 10);
   pen.text("Ground floor plan", tx + 10, ty + 55, 8);
   pen.text(titleText, tx + 10, ty + 35, 8);
-  pen.text(o.imperial ? "Letter" : "A4", tx + 10, ty + 15, 8);
+  pen.text(o.sheet?.name ?? (o.imperial ? "Letter" : "A4"), tx + 10, ty + 15, 8);
 
   if (k !== 1) pen.ops.push(popGraphicsState());
   pen.flush();
@@ -713,6 +722,8 @@ export async function writePdfFixtures(): Promise<Truth[]> {
   truths.push(await make("plan-doors.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", doors: DOOR_FIXTURE })) })));
   truths.push(await make("plan-doors-rect.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", doors: RECT_FIXTURE })) })));
   truths.push(await make("plan-gaps.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", doors: GAP_FIXTURE, decoys: false })) })));
+  // Step X.1: plan-filled at 1:100 in the middle of an A0 landscape sheet, the rest of it empty.
+  truths.push(await make("plan-small-on-big.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", sheet: { name: "A0", size: A0_LANDSCAPE, shift: [1400, 800] } })) })));
   truths.push(await make("plan-no-dims.pdf", async (d, f) => ({ ...plain, expectedScale: "check", ...await drawPlan(d, f, { walls: "fill", dims: null }), dims: [] })));
   // The scan: plan-filled rendered at 150 dpi, embedded as one grey PNG filling the page.
   const { file: _file, pages: _pages, ...filled } = truths[0];

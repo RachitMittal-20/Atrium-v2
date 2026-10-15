@@ -30,6 +30,7 @@ import * as core from "pdfjs-dist/build/pdf.worker.mjs";
 import type { PDFPageProxy, RenderTask } from "pdfjs-dist";
 import { extractVectorPage } from "@/lib/pdf/extract";
 import { openPdf } from "@/lib/pdf/open";
+import { overBudget } from "@/lib/pdf/render";
 import { indexForPage, transferables, type SnapIndex } from "@/lib/pdf/snapIndex";
 
 (globalThis as { pdfjsWorker?: unknown }).pdfjsWorker = core;
@@ -83,6 +84,8 @@ self.onmessage = async (e: MessageEvent<BackgroundRequest>) => {
     } else if (msg.type === "render") {
       if (!page) return;
       running?.cancel(); // stale: the camera moved on
+      // The page asks for at most 4096 px a side (BackgroundLayer's regionFor); the budget is the last guard (step X.1).
+      if (overBudget(msg.width, msg.height)) throw new Error(`render of ${msg.width} × ${msg.height} px is over the pixel budget`);
       // The viewport at k px per point, shifted so the region's top-left is the canvas's (0, 0).
       const viewport = page.getViewport({ scale: msg.k, offsetX: -msg.x * msg.k, offsetY: -msg.y * msg.k });
       const canvas = new OffscreenCanvas(msg.width, msg.height);

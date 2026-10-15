@@ -7,7 +7,10 @@
  *
  * Frames: everything is compared in PAGE METRES (x = pt × metres per point at
  * the scale in use). One raster pixel is 1 / pxPerM metres. Vector walls read
- * at the PDF's own scale are rescaled when the user chose another one.
+ * at the PDF's own scale are rescaled when the user chose another one. Since
+ * step X.1 the raster covers only the drawing's content box: its pixel (0, 0)
+ * is page point PdfInfo.rasterOrigin, which every pixel ↔ page conversion here
+ * (the traced plan's origin, the fallback's, planToPixels) adds back.
  *
  * Walls. A traced wall and a vector wall are RELATED when they are parallel
  * (within 2°), overlap along their line by more than 3 px, and the traced
@@ -242,7 +245,7 @@ export function buildPdfPlan(analysis: Analysis, pdf: PdfInfo, scale: PlanScale,
   const name = opts.name ?? "Imported plan";
   const { width, height } = analysis.pixels;
   const traced = buildPlan({ walls: analysis.walls, openings: analysis.openings, unpaired: analysis.unpaired, imageSize: { width, height }, name }, scale);
-  const out = mergeVector(traced, vector, { pxPerM: scale.pxPerM, pxPerPt: pdf.pxPerPt, labels: analysis.labels, forceTraced: opts.forceTraced ?? [] });
+  const out = mergeVector(traced, vector, { pxPerM: scale.pxPerM, pxPerPt: pdf.pxPerPt, rasterOrigin: pdf.rasterOrigin, labels: analysis.labels, forceTraced: opts.forceTraced ?? [] });
   const now = new Date().toISOString(); // real creation times, as buildFromAnalysis stamps them
   return { ...out, plan: { ...out.plan, meta: { ...out.plan.meta, createdAt: now, updatedAt: now } } };
 }
@@ -251,12 +254,12 @@ export function buildPdfPlan(analysis: Analysis, pdf: PdfInfo, scale: PlanScale,
 export function mergeVector(
   traced: { plan: Plan; report: BuildReport },
   vector: VectorWalls,
-  o: { pxPerM: number; pxPerPt: number; labels: Analysis["labels"]; forceTraced: string[]; round?: number },
+  o: { pxPerM: number; pxPerPt: number; rasterOrigin?: Vec2; labels: Analysis["labels"]; forceTraced: string[]; round?: number },
 ): PdfBuild {
   const px = 1 / o.pxPerM; // one raster pixel in metres
   const mPerPt = o.pxPerPt / o.pxPerM;
   const f = mPerPt / vector.mPerPt; // the chosen scale against the one the walls were read at
-  const tOrigin = { x: traced.report.origin.x * px, y: traced.report.origin.y * px }; // traced plan (0, 0) in page metres
+  const tOrigin = tracedOrigin(traced.report.origin, o); // traced plan (0, 0) in page metres
   const toPage = (p: Vec2) => ({ x: p.x + tOrigin.x, y: p.y + tOrigin.y });
   const T: Wall[] = traced.plan.walls.map((w) => ({ ...w, a: toPage(w.a), b: toPage(w.b), provenance: "traced" as const }));
   const V: Wall[] = vector.walls.map((w) => ({ ...w, a: { x: w.a.x * f, y: w.a.y * f }, b: { x: w.b.x * f, y: w.b.y * f }, thickness: w.thickness * f }));
@@ -596,7 +599,9 @@ export function mergeVector(
   const lengthOf = (ws: Wall[]) => ws.reduce((s, w) => s + wallLength(w), 0);
   const exact = planWalls.filter((w) => w.provenance === "vector");
   const tracedWalls = planWalls.filter((w) => w.provenance === "traced");
-  const originPx = { x: origin.x * o.pxPerM, y: origin.y * o.pxPerM };
+  // The labels are raster pixels, and the raster starts at the crop's top-left (step X.1).
+  const r = o.rasterOrigin ?? { x: 0, y: 0 };
+  const originPx = { x: origin.x * o.pxPerM - r.x * o.pxPerPt, y: origin.y * o.pxPerM - r.y * o.pxPerPt };
   const { plan: namedPlan, report: naming } = nameRooms(plan, o.labels, originPx, o.pxPerM);
   const report: BuildReport = { ...traced.report, origin: originPx, freeEnds: freeEnds(planWalls), problems: validatePlan(namedPlan) };
   return {
@@ -672,7 +677,14 @@ function freeEnds(walls: Wall[]): Vec2[] {
 }
 
 /** The whole traced plan, every wall marked traced, with the reason. */
-function fallback(traced: { plan: Plan; report: BuildReport }, o: { pxPerM: number; pxPerPt: number; labels: Analysis["labels"] }, vector: VectorWalls, note: string): PdfBuild {
+/** The traced plan's (0, 0), a raster pixel `originPx`, in page metres: the crop's top-left (step X.1) plus the pixels. */
+function tracedOrigin(originPx: Vec2, o: { pxPerM: number; pxPerPt: number; rasterOrigin?: Vec2 }): Vec2 {
+  const mPerPt = o.pxPerPt / o.pxPerM;
+  const r = o.rasterOrigin ?? { x: 0, y: 0 };
+  return { x: r.x * mPerPt + originPx.x / o.pxPerM, y: r.y * mPerPt + originPx.y / o.pxPerM };
+}
+
+function fallback(traced: { plan: Plan; report: BuildReport }, o: { pxPerM: number; pxPerPt: number; rasterOrigin?: Vec2; labels: Analysis["labels"] }, vector: VectorWalls, note: string): PdfBuild {
   const plan: Plan = {
     ...traced.plan,
     walls: traced.plan.walls.map((w) => ({ ...w, provenance: "traced" as const })),
@@ -680,6 +692,7 @@ function fallback(traced: { plan: Plan; report: BuildReport }, o: { pxPerM: numb
   };
   const { plan: namedPlan, report: naming } = nameRooms(plan, o.labels, traced.report.origin, o.pxPerM);
   const px = 1 / o.pxPerM;
+  const origin = tracedOrigin(traced.report.origin, o);
   const len = plan.walls.reduce((s, w) => s + wallLength(w), 0);
   return {
     plan: namedPlan,
@@ -700,19 +713,23 @@ function fallback(traced: { plan: Plan; report: BuildReport }, o: { pxPerM: numb
         namedPlan,
         new Map(),
         new Map(plan.openings.map((x) => [x.id, "the whole plan fell back to traced"])),
-        (p) => ({ x: p.x - traced.report.origin.x * px, y: p.y - traced.report.origin.y * px }),
+        (p) => ({ x: p.x - origin.x, y: p.y - origin.y }),
         vector,
         o.pxPerPt / o.pxPerM / vector.mPerPt,
         { snapped: 0, traced: plan.openings.length, added: 0, replaced: 0 },
       ),
       droppedOpenings: [], // no opening from the PDF is used, so nothing of the tracing's is dropped
       notes: [note],
-      origin: { x: traced.report.origin.x * px, y: traced.report.origin.y * px },
+      origin,
       mPerPt: o.pxPerPt / o.pxPerM,
       fellBack: true,
     },
   };
 }
 
-/** Plan metres → raster pixels of the page (for drawing on the review overlay). */
-export const planToPixels = (c: Pick<Coverage, "origin">, pxPerM: number) => (p: Vec2) => ({ x: (p.x + c.origin.x) * pxPerM, y: (p.y + c.origin.y) * pxPerM });
+/** Plan metres → raster pixels of the page (for drawing on the review overlay); `rasterOrigin` is
+ *  PdfInfo.rasterOrigin, the raster's top-left in points (step X.1). */
+export const planToPixels = (c: Pick<Coverage, "origin" | "mPerPt">, pxPerM: number, rasterOrigin: Vec2 = { x: 0, y: 0 }) => (p: Vec2) => ({
+  x: (p.x + c.origin.x - rasterOrigin.x * c.mPerPt) * pxPerM,
+  y: (p.y + c.origin.y - rasterOrigin.y * c.mPerPt) * pxPerM,
+});
