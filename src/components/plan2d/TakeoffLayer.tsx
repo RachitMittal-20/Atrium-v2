@@ -20,15 +20,21 @@
  * that print on the same spot are stacked or one is hidden and counted instead of overprinting.
  * The live labels (running total, snap word, wall-hover lines) follow the pointer and stay here.
  * TakeoffBar is no longer drawn over the plan: PlanCanvas docks it in a strip above the canvas.
+ * Step P.1: TakeoffBar asks src/store/drawingSnapStore.ts for the drawing's snap index when the
+ * tool first shows with a background, and says "Reading drawing for snapping…" while the worker
+ * reads it (clicks meanwhile use the walls' snaps), "Drawing snapping needs a vector PDF" for an
+ * image, a scanned page or a missing file, and the point cap's note when it applies. The snap
+ * marker's word for the drawing's points is "corner", "end", "mid" or "edge".
  * Connects to: src/store/{takeoffStore,planStore,unitsStore}.ts, src/lib/takeoff/*,
  * src/lib/units/format.ts, src/lib/plan2d/labels.ts; mounted by src/components/plan2d/PlanCanvas.tsx.
  */
-import { useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { areaWithCutouts, perimeter, polylineLength, type Pt, type Side } from "@/lib/takeoff/geometry";
 import { formatArea, formatLength } from "@/lib/units/format";
 import { midway, type DrawnLabel } from "@/lib/plan2d/labels";
 import { worldToScreen, type View } from "@/lib/plan2d/view";
 import { LabelText } from "./LabelText";
+import { keyOf, useDrawingSnapStore } from "@/store/drawingSnapStore";
 import { usePlanStore } from "@/store/planStore";
 import { useTakeoffStore, type TakeoffMode } from "@/store/takeoffStore";
 import { useUnitsStore } from "@/store/unitsStore";
@@ -36,7 +42,19 @@ import type { Vec2 } from "@/types/plan";
 
 const halo = { paintOrder: "stroke", strokeWidth: 3, strokeLinejoin: "round" } as const;
 const GLYPH_PX = 6.6; // text-xs average glyph width, to keep a label inside the pane
-const SNAP_WORDS: Record<string, string> = { corner: "face corner", endpoint: "wall end", jamb: "jamb", midpoint: "middle", grid: "grid", free: "" };
+const SNAP_WORDS: Record<string, string> = {
+  corner: "face corner",
+  endpoint: "wall end",
+  jamb: "jamb",
+  midpoint: "middle",
+  grid: "grid",
+  free: "",
+  // step P.1: the drawing's own points
+  "drawing-corner": "corner",
+  "drawing-end": "end",
+  "drawing-mid": "mid",
+  "drawing-edge": "edge",
+};
 
 export function TakeoffOverlay({ view, active, size, labels }: { view: View; active: boolean; size: { width: number; height: number }; labels: Map<string, DrawnLabel> }) {
   const takeoffs = usePlanStore((s) => s.plan.takeoffs) ?? [];
@@ -114,7 +132,7 @@ export function TakeoffOverlay({ view, active, size, labels }: { view: View; act
       {active && mode !== "wall" && hover && (
         <g data-testid="takeoff-snap" data-snap={hover.kind} pointerEvents="none">
           <circle cx={S(hover.point).x} cy={S(hover.point).y} r={6} className="fill-none stroke-gilt" strokeWidth={2} />
-          {SNAP_WORDS[hover.kind] && text(hover.point, SNAP_WORDS[hover.kind])}
+          {SNAP_WORDS[hover.kind] && text(hover.point, SNAP_WORDS[hover.kind], "takeoff-snap-word")}
         </g>
       )}
 
@@ -160,6 +178,13 @@ export function TakeoffBar({ onHeight }: { onHeight?: (height: number) => void }
   });
   const st = useTakeoffStore.getState();
   const selected = usePlanStore((s) => s.plan.takeoffs?.find((t) => t.id === selectedId));
+  // Step P.1: the drawing's snap index, asked for when the tool first shows with this background.
+  const background = usePlanStore((s) => s.plan.background);
+  const drawingKey = background ? keyOf(background) : null;
+  const snap = useDrawingSnapStore();
+  useEffect(() => {
+    useDrawingSnapStore.getState().ensure(usePlanStore.getState().plan.background);
+  }, [drawingKey]);
   const hint =
     message ??
     (mode === "wall"
@@ -225,6 +250,16 @@ export function TakeoffBar({ onHeight }: { onHeight?: (height: number) => void }
       )}
       <p role="status" data-testid="takeoff-hint" className="rounded border border-stone bg-vellum px-2 py-1 text-xs text-iron shadow">
         {hint}
+      </p>
+      <p
+        role="status"
+        data-testid="takeoff-drawing-snap"
+        data-status={snap.status}
+        data-points={snap.index ? snap.index.xs.length : undefined}
+        hidden={!snap.note}
+        className="rounded border border-stone bg-vellum px-2 py-1 text-xs text-smoke shadow"
+      >
+        {snap.note}
       </p>
     </div>
   );

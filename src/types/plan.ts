@@ -239,7 +239,14 @@ export interface Takeoff {
   /** A carried PDF dimension whose ends land on a wall the image pipeline traced, so the
    *  comparison is only about a raster pixel good (step M.2b). Absent otherwise. */
   approximate?: true;
+  /** Step P.1: for each of `points`, the drawing point it snapped to on the plan's vector PDF
+   *  (src/lib/pdf/snapIndex.ts), or null where it did not. Stored only when at least one point
+   *  did; cutout points are not tracked. Absent on every takeoff before P.1. */
+  drawingSnaps?: (DrawingSnapKind | null)[];
 }
+
+/** What a takeoff point snapped to on the original drawing (step P.1). */
+export type DrawingSnapKind = "corner" | "end" | "mid" | "edge";
 
 /** A named design alternative: a full snapshot so options can be compared and
  *  switched without diffing. */

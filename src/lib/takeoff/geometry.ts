@@ -11,18 +11,22 @@
  *   - wallFaceLengths: a wall's centre line and its two faces, read from wallOutline, by
  *     default over the whole straight run (wallRun); pieces of different thicknesses give
  *     stepped faces, measured as the polyline with its steps.
- *   - snapTakeoffPoint: wall face corners, then centre-line endpoints, then door and window
- *     jambs, then wall midpoints, each within the tolerance, else the 0.05 m grid. No snap
- *     (Alt) keeps the point; `orthoFrom` (Shift) keeps it level or plumb with that point.
+ *   - snapTakeoffPoint: wall face corners, then (step P.1) the drawing's own corners and line
+ *     ends, then centre-line endpoints, then door and window jambs, then wall midpoints, then
+ *     the drawing's line midpoints, then the nearest point on a drawing line, each within its
+ *     tolerance (the walls' and the drawing's are separate), else the 0.05 m grid. No snap (Alt)
+ *     keeps the point; `orthoFrom` (Shift) keeps it level or plumb with that point.
  *
- * Connects to: src/lib/plan/{geometry,edit,rooms}.ts, src/lib/plan2d/openings.ts; used by
+ * Connects to: src/lib/plan/{geometry,edit,rooms}.ts, src/lib/plan2d/openings.ts,
+ * src/lib/pdf/snapIndex.ts (the drawing's points); used by
  * src/lib/takeoff/rows.ts, src/store/takeoffStore.ts, scripts/test-takeoff.ts.
  */
 import { wallRun, type FaceEdit } from "@/lib/plan/edit";
 import { JOINT_EPS, wallDirection, wallLength, wallOutline } from "@/lib/plan/geometry";
 import { deriveRooms, pointInPolygon } from "@/lib/plan/rooms";
+import { drawingCandidates, type SnapIndex } from "@/lib/pdf/snapIndex";
 import { openingFrame } from "@/lib/plan2d/openings";
-import type { Plan, Vec2 } from "@/types/plan";
+import type { Affine, DrawingSnapKind, Plan, Vec2 } from "@/types/plan";
 
 export type Pt = [number, number];
 export type Result<T> = FaceEdit<T>;
@@ -201,7 +205,17 @@ export const sideAt = (s: number, thickness: number, minCentre: number): Side =>
 
 // ---------------------------------------------------------------- snapping
 
-export type SnapKind = "corner" | "endpoint" | "jamb" | "midpoint" | "grid" | "free";
+export type SnapKind = "corner" | "endpoint" | "jamb" | "midpoint" | "grid" | "free" | `drawing-${DrawingSnapKind}`;
+
+/** The drawing kind a landing snapped to (step P.1), or null for a wall, grid or free landing. */
+export const drawingKindOf = (k: SnapKind): DrawingSnapKind | null => (k.startsWith("drawing-") ? (k.slice(8) as DrawingSnapKind) : null);
+
+/** The plan's vector PDF as a snap source (step P.1): its index, its mapping to plan metres and a tolerance in metres. */
+export interface DrawingSource {
+  index: SnapIndex;
+  mapping: Affine;
+  tolerance: number;
+}
 export interface SnapTarget {
   kind: Exclude<SnapKind, "grid" | "free">;
   point: Pt;
@@ -239,16 +253,30 @@ export function snapTakeoffPoint(
   plan: Pick<Plan, "walls" | "openings">,
   point: Pt,
   tolerance: number,
-  opts: { snap?: boolean; orthoFrom?: Pt | null } = {},
+  opts: { snap?: boolean; orthoFrom?: Pt | null; drawing?: DrawingSource | null } = {},
 ): Result<{ point: Pt; kind: SnapKind; ortho: boolean }> {
   let out: { point: Pt; kind: SnapKind } = { point: [point[0], point[1]], kind: "free" };
   if (opts.snap !== false) {
     const targets = snapTargets(plan);
-    let hit: SnapTarget | null = null;
-    for (const kind of ["corner", "endpoint", "jamb", "midpoint"] as const) {
+    const dr = opts.drawing ? drawingCandidates(opts.drawing.index, opts.drawing.mapping, { x: point[0], y: point[1] }, opts.drawing.tolerance) : null;
+    const nearestWall = (kind: SnapTarget["kind"]) => {
+      let hit: SnapTarget | null = null;
       for (const t of targets) if (t.kind === kind && d(t.point, point) <= tolerance && (!hit || d(t.point, point) < d(hit.point, point))) hit = t;
-      if (hit) break;
-    }
+      return hit && { point: hit.point, kind: hit.kind as SnapKind };
+    };
+    const fromDrawing = (h: { point: Pt; kind: DrawingSnapKind } | null | undefined) => h && { point: h.point, kind: `drawing-${h.kind}` as SnapKind };
+    // The priority order (header): the first tier with anything in reach wins, the nearest in it.
+    const tiers = [
+      () => nearestWall("corner"),
+      () => fromDrawing(dr?.point),
+      () => nearestWall("endpoint"),
+      () => nearestWall("jamb"),
+      () => nearestWall("midpoint"),
+      () => fromDrawing(dr?.mid),
+      () => fromDrawing(dr?.edge),
+    ];
+    let hit: { point: Pt; kind: SnapKind } | null = null;
+    for (const tier of tiers) if ((hit = tier() ?? null)) break;
     out = hit ? { point: [hit.point[0], hit.point[1]], kind: hit.kind } : { point: [clean(Math.round(point[0] / TAKEOFF_GRID) * TAKEOFF_GRID), clean(Math.round(point[1] / TAKEOFF_GRID) * TAKEOFF_GRID)], kind: "grid" };
   }
   const from = opts.orthoFrom;

@@ -151,7 +151,7 @@ function PdfDrawing(p: { bytes: Uint8Array; page: number; mapping: Affine; view:
         for (const id of pendingReq.current.keys()) if (id <= msg.id) pendingReq.current.delete(id); // this one, and any it replaced
         if (msg.id !== latest.current || !req) return msg.bitmap.close(); // stale: a newer one is coming
         setShot({ bitmap: msg.bitmap, ...req });
-      } else {
+      } else if (msg.type === "error") {
         console.warn("[background]", msg.message);
         pendingReq.current.clear();
         lastAsked.current = ""; // let the next change try again

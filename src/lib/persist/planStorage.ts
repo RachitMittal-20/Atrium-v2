@@ -19,7 +19,7 @@
  * 2D plan (step M.2c, `plan.background`) is stored as its descriptor only — asset id, kind, page and
  * mapping — never its bytes, which stay in IndexedDB; a malformed descriptor is dropped, never the plan.
  */
-import type { Affine, Background, Calibration, ImportFormat, ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Room, Takeoff, TakeoffValue, Vec2, Wall } from "@/types/plan";
+import type { Affine, Background, Calibration, DrawingSnapKind, ImportFormat, ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Room, Takeoff, TakeoffValue, Vec2, Wall } from "@/types/plan";
 
 export const STORAGE_KEY = "atrium-v2:plan";
 /** Bump when the stored shape changes, and add a case to `migrate`. */
@@ -196,6 +196,8 @@ function takeoffValue(v: unknown): TakeoffValue | null {
   return { value: v.value, ...(isStr(v.note) && { note: v.note }) };
 }
 
+const DRAWING_SNAPS: DrawingSnapKind[] = ["corner", "end", "mid", "edge"];
+
 /** A quantity takeoff (step M.2a), rebuilt field by field like every other entry. */
 function takeoff(v: unknown): Takeoff | null {
   if (!isObject(v) || !isStr(v.id) || !isStr(v.name) || (v.kind !== "length" && v.kind !== "area") || !isStr(v.wallsHash)) return null;
@@ -215,6 +217,11 @@ function takeoff(v: unknown): Takeoff | null {
   }
   if (v.source === "pdf") out.source = "pdf"; // step M.2b; any other value is dropped, never refused
   if (v.approximate === true) out.approximate = true;
+  // Step P.1: one drawing snap kind (or null) per point; anything else is dropped, never refused,
+  // so a damaged entry only costs the row its "PDF exact" basis.
+  const snaps = list(v.drawingSnaps);
+  if (snaps && snaps.length === pts.length && snaps.every((k) => k === null || DRAWING_SNAPS.includes(k as DrawingSnapKind)) && snaps.some((k) => k !== null))
+    out.drawingSnaps = snaps as (DrawingSnapKind | null)[];
   return out;
 }
 

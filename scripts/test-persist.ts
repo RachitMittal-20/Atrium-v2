@@ -589,6 +589,37 @@ async function checkBuildReachesStorage(storage: ReturnType<typeof fakeStorage>)
   console.log("background: old plans gain no field, the descriptor round-trips without bytes, a bad one is dropped");
 }
 
+// ---- step P.1: a takeoff's `drawingSnaps`, one drawing snap kind (or null) per point. Old takeoffs have
+// none and gain none; the field round-trips; a malformed one is dropped and the takeoff kept.
+{
+  const plain: Plan = { ...samplePlan, takeoffs: [{ id: "t-1", name: "Length 1", kind: "length", points: [[0, 0], [4, 0]], wallsHash: "abc" }] };
+  const back = parseStoredPlan(serializePlan(plain))!;
+  assert.ok(!("drawingSnaps" in back.takeoffs![0]), "an old takeoff gains no drawingSnaps field");
+  assert.deepEqual(back.takeoffs, plain.takeoffs, "and loads exactly as it was");
+  const snapped: Plan = {
+    ...samplePlan,
+    takeoffs: [
+      { id: "t-1", name: "Length 1", kind: "length", points: [[0, 0], [4, 0], [4, 3]], drawingSnaps: ["corner", null, "edge"], wallsHash: "abc" },
+      { id: "t-2", name: "Area 1", kind: "area", points: [[0, 0], [4, 0], [4, 3]], drawingSnaps: ["end", "mid", "corner"], wallsHash: "abc" },
+    ],
+  };
+  assert.deepEqual(parseStoredPlan(serializePlan(snapped))!.takeoffs, snapped.takeoffs, "drawingSnaps survive a save and reload");
+  for (const [what, value] of [
+    ["one entry too few", ["corner", null]],
+    ["an unknown kind", ["corner", "wall", "edge"]],
+    ["only nulls", [null, null, null]],
+    ["not a list", "corner"],
+  ] as const) {
+    const bad = JSON.parse(serializePlan(snapped));
+    bad.plan.takeoffs[0].drawingSnaps = value;
+    const loaded = parseStoredPlan(JSON.stringify(bad));
+    assert.ok(loaded, `a takeoff with drawingSnaps of ${what} still loads`);
+    assert.ok(!("drawingSnaps" in loaded!.takeoffs![0]), `and drops drawingSnaps of ${what}`);
+    assert.deepEqual(loaded!.takeoffs![0].points, snapped.takeoffs![0].points, "keeping its points");
+  }
+  console.log("drawingSnaps: old takeoffs gain no field, the kinds round-trip, malformed ones are dropped and the takeoff kept");
+}
+
 // (async because the debounce is waited out in real time; the CJS test runner has no top-level await)
 checkWiring()
   .then(checkBuildReachesStorage)

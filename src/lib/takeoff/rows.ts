@@ -13,6 +13,8 @@
  *     `Takeoff.source === "pdf"`) is measured between the ends of its own printed line, which
  *     lie off the building, so no point of it is on a wall: it is "PDF exact", or "Traced
  *     approximate" when `Takeoff.approximate` says the model check landed it on a traced wall.
+ *   - step P.1: a takeoff whose every point snapped to the plan's vector PDF (`drawingSnaps`,
+ *     no cutouts) is "PDF exact" wherever the walls are.
  *   - the CSV's last column is the row's source: "pdf" for a carried dimension, else "studio".
  *   - stale: the walls' hash (ids, ends, thicknesses) differs from the one stored when the
  *     takeoff was measured. Points are absolute and do not follow the walls.
@@ -80,6 +82,10 @@ export function basisOf(plan: Pick<Plan, "walls" | "openings">, points: Pt[]): B
   return worst ?? "Free points";
 }
 
+/** Every point of the takeoff snapped to the drawing (step P.1), and it has no cutouts. */
+export const drawnExact = (t: Pick<Takeoff, "points" | "cutouts" | "drawingSnaps">) =>
+  !t.cutouts?.length && t.drawingSnaps?.length === t.points.length && t.drawingSnaps.every((k) => k !== null);
+
 // ---------------------------------------------------------------- rows
 
 /** The measured value: a polyline's length, or an area minus its cutouts. */
@@ -108,7 +114,9 @@ export function takeoffRow(plan: Plan, t: Takeoff, hash = wallsHash(plan.walls))
     // the walls, so no point of it sits on a wall: its basis is the PDF's geometry, and
     // `approximate` (stamped at Build model from the model check) is what says a traced wall
     // is involved. Every other takeoff is judged by the walls its points sit on.
-    basis: t.source === "pdf" ? (t.approximate ? "Traced approximate" : "PDF exact") : basisOf(plan, [...t.points, ...(t.cutouts ?? []).flat()]),
+    // Step P.1: every point snapped to the vector PDF's own lines is exact against the drawing,
+    // wherever the walls are (cutout points are not tracked, so an area with cutouts is judged by its walls).
+    basis: t.source === "pdf" ? (t.approximate ? "Traced approximate" : "PDF exact") : drawnExact(t) ? "PDF exact" : basisOf(plan, [...t.points, ...(t.cutouts ?? []).flat()]),
     measured,
     difference: measured !== null && ref !== undefined ? measured - ref : null,
     status: measured === null ? "none" : takeoffStatus(t.kind, measured, ref),

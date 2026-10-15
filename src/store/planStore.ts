@@ -352,6 +352,7 @@ export const usePlanStore = create<PlanState>((set, get) => {
         if (takeoff.cutouts?.length) t.cutouts = takeoff.cutouts.map(copyPoints);
         if (takeoff.reference) t.reference = copyValue(takeoff.reference);
         if (takeoff.override) t.override = copyValue(takeoff.override);
+        if (takeoff.drawingSnaps?.length === t.points.length && takeoff.drawingSnaps.some((k) => k !== null)) t.drawingSnaps = [...takeoff.drawingSnaps]; // step P.1
         (d.takeoffs ??= []).push(t);
       });
       return id;

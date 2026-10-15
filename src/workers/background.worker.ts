@@ -17,20 +17,31 @@
  *        { type: "error", message }
  * A new render cancels the one in flight (pdf.js RenderTask.cancel); a cancelled render posts
  * nothing, and the page ignores any reply whose id is not its latest request.
+ *
+ * Step P.1, the drawing's snap index (src/store/drawingSnapStore.ts starts its own instance of this
+ * worker for it, and terminates it after the reply):
+ *   in   { type: "index", bytes, page }  the PDF's bytes (transferred) and the page
+ *   out  { type: "index", index, ms }    src/lib/pdf/snapIndex.ts's index (buffers transferred),
+ *        built from the page's VectorPage (extract.ts) here, never on the main thread; index is
+ *        null when the page is a scanned picture. ms: how long reading and building took.
  */
 import * as pdfjs from "pdfjs-dist";
 import * as core from "pdfjs-dist/build/pdf.worker.mjs";
 import type { PDFPageProxy, RenderTask } from "pdfjs-dist";
+import { extractVectorPage } from "@/lib/pdf/extract";
 import { openPdf } from "@/lib/pdf/open";
+import { indexForPage, transferables, type SnapIndex } from "@/lib/pdf/snapIndex";
 
 (globalThis as { pdfjsWorker?: unknown }).pdfjsWorker = core;
 
 export type BackgroundRequest =
   | { type: "open"; bytes: ArrayBuffer; page: number }
-  | { type: "render"; id: number; x: number; y: number; width: number; height: number; k: number };
+  | { type: "render"; id: number; x: number; y: number; width: number; height: number; k: number }
+  | { type: "index"; bytes: ArrayBuffer; page: number };
 export type BackgroundReply =
   | { type: "opened"; width: number; height: number }
   | { type: "rendered"; id: number; bitmap: ImageBitmap }
+  | { type: "index"; index: SnapIndex | null; ms: number }
   | { type: "error"; message: string };
 
 /** pdf.js's scratch canvases, as OffscreenCanvas: there is no document here (as in pdf.worker.ts). */
@@ -63,6 +74,12 @@ self.onmessage = async (e: MessageEvent<BackgroundRequest>) => {
       page = await doc.getPage(Math.min(Math.max(1, msg.page), doc.numPages));
       const { width, height } = page.getViewport({ scale: 1 });
       post({ type: "opened", width, height });
+    } else if (msg.type === "index") {
+      const t0 = performance.now();
+      const doc = await openPdf(pdfjs, new Uint8Array(msg.bytes), { wasmUrl: new URL("/pdfjs/wasm/", self.location.href).href, CanvasFactory: OffscreenCanvasFactory });
+      const vector = await extractVectorPage(pdfjs, await doc.getPage(Math.min(Math.max(1, msg.page), doc.numPages)));
+      const index = indexForPage(vector);
+      post({ type: "index", index, ms: performance.now() - t0 }, index ? transferables(index) : []);
     } else if (msg.type === "render") {
       if (!page) return;
       running?.cancel(); // stale: the camera moved on
