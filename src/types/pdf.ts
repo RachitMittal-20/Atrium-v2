@@ -119,6 +119,9 @@ export interface PdfScale {
   /** Numbers with no unit matched to lines: printed units per point. Only
    *  looked at when no dimension with a unit was matched. */
   unitless: { unitsPerPt: number; n: number; spreadPct: number; confidence: "good" | "check" } | null;
+  /** Step Q.1: segments (indexes into the page's segments) that are dimension annotation — the
+   *  lines dimensions label and their extension lines — so never wall faces (walls.ts). */
+  annotation?: number[];
 }
 
 /** What the import screen needs to know about the PDF page it is showing. */
@@ -211,6 +214,11 @@ export interface VectorWalls {
    *  one closes as wall, a wide one is left unbridged). Page metres, on the centre line.
    *  Absent on readings made before M.1d. */
   gaps?: { a: Vec2; b: Vec2; thickness: number; size: number }[];
+  /** Step Q.1: line work dropped as furniture, by group, page metres: "loop" a small closed loop
+   *  (under 1 m² or 0.6 m wide), "island" a group joined to no wall inside the building, "small" a
+   *  lone short piece (the clutter rule). `box` is the group's pairs' footprint as read (before the
+   *  joints), `walls` how many pieces. Absent on readings made before Q.1. */
+  furniture?: { kind: "loop" | "island" | "small"; walls: number; box: { x0: number; y0: number; x1: number; y1: number } }[];
 }
 
 /** One row of the dimension check (src/lib/pdf/dimensions.ts), or of the

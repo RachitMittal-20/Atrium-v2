@@ -43,6 +43,16 @@
  * within 3 px of a traced wall's centre line moves onto it and splits it.
  * Farther than 3 px, nothing moves (the validator then lists a free end).
  *
+ * A complete PDF reading stands on its own (step Q.1, rule 8). When the merge did not use the
+ * PDF's walls as read — it kept a traced wall, left PDF walls out in the validator rounds, or fell
+ * back to the whole tracing — the PDF's walls are merged again with NO traced walls. If that plan
+ * has every PDF wall, a clean validator, no free ends and at least one room, it is used: the
+ * raster is a picture of the same lines, and the tracing of a page with annotation or furniture
+ * near the walls fuses them into walls tens of millimetres off, which is what kept those groups
+ * traced. Coverage says `pdfOnly` and the review screen says PDF_ONLY_LINE. A page where the PDF
+ * misses a wall (drawn as one line, diagonal, curved) leaves free ends, so it merges as before.
+ * A merge that already used every PDF wall is kept as it is (with its snapping record).
+ *
  * Out-of-range gaps (step M.1d): walls.ts reports every collinear gap outside 0.45–4 m
  * that it did not read as an opening; they are carried to the coverage report in plan
  * metres whatever the merge decides, so nothing is dropped silently.
@@ -104,6 +114,8 @@ import type { OpeningClass, PdfInfo, UnusedArc, VectorWalls } from "@/types/pdf"
 import { OPENING_WIDTH } from "./openings";
 
 export const SNAP_PX = { near: 2, move: 3 };
+/** Rule 8 (step Q.1): what the review screen says when the tracing was not used. */
+export const PDF_ONLY_LINE = "Walls read entirely from the PDF; the picture tracing was not used.";
 /** walls.ts's clutter rule, applied to traced walls too. */
 const CLUTTER = { length: 1.5, reach: 0.3 };
 const PARALLEL = Math.sin((2 * Math.PI) / 180);
@@ -149,6 +161,9 @@ export interface Coverage {
    *  one closes as wall, a wide one leaves the wall unbridged. PLAN metres, so the overlay
    *  can highlight them; `size` is the gap itself. */
   outOfRangeGaps: { a: Vec2; b: Vec2; thickness: number; size: number }[];
+  /** Step Q.1: line work left out as furniture (walls.ts `furniture`), in PLAN metres: each group's
+   *  kind, piece count, footprint size (w along x, d along y) and centre, for the review screen. */
+  furniture: { kind: "loop" | "island" | "small"; walls: number; size: { w: number; d: number }; centre: Vec2 }[];
   /** Fallbacks and refused snaps, in plain words. */
   notes: string[];
   /** Plan (0, 0) in page metres at the scale in use. */
@@ -157,6 +172,8 @@ export interface Coverage {
   mPerPt: number;
   /** True when the whole traced plan was used. */
   fellBack: boolean;
+  /** Step Q.1 (rule 8): true when the walls were read entirely from the PDF and the tracing was not used. */
+  pdfOnly: boolean;
 }
 
 type Seg = { a: Vec2; b: Vec2 };
@@ -245,7 +262,16 @@ export function buildPdfPlan(analysis: Analysis, pdf: PdfInfo, scale: PlanScale,
   const name = opts.name ?? "Imported plan";
   const { width, height } = analysis.pixels;
   const traced = buildPlan({ walls: analysis.walls, openings: analysis.openings, unpaired: analysis.unpaired, imageSize: { width, height }, name }, scale);
-  const out = mergeVector(traced, vector, { pxPerM: scale.pxPerM, pxPerPt: pdf.pxPerPt, rasterOrigin: pdf.rasterOrigin, labels: analysis.labels, forceTraced: opts.forceTraced ?? [] });
+  const merge = { pxPerM: scale.pxPerM, pxPerPt: pdf.pxPerPt, rasterOrigin: pdf.rasterOrigin, labels: analysis.labels, forceTraced: opts.forceTraced ?? [] };
+  let out = mergeVector(traced, vector, merge);
+  // Rule 8 (step Q.1, header): when the merge did not use the PDF's walls as read (it kept a traced
+  // wall, fell back, or left PDF walls out), see whether the PDF's walls make a plan on their own;
+  // if they do, the tracing has nothing exact to add.
+  if ((out.coverage.traced > 0 || out.coverage.fellBack || out.coverage.exact !== vector.walls.length) && !opts.forceTraced?.length) {
+    const alone = mergeVector({ plan: { ...traced.plan, walls: [], openings: [] }, report: { ...traced.report, problems: [] } }, vector, { ...merge, forceTraced: [] });
+    const complete = !alone.coverage.fellBack && alone.plan.walls.length === vector.walls.length && validatePlan(alone.plan).length === 0 && alone.report.freeEnds.length === 0 && deriveRooms(alone.plan).length >= 1;
+    if (complete) out = { ...alone, coverage: { ...alone.coverage, pdfOnly: true } };
+  }
   const now = new Date().toISOString(); // real creation times, as buildFromAnalysis stamps them
   return { ...out, plan: { ...out.plan, meta: { ...out.plan.meta, createdAt: now, updatedAt: now } } };
 }
@@ -627,6 +653,7 @@ export function mergeVector(
       origin,
       mPerPt,
       fellBack: false,
+      pdfOnly: false,
     },
   };
 }
@@ -642,7 +669,7 @@ function openingCoverage(
   vector: VectorWalls,
   f: number,
   counts: { snapped: number; traced: number; added: number; replaced: number },
-): Pick<Coverage, "openings" | "tracedOpenings" | "unclassifiedOpenings" | "unusedArcs" | "outOfRangeGaps"> {
+): Pick<Coverage, "openings" | "tracedOpenings" | "unclassifiedOpenings" | "unusedArcs" | "outOfRangeGaps" | "furniture"> {
   const wall = new Map(plan.walls.map((w) => [w.id, w]));
   const mark = (o: Opening) => {
     const w = wall.get(o.wallId)!;
@@ -666,6 +693,8 @@ function openingCoverage(
     unusedArcs,
     // Step M.1d: the gaps the PDF's lines leave that are not openings, at the scale in use.
     outOfRangeGaps: (vector.gaps ?? []).map((g) => ({ a: pageToPlan({ x: g.a.x * f, y: g.a.y * f }), b: pageToPlan({ x: g.b.x * f, y: g.b.y * f }), thickness: g.thickness * f, size: g.size * f })),
+    // Step Q.1: what was left out as furniture, at the scale in use.
+    furniture: (vector.furniture ?? []).map((x) => ({ kind: x.kind, walls: x.walls, size: { w: (x.box.x1 - x.box.x0) * f, d: (x.box.y1 - x.box.y0) * f }, centre: pageToPlan({ x: ((x.box.x0 + x.box.x1) / 2) * f, y: ((x.box.y0 + x.box.y1) / 2) * f }) })),
   };
 }
 
@@ -723,6 +752,7 @@ function fallback(traced: { plan: Plan; report: BuildReport }, o: { pxPerM: numb
       origin,
       mPerPt: o.pxPerPt / o.pxPerM,
       fellBack: true,
+      pdfOnly: false,
     },
   };
 }

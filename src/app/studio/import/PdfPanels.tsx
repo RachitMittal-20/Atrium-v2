@@ -30,7 +30,7 @@
 import { DOOR_SIZE, WINDOW_SIZE } from "@/data/samplePlan";
 import { paperName } from "@/lib/pdf/extract";
 import { OPENING_WIDTH } from "@/lib/pdf/openings";
-import type { Coverage } from "@/lib/pdf/snap";
+import { PDF_ONLY_LINE, type Coverage } from "@/lib/pdf/snap";
 import { formatLength, STUDIO_DP, type LengthUnit } from "@/lib/units/format";
 import { useUnitsStore } from "@/store/unitsStore";
 import type { PdfInfo } from "@/types/pdf";
@@ -154,6 +154,13 @@ export function gapsLine(c: Coverage, unit: LengthUnit = "mm"): string {
   return `${count(g.length, "gap", "gaps")} outside ${len(OPENING_WIDTH[0])} to ${len(OPENING_WIDTH[1])} ${g.length === 1 ? "was" : "were"} not read as openings (sizes: ${g.map((x) => len(x.size)).join(", ")}).`;
 }
 
+/** Step Q.1: the furniture sentence (walls.ts rules 6 and 7, and the clutter rule), or "" when nothing was left out. */
+export function furnitureLine(c: Pick<Coverage, "furniture">): string {
+  const n = c.furniture.length;
+  return n ? `${count(n, "group of lines was", "groups of lines were")} read as furniture or fixtures, not walls, and left out:` : "";
+}
+const FURNITURE_KIND = { loop: "Small closed loop", island: "Free-standing group", small: "Short piece joined to nothing" } as const;
+
 /** The dropped-phantom sentence (step M.2b), or "" when nothing was dropped. */
 export function droppedLine(c: Coverage, unit: LengthUnit = "mm"): string {
   const d = c.droppedOpenings;
@@ -174,6 +181,11 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
       <p data-testid="coverage-line" data-exact={c.exact} data-walls={c.walls} data-traced={c.traced}>
         {coverageLine(c, unit)}
       </p>
+      {c.pdfOnly && (
+        <p className="font-medium" data-testid="coverage-pdf-only">
+          {PDF_ONLY_LINE}
+        </p>
+      )}
       <p data-testid="coverage-openings-line" data-exact={c.openings.exact} data-total={c.openings.total} data-traced={c.openings.traced} data-unclassified={c.openings.unclassified} data-arcs={c.openings.arcsNotUsed}>
         {openingsLine(c)}
       </p>
@@ -192,6 +204,23 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
         <p className="text-sm text-smoke" data-testid="coverage-heights">
           Heights are not in a PDF: doors are {len(DOOR_SIZE.height)} and windows {len(WINDOW_SIZE.height)} on a {len(WINDOW_SIZE.sillHeight)} sill (default height). Change them in the studio.
         </p>
+      )}
+      {c.furniture.length > 0 && (
+        <details className="text-sm" open={c.furniture.length <= 6}>
+          <summary className="cursor-pointer" data-testid="coverage-furniture-line" data-count={c.furniture.length}>
+            {furnitureLine(c)}
+          </summary>
+          <ul className="mt-1 list-disc pl-5 text-smoke" data-testid="coverage-furniture">
+            {c.furniture.map((f, i) => (
+              <li key={i} data-kind={f.kind} data-w={f.size.w.toFixed(4)} data-d={f.size.d.toFixed(4)} data-x={f.centre.x.toFixed(4)} data-y={f.centre.y.toFixed(4)}>
+                <span className="text-iron">
+                  {FURNITURE_KIND[f.kind]}, {len(f.size.w)} × {len(f.size.d)}
+                </span>
+                , centred at x {len(f.centre.x)}, y {len(f.centre.y)} from the plan&apos;s top-left ({count(f.walls, "piece", "pieces")})
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {c.unclassifiedOpenings.length > 0 && (
         <details className="text-sm" open={c.unclassifiedOpenings.length <= 6}>

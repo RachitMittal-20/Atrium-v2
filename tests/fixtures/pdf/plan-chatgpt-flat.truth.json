@@ -1,0 +1,406 @@
+{
+ "file": "plan-chatgpt-flat.pdf",
+ "source": "ChatGPT-generated (a reportlab script), not a real CAD export. Copied unchanged from test-plans/plan-test.pdf (step Q.1).",
+ "frame": "Millimetres, x east, y NORTH (up the sheet), origin the building's south-west outer corner. On the page: x_pt = 420 + 0.0283465 x_mm, y_pt = 586.89 - 0.0283465 y_mm (A3 landscape, 1:100).",
+ "page": {
+  "size": "A3 landscape",
+  "scale": "1:100",
+  "units": "mm",
+  "wall_face_line_width_pt": 0.25
+ },
+ "walls": [
+  {
+   "id": "EXT_SOUTH",
+   "a": [
+    115,
+    115
+   ],
+   "b": [
+    10885,
+    115
+   ],
+   "thickness": 230
+  },
+  {
+   "id": "EXT_NORTH",
+   "a": [
+    115,
+    7885
+   ],
+   "b": [
+    10885,
+    7885
+   ],
+   "thickness": 230
+  },
+  {
+   "id": "EXT_WEST",
+   "a": [
+    115,
+    115
+   ],
+   "b": [
+    115,
+    7885
+   ],
+   "thickness": 230
+  },
+  {
+   "id": "EXT_EAST",
+   "a": [
+    10885,
+    115
+   ],
+   "b": [
+    10885,
+    7885
+   ],
+   "thickness": 230
+  },
+  {
+   "id": "INT_BEDROOM_HALL",
+   "a": [
+    4100.5,
+    230
+   ],
+   "b": [
+    4100.5,
+    7770
+   ],
+   "thickness": 115
+  },
+  {
+   "id": "INT_BEDROOM_SPLIT",
+   "a": [
+    230,
+    4000.5
+   ],
+   "b": [
+    4100.5,
+    4000.5
+   ],
+   "thickness": 115
+  },
+  {
+   "id": "INT_BATH_SOUTH",
+   "a": [
+    4100.5,
+    5500.5
+   ],
+   "b": [
+    6600.5,
+    5500.5
+   ],
+   "thickness": 115
+  },
+  {
+   "id": "INT_KITCHEN_LIVING",
+   "a": [
+    6600.5,
+    5500.5
+   ],
+   "b": [
+    10885,
+    5500.5
+   ],
+   "thickness": 115
+  },
+  {
+   "id": "INT_HALL_LIVING",
+   "a": [
+    6600.5,
+    230
+   ],
+   "b": [
+    6600.5,
+    5500.5
+   ],
+   "thickness": 115
+  }
+ ],
+ "doors": [
+  {
+   "id": "D1_ENTRY",
+   "wall": "EXT_SOUTH",
+   "a": [
+    4800,
+    115
+   ],
+   "b": [
+    5700,
+    115
+   ],
+   "width": 900,
+   "hinge": [
+    4800,
+    230
+   ],
+   "swing": "inward/north-east"
+  },
+  {
+   "id": "D2_BEDROOM_2",
+   "wall": "INT_BEDROOM_HALL",
+   "a": [
+    4100.5,
+    2500
+   ],
+   "b": [
+    4100.5,
+    3400
+   ],
+   "width": 900,
+   "hinge": [
+    4043,
+    2500
+   ],
+   "swing": "into Bedroom 2/west"
+  },
+  {
+   "id": "D3_BEDROOM_1",
+   "wall": "INT_BEDROOM_HALL",
+   "a": [
+    4100.5,
+    4300
+   ],
+   "b": [
+    4100.5,
+    5200
+   ],
+   "width": 900,
+   "hinge": [
+    4043,
+    4300
+   ],
+   "swing": "into Bedroom 1/west"
+  },
+  {
+   "id": "D4_BATHROOM",
+   "wall": "INT_BATH_SOUTH",
+   "a": [
+    4700,
+    5500.5
+   ],
+   "b": [
+    5600,
+    5500.5
+   ],
+   "width": 900,
+   "hinge": [
+    4700,
+    5558
+   ],
+   "swing": "into Bathroom/north-east"
+  },
+  {
+   "id": "D5_LIVING",
+   "wall": "INT_HALL_LIVING",
+   "a": [
+    6600.5,
+    1200
+   ],
+   "b": [
+    6600.5,
+    2100
+   ],
+   "width": 900,
+   "hinge": [
+    6658,
+    1200
+   ],
+   "swing": "into Living/east"
+  }
+ ],
+ "windows": [
+  {
+   "id": "W1_BEDROOM_1_WEST",
+   "wall": "EXT_WEST",
+   "a": [
+    115,
+    5200
+   ],
+   "b": [
+    115,
+    6600
+   ],
+   "width": 1400
+  },
+  {
+   "id": "W2_BEDROOM_2_SOUTH",
+   "wall": "EXT_SOUTH",
+   "a": [
+    700,
+    115
+   ],
+   "b": [
+    2100,
+    115
+   ],
+   "width": 1400
+  },
+  {
+   "id": "W3_KITCHEN_NORTH",
+   "wall": "EXT_NORTH",
+   "a": [
+    8200,
+    7885
+   ],
+   "b": [
+    9700,
+    7885
+   ],
+   "width": 1500
+  },
+  {
+   "id": "W4_LIVING_EAST",
+   "wall": "EXT_EAST",
+   "a": [
+    10885,
+    2600
+   ],
+   "b": [
+    10885,
+    4200
+   ],
+   "width": 1600
+  }
+ ],
+ "passages": [
+  {
+   "id": "OP1_KITCHEN_LIVING",
+   "wall": "INT_KITCHEN_LIVING",
+   "a": [
+    8200,
+    5500.5
+   ],
+   "b": [
+    9400,
+    5500.5
+   ],
+   "width": 1200
+  }
+ ],
+ "rooms": [
+  {
+   "name": "Bedroom 1",
+   "min": [
+    230,
+    4058
+   ],
+   "max": [
+    4043,
+    7770
+   ]
+  },
+  {
+   "name": "Bedroom 2",
+   "min": [
+    230,
+    230
+   ],
+   "max": [
+    4043,
+    3943
+   ]
+  },
+  {
+   "name": "Bathroom",
+   "min": [
+    4158,
+    5558
+   ],
+   "max": [
+    6543,
+    7770
+   ]
+  },
+  {
+   "name": "Kitchen",
+   "min": [
+    6658,
+    5558
+   ],
+   "max": [
+    10770,
+    7770
+   ]
+  },
+  {
+   "name": "Living",
+   "min": [
+    6658,
+    230
+   ],
+   "max": [
+    10770,
+    5443
+   ]
+  },
+  {
+   "name": "Hall",
+   "min": [
+    4158,
+    230
+   ],
+   "max": [
+    6543,
+    5443
+   ]
+  }
+ ],
+ "dimensions": [
+  {
+   "id": "DIM_01_OVERALL_WIDTH",
+   "value": 11000,
+   "orientation": "horizontal"
+  },
+  {
+   "id": "DIM_02_BEDROOM_1_WIDTH",
+   "value": 3813,
+   "orientation": "horizontal"
+  },
+  {
+   "id": "DIM_03_KITCHEN_WIDTH",
+   "value": 4112,
+   "orientation": "horizontal"
+  },
+  {
+   "id": "DIM_04_OVERALL_DEPTH",
+   "value": 8000,
+   "orientation": "vertical"
+  },
+  {
+   "id": "DIM_05_BEDROOM_1_DEPTH",
+   "value": 3712,
+   "orientation": "vertical"
+  },
+  {
+   "id": "DIM_06_BEDROOM_2_DEPTH",
+   "value": 3713,
+   "orientation": "vertical"
+  },
+  {
+   "id": "DIM_07_BATHROOM_DEPTH",
+   "value": 2212,
+   "orientation": "vertical"
+  },
+  {
+   "id": "DIM_08_HALL_WIDTH",
+   "value": 2385,
+   "orientation": "horizontal"
+  },
+  {
+   "id": "DIM_09_LIVING_DEPTH",
+   "value": 5213,
+   "orientation": "vertical"
+  }
+ ],
+ "discrepancies": [
+  "No wall between the Bathroom and the Kitchen: the truth lists them as two rooms (x <= 6543 and x >= 6658), but neither its own wall list nor the drawing has a wall at x ~ 6600, y 5558-7770. The only line there is DIM_07's dimension line (x = 6450). The drawing closes 5 rooms, not 6.",
+  "DIM_07's extension lines start at x = 6543, the face of that wall that is not drawn.",
+  "Wall ends: the truth says centre-line ends, but interior walls stop at the FACES of the walls they meet (INT_BEDROOM_HALL y 230-7770), and INT_BEDROOM_SPLIT starts at a face and ends at a centre line. Atrium runs a wall that meets another to that wall's centre line, so lengths differ by half a thickness.",
+  "Doors use two conventions: D1 and D4 draw the leaf SHUT, along the face across the gap, with the arc from the strike jamb to the open position (the truth's 'leaf_open_end' is then the leaf's tip when shut); D2, D3 and D5 draw the leaf open.",
+  "Wall faces and dimension lines are both 0.25 pt and furniture is 0.2-0.35 pt, so line weight cannot tell walls from other lines.",
+  "Minor: the 'Bathroom' label starts at x = 3995, inside the bedroom/hall partition; its centre is in the room.",
+  "The truth lists no furniture; the drawing has two beds, a bath, basin, WC, kitchen counter, sofa and table."
+ ]
+}

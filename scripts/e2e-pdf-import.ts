@@ -80,6 +80,13 @@
  *   - plan-small-on-big.pdf (plan-filled on an A0 sheet) goes through every fixture check;
  *   - one more line per file read at 1440, fixtures and test-plans/ alike: classification,
  *     walls exact, walls traced, openings exact, openings traced, dimensions read, flagged, time.
+ * Step Q.1 (general CAD conventions, scripts/test-pdf-conventions.ts): the six new SYNTHETIC
+ * fixtures go through every fixture check above; on the review screen, "Walls read entirely from the
+ * PDF; the picture tracing was not used." is shown exactly for plan-dims-close and plan-window-board
+ * (rule 8) and for no older fixture; plan-furniture lists six furniture groups, both 0.5 m columns with
+ * their size and place; plan-bare-mm's reason names its unit note; plan-against-wall's known failure
+ * (two windows hidden by a centre line) is asserted as it is. plan-chatgpt-flat.pdf (ChatGPT-generated,
+ * not real CAD) has its own row with honest expectations, built and opened in the studio.
  * Screenshots in /tmp/studio/: pdf-review-1440.png, pdf-dimension-check-1440.png,
  * pdf-fit-warning-1440.png, pdf-review-390.png, pdf-coverage-1440.png,
  * pdf-model-check-1440.png, pdf-clutter-1440.png, pdf-traced-1440.png, and (M.1c)
@@ -95,6 +102,7 @@ import { afterFrames, step, waitForHook, warmRoutes, watchErrors, withSuiteTimeo
 import { samplePlan } from "../src/data/samplePlan";
 import { titleCase } from "../src/lib/blueprint/nameRooms";
 import { formatFeetInches } from "../src/lib/pdf/dimensions";
+import { PDF_ONLY_LINE } from "../src/lib/pdf/snap";
 import { doorSwing } from "../src/lib/plan2d/openings";
 import type { Opening } from "../src/types/plan";
 import type { PdfInfo } from "../src/types/pdf";
@@ -127,6 +135,8 @@ const DOOR_FILES = ["plan-doors.pdf", "plan-doors-rect.pdf"];
 /** The out-of-range-gap fixture (step M.1d): checked for its gap report, not for exact walls. */
 const GAP_FILE = "plan-gaps.pdf";
 const GAPS = /(\d+) gaps? outside ([\d'".\- \/a-z]+) to ([\d'".\- \/a-z]+) (?:was|were) not read as openings \(sizes: ([^)]+)\)\./;
+/** Step Q.1: the fixtures whose tracing is worse than their PDF reading (rule 8). */
+const PDF_ONLY_FILES = ["plan-dims-close.pdf", "plan-window-board.pdf"];
 const OPENINGS = /^(\d+) of (\d+) openings read exactly \(doors (\d+), windows (\d+), unclassified (\d+)\); (\d+) traced approximately; (\d+) arcs? not used\.$/;
 
 const errors: string[] = [];
@@ -492,6 +502,37 @@ async function session(browser: Browser, width: number, height: number, touch: b
     return `hinge ${from} → ${to} by a real click moved the 3D leaf ${moved.toFixed(2)} m and mirrored its turn; Ctrl+Z restored both`;
   };
 
+  /** Step Q.1 on the review screen: the "read entirely from the PDF" line exactly where rule 8 applies,
+   *  the furniture list (every group with its size and place: both 0.5 m columns), the stated unit, and
+   *  plan-against-wall's known failure (two windows hidden by a centre line), as it is. */
+  const checkQ1Review = async (file: string) => {
+    const out: string[] = [];
+    const only = tid(page, "coverage-pdf-only");
+    if (PDF_ONLY_FILES.includes(file)) {
+      assert.equal((await only.innerText()).trim(), PDF_ONLY_LINE, `${file}: the review says the tracing was not used`);
+      out.push(`"${PDF_ONLY_LINE}"`);
+    } else assert.equal(await only.count(), 0, `${file}: the tracing was used as before (no PDF-only line)`);
+    if (file === "plan-furniture.pdf") {
+      const items = tid(page, "coverage-furniture").locator("li");
+      assert.equal(await items.count(), 6, `${file}: six groups listed as furniture`);
+      for (const [x, y] of [[8.25, 2.75], [5.75, 1.75]]) {
+        const hit = await items.evaluateAll((els, [x, y]) => els.filter((e) => Math.abs(Number(e.getAttribute("data-w")) - 0.5) < 0.001 && Math.abs(Number(e.getAttribute("data-d")) - 0.5) < 0.001 && Math.abs(Number(e.getAttribute("data-x")) - x) < 0.001 && Math.abs(Number(e.getAttribute("data-y")) - y) < 0.001).length, [x, y]);
+        assert.equal(hit, 1, `${file}: the 0.5 m column at (${x}, ${y}) is listed with its size and place`);
+      }
+      out.push(`furniture: "${(await tid(page, "coverage-furniture-line").innerText()).trim()}" ${await items.count()} groups, both columns 0.50 × 0.50 m at their places`);
+    }
+    if (file === "plan-bare-mm.pdf") {
+      assert.ok((await tid(page, "pdf-scale-reason").innerText()).includes(`as the drawing's note "ALL DIMENSIONS IN mm" says`), `${file}: the reason names the note`);
+      out.push("bare numbers read as mm from the note");
+    }
+    if (file === "plan-against-wall.pdf") {
+      // KNOWN FAILURE (step Q.1), asserted as it is: the centre line through the west wall hides its two windows.
+      assert.equal(await tid(page, "coverage-openings-line").getAttribute("data-total"), "7", `${file}: the known failure is as documented (7 of 9 openings)`);
+      out.push("KNOWN FAILURE: the two west windows are not read (a centre line joins their middle glazing line)");
+    }
+    return out.length ? `; ${out.join("; ")}` : "";
+  };
+
   /** Step X.1: the extra line per file, read from the review screen before anything is built. */
   const summaryLine = async (file: string, ms: number) => {
     const pdf = await page.evaluate(() => (window as Win).__importPdf);
@@ -584,6 +625,7 @@ async function session(browser: Browser, width: number, height: number, touch: b
       }
       const cov = await checkCoverage(file, t);
       line += `; "${cov.text}" ${cov.openings}`;
+      line += await checkQ1Review(file);
       if (DOOR_FILES.includes(file)) line += `; ${await checkDoorsReview(file, t)}`;
       if (t.dims.length) {
         const approx = await checkModel(file, t);
@@ -672,6 +714,41 @@ async function session(browser: Browser, width: number, height: number, touch: b
     const line = `${touch ? "390" : "1440"} misprinted: 4100 mm Flagged, overridden to 4000 mm with measured ${measured} kept; model check flagged and overridden with the model's ${model} kept; CSV "${csvRow}" / "${modelRow}"`;
     report.push(line);
     console.log(line);
+  }
+
+  // ---------------------------------------------------------------- step Q.1: plan-chatgpt-flat (ChatGPT-generated, not real CAD)
+  // HONEST expectations (scripts/test-pdf-chatgpt.ts has the same, against its truth): what is read,
+  // and the two things still wrong — the open passage is an unclassified door, and Bathroom and
+  // Kitchen are one room because the drawing has no wall between them.
+  if (!touch) {
+    step("1440 plan-chatgpt-flat");
+    const file = "plan-chatgpt-flat.pdf";
+    const t0 = Date.now();
+    await upload(join(DIR, file));
+    const ms = Date.now() - t0;
+    const extra = await summaryLine(file, ms);
+    assert.equal((await tid(page, "pdf-badge").textContent())?.trim(), "Vector PDF", `${file}: badge`);
+    assert.equal(await tid(page, "pdf-scale-status").getAttribute("data-confidence"), "good", `${file}: scale good`);
+    const rows = tid(page, "dim-row");
+    assert.equal(await rows.count(), 9, `${file}: the nine bare-mm dimensions are rows`);
+    assert.equal(await page.locator("[data-testid=dim-row][data-status=ok]").count(), 9, `${file}: all OK`);
+    assert.equal(await page.locator("[data-testid=model-row][data-status=ok]").count(), 9, `${file}: all nine land on the model, OK`);
+    const cl = tid(page, "coverage-line");
+    assert.deepEqual([await cl.getAttribute("data-walls"), await cl.getAttribute("data-exact"), await cl.getAttribute("data-traced")], ["16", "16", "0"], `${file}: 16 of 16 walls exact`);
+    assert.equal((await tid(page, "coverage-pdf-only").innerText()).trim(), PDF_ONLY_LINE, `${file}: the tracing was not used`);
+    const ol = (await tid(page, "coverage-openings-line").innerText()).trim();
+    assert.equal(ol, "10 of 10 openings read exactly (doors 5, windows 4, unclassified 1); 0 traced approximately; 0 arcs not used.", `${file}: openings line`);
+    const furniture = await tid(page, "coverage-furniture").locator("li").count();
+    assert.equal(furniture, 9, `${file}: nine groups of furniture listed`);
+    const plan = await buildAndOpen();
+    assert.ok(plan.walls.length === 16 && plan.walls.every((w) => w.provenance === "vector"), `${file}: 16 walls in the studio, all read from the PDF`);
+    const names = plan.rooms.map((r) => r.name).sort();
+    assert.deepEqual(names, ["Bathroom / Kitchen", "Bedroom 1", "Bedroom 2", "Hall", "Living"], `${file}: the five rooms the drawing closes`);
+    report.push(
+      `1440 ${file} (ChatGPT-generated, not real CAD): walls 16 exact, 0 traced ("${PDF_ONLY_LINE}"); "${ol}"; 9 dimensions read, 0 flagged, model check 9 OK; ${furniture} furniture groups listed; rooms ${names.join(", ")}. Still wrong: the passage is an unclassified door; Bathroom and Kitchen are one room (no wall drawn); ${(ms / 1000).toFixed(1)} s`,
+      extra,
+    );
+    console.log(report.slice(-2).join("\n"));
   }
 
   // ---------------------------------------------------------------- local real PDFs (never committed)

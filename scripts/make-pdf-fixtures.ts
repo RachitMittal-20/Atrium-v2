@@ -118,7 +118,7 @@ export interface Truth {
   /** Expected mismatch measured ratio (plan-fit), or null. */
   mismatchRatio: number | null;
   /** lengthPt: what should be measured (between the ticks, or the line); lineLengthPt: the drawn line (step M.1b). */
-  dims: { text: string; metres: number; lengthPt: number; measure?: "ticks" | "line"; lineLengthPt?: number; spans?: "opening width" }[];
+  dims: { text: string; metres: number; lengthPt: number; measure?: "ticks" | "line"; lineLengthPt?: number; spans?: "opening width" | "inside faces" | "outside faces" }[];
   segments: Seg[];
   arcs: { cx: number; cy: number; r: number }[];
   texts: { str: string; x: number; y: number; rotation: number; height: number; width: number }[];
@@ -303,7 +303,29 @@ class Pen {
 
 interface Options {
   walls: "fill" | "stroke";
-  dims: "mm" | "imperial" | null;
+  /** "bare" (step Q.1): millimetres printed as bare numbers ("4000"), as metric CAD prints them. */
+  dims: "mm" | "imperial" | "bare" | null;
+  /** Step Q.1: a general note printed in the title block, e.g. "ALL DIMENSIONS IN mm". */
+  note?: string;
+  /** Step Q.1 (plan-dims-close): dimension strings drawn CLOSE to the walls instead of the usual set,
+   *  the way a generated drawing draws them: extension lines from the measured face to the dimension
+   *  line, ending on it; a string 0.35 m off the outer face and a second one stacked 0.25 m beyond it;
+   *  and one across a room whose ends sit on the two wall faces it measures. */
+  closeDims?: boolean;
+  /** Step Q.1 (plan-against-wall): a bath (outline and rim, 0.7 × 1.8 m) standing 5 cm off the
+   *  bathroom's east wall, so its back lines lie within 0.6 m of that wall's OUTER face with the
+   *  inner face between; and a centre line drawn lengthwise through the west wall, 0.4 m past
+   *  both of its ends. */
+  againstWall?: boolean;
+  /** Step Q.1 (plan-window-board): an interior window board (sill) drawn as one line 0.1 m in front
+   *  of the living room's north window and 5 cm past each jamb, within 0.6 m of its glazing lines. */
+  windowBoard?: boolean;
+
+  /** Step Q.1 (plan-furniture): a corner cupboard of two thin double-line partitions in bedroom 1
+   *  (a 0.6 × 0.45 m loop with the room's walls), and free-standing furniture drawn as a generated
+   *  plan draws it: a sofa of nested rectangles, a bed with pillows and a duvet fold, a bath with
+   *  its rim, and two 0.5 m square columns, one stroked and one filled. */
+  furniture?: boolean;
   fit?: number;
   rotate?: number;
   imperial?: boolean;
@@ -339,13 +361,18 @@ interface FixtureOpening {
   offset: number;
   width: number;
   /** "oddgap" (step M.1d) is a bare gap drawn OUTSIDE 0.45–4 m: never an opening, only reported. */
-  style: "door" | "double" | "sliding" | "window3" | "window2" | "gap" | "oddgap";
+  style: "door" | "double" | "sliding" | "window3" | "window2" | "gap" | "oddgap" | "glass3";
   hinge?: "a" | "b";
   side?: 1 | -1;
   /** Step M.1d: how the swing arc is drawn (default a polyline), and the leaf as a thin
    *  closed rectangle 60 mm across instead of one line (plan-doors-rect). */
   arc?: "poly" | "bezier";
   leaf?: "line" | "rect";
+  /** Step Q.1 (plan-strike-jamb), as a generated plan draws a swing: the hinge on the FACE on the
+   *  leaf's side, the arc (a Bézier) ending exactly at the strike jamb's face corner, where the
+   *  wall's face goes on. "open": the leaf drawn open, square to the wall; "closed": the leaf
+   *  drawn shut along the face across the gap, the arc sweeping out to the open position. */
+  strike?: "open" | "closed";
 }
 
 /** plan-doors' openings (step M.1c). The sample's a→b: BC east, BI / IF / KL / CM south, LF west, HA / GH north, EL west. */
@@ -362,7 +389,7 @@ const DOOR_FIXTURE: FixtureOpening[] = [
   { id: "gap-bed2", wallId: "w-GH", offset: 2, width: 1, style: "gap" },
   { id: "win-bath", wallId: "w-EL", offset: 1.5, width: 0.6, style: "window3" },
 ];
-const CLASS_OF = { door: "door", double: "double", sliding: "sliding", window3: "window", window2: "window", gap: "unclassified", oddgap: "unclassified" } as const;
+const CLASS_OF = { door: "door", double: "double", sliding: "sliding", window3: "window", window2: "window", glass3: "window", gap: "unclassified", oddgap: "unclassified" } as const;
 /** plan-doors-rect (step M.1d): the same house with every leaf drawn as a thin closed
  *  rectangle, Bézier arcs on some doors and polyline arcs on others, and TWO doors on the
  *  north wall (w-BC) hinged at opposite jambs and opening to opposite sides. */
@@ -392,6 +419,26 @@ const GAP_FIXTURE: FixtureOpening[] = [
   { id: "wing-living-e", wallId: "w-CM", offset: 2.5, width: 1.2, style: "window3" },
   { id: "wing-bath", wallId: "w-EL", offset: 1.5, width: 0.6, style: "window3" },
 ];
+/** plan-strike-jamb (step Q.1): the sample's openings, but bedroom 1's partition (w-BI) carries two
+ *  doors with 0.8 m of wall between them and 0.7 m beyond, their arcs ending at the strike jamb's
+ *  face corner, and the bathroom door's leaf is drawn shut (1.15 m of wall beyond it). */
+const STRIKE_FIXTURE: FixtureOpening[] = [
+  { id: "d-front", wallId: "w-BC", offset: 3, width: 1, style: "door", hinge: "a", side: 1, arc: "bezier" },
+  { id: "sj-bed1a", wallId: "w-BI", offset: 1.2, width: 0.9, style: "door", hinge: "a", side: 1, strike: "open" },
+  { id: "sj-bed1b", wallId: "w-BI", offset: 2.9, width: 0.9, style: "door", hinge: "a", side: 1, strike: "open" },
+  { id: "d-bed2", wallId: "w-IF", offset: 2, width: 0.9, style: "door", hinge: "a", side: 1, arc: "bezier" },
+  { id: "sj-bath", wallId: "w-KL", offset: 1.5, width: 0.8, style: "door", hinge: "a", side: 1, strike: "closed" },
+  { id: "win-bed1", wallId: "w-HA", offset: 2, width: 1.2, style: "window3" },
+  { id: "win-bed2", wallId: "w-GH", offset: 2, width: 1.2, style: "window3" },
+  { id: "win-living-n", wallId: "w-BC", offset: 5, width: 1.2, style: "window3" },
+  { id: "win-living-e", wallId: "w-CM", offset: 2.5, width: 1.2, style: "window3" },
+  { id: "win-bath", wallId: "w-EL", offset: 1.5, width: 0.6, style: "window3" },
+];
+/** plan-window-board (step Q.1): the sample's openings, the living room's north window drawn as
+ *  three glazing lines inside a real gap in the wall (faces broken), as a generated plan draws them. */
+const BOARD_FIXTURE: FixtureOpening[] = STRIKE_FIXTURE.map((op) =>
+  op.id === "win-living-n" ? { ...op, style: "glass3" as const } : op.strike ? { ...op, strike: undefined, arc: "bezier" as const, offset: op.id === "sj-bed1b" ? 2.9 : op.offset } : op,
+).filter((op) => op.id !== "sj-bed1a");
 /** A rectangle leaf's thickness (m). Inside walls.ts's 0.05–0.6 m pairing range on purpose:
  *  it would pair into a thin 0.9 m "wall" if openings.ts did not keep all four sides out. */
 const LEAF_T = 0.06;
@@ -444,6 +491,17 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
      *  Step M.1d: the leaf is one line or a thin closed rectangle, and the arc a polyline (16
      *  straight pieces) or one cubic Bézier. */
     const swing = (h: number, to: number, r: number, sd: number, fo?: FixtureOpening | null) => {
+      if (fo?.strike) {
+        const f = (sd * t) / 2; // the face on the leaf's side
+        const [c, tip, end] = [at(h, f), at(h, f + sd * r), at(to, f)];
+        pen.line(c, fo.strike === "closed" ? end : tip, 0.35);
+        const [from, until] = fo.strike === "closed" ? [end, tip] : [tip, end];
+        const a0 = Math.atan2(from[1] - c[1], from[0] - c[0]);
+        let sweep = Math.atan2(until[1] - c[1], until[0] - c[0]) - a0;
+        sweep -= 2 * Math.PI * Math.round(sweep / (2 * Math.PI));
+        pen.bezArc(c, r * s, a0, sweep, 0.35);
+        return;
+      }
       if (fo?.leaf === "rect") {
         // The hinge end's midpoint is the arc's centre and the far end's its tip, as openings.ts needs.
         pen.poly([at(h - LEAF_T / 2, 0), at(h + LEAF_T / 2, 0), at(h + LEAF_T / 2, sd * r), at(h - LEAF_T / 2, sd * r)], "stroke", 0.35);
@@ -463,6 +521,7 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
       const fo = "style" in op ? op : null;
       if (style === "window3") for (const v of [-t / 2, 0, t / 2]) pen.line(at(g0, v), at(g1, v), 0.35);
       else if (style === "window2") for (const v of [-t / 4, t / 4]) pen.line(at(g0, v), at(g1, v), 0.35);
+      else if (style === "glass3") for (const v of [-t / 3, 0, t / 3]) pen.line(at(g0, v), at(g1, v), 0.25); // step Q.1: glazing inside a real gap
       else if (style === "sliding") {
         // Two 0.04 m panels, each 55% of the gap, one from each jamb, staggered across the wall.
         const pw = 0.55 * (g1 - g0);
@@ -493,6 +552,37 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
       for (const [p0, p1] of pieces) for (let u = p0 + 0.05; u + t <= p1; u += 0.15) pen.line(at(u, -t / 2), at(u + t, t / 2), 0.18);
     }
   }
+  if (o.againstWall) {
+    const rect = (x0: number, y0: number, x1: number, y1: number, w: number) => pen.poly([P(x0, y0), P(x1, y0), P(x1, y1), P(x0, y1)], "stroke", w);
+    rect(9.15, 5.6, 9.85, 7.4, 0.35); // the bath, its back 5 cm off the east wall's inner face (x 9.9)
+    rect(9.21, 5.66, 9.79, 7.34, 0.25); // its rim
+    pen.line(P(0, -0.4), P(0, 8.4), 0.18); // a centre line through the west wall, past both ends
+  }
+  if (o.furniture) {
+    const rect = (x0: number, y0: number, x1: number, y1: number, mode: "fill" | "stroke" = "stroke", w = 0.35) => pen.poly([P(x0, y0), P(x1, y0), P(x1, y1), P(x0, y1)], mode, w);
+    // The cupboard: partitions 5 cm thick, from the north wall's and the west wall's inner faces.
+    pen.line(P(0.7, 0.1), P(0.7, 0.55), 0.25);
+    pen.line(P(0.75, 0.1), P(0.75, 0.6), 0.25);
+    pen.line(P(0.1, 0.55), P(0.7, 0.55), 0.25);
+    pen.line(P(0.1, 0.6), P(0.75, 0.6), 0.25);
+    // The sofa (living room): outline, back cushion, two arms.
+    rect(5.0, 3.4, 7.0, 4.25);
+    rect(5.0, 4.0, 7.0, 4.25, "stroke", 0.28);
+    rect(5.0, 3.4, 5.2, 4.0, "stroke", 0.28);
+    rect(6.8, 3.4, 7.0, 4.0, "stroke", 0.28);
+    // The bed (bedroom 2): outline, two pillows, the duvet's fold.
+    rect(0.8, 4.6, 2.4, 6.6);
+    rect(0.88, 4.68, 1.58, 4.93, "stroke", 0.25);
+    rect(1.62, 4.68, 2.32, 4.93, "stroke", 0.25);
+    pen.line(P(0.8, 5.05), P(2.4, 5.05), 0.25);
+    // The bath (bathroom) and its rim.
+    rect(7.5, 6.2, 9.2, 6.95);
+    rect(7.56, 6.26, 9.14, 6.89, "stroke", 0.25);
+    // Two 0.5 m square columns in the living room: one stroked, one filled.
+    rect(8.0, 2.5, 8.5, 3.0, "stroke", 0.5);
+    rect(5.5, 1.5, 6.0, 2.0, "fill");
+  }
+  if (o.windowBoard) pen.line(P(8.35, 0.2), P(9.65, 0.2), 0.25);
   const drawDecoys = o.decoys ?? Boolean(o.doors);
   if (drawDecoys) {
     // Decoy arcs (Béziers), none of them a swing: a quarter-round sink with its radius lines (r 0.35 m),
@@ -534,7 +624,7 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
   const dims: Truth["dims"] = [];
   const TH = 7;
   let nDim = 0;
-  const label = (m: number) => (o.dims === "imperial" ? fmtImperial(m * FT_PER_SAMPLE_M, nDim++) : o.misprint && nDim++ === 0 ? "4100 mm" : `${Math.round(m * 1000)} mm`);
+  const label = (m: number) => (o.dims === "imperial" ? fmtImperial(m * FT_PER_SAMPLE_M, nDim++) : o.dims === "bare" ? `${Math.round(m * 1000)}` : o.misprint && nDim++ === 0 ? "4100 mm" : `${Math.round(m * 1000)} mm`);
   const tick = (p: number[]) => pen.line([p[0] - 2, p[1] - 2], [p[0] + 2, p[1] + 2], 1);
   // Broken style (step M.1b): the line stops 0.4 text heights either side of its text, which
   // sits on the line; ticks are perpendicular, 1.4 text heights long, centred on the ends.
@@ -584,7 +674,29 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
   // plan-doors: the north dimensions move 0.45 m out, so the two opening widths fit 0.65 m off the wall
   // (closer, a dimension line would pair with the wall's face as a wall).
   const NY = o.doors ? -0.45 : 0;
-  if (o.dims) {
+  /** A dimension from a to b (user space via P, sample metres), its extension lines from the measured
+   *  points fa and fb to the line, stopping on it (step Q.1). */
+  const flushDim = (a: number[], b: number[], fa: number[], fb: number[], vertical: boolean, spans: "inside faces" | "outside faces") => {
+    const [p, q] = [P(a[0], a[1]), P(b[0], b[1])];
+    for (const [f, e] of [[fa, p], [fb, q]] as const) pen.line(P(f[0], f[1]), e, 0.18);
+    pen.line(p, q, 0.5);
+    tick(p);
+    tick(q);
+    const metres = Math.hypot(b[0] - a[0], b[1] - a[1]) * unit;
+    const text = label(metres / unit);
+    if (vertical) pen.dimText(text, p[0] - 2.5, (p[1] + q[1]) / 2 - pen.width(text, TH) / 2, TH, 90);
+    else pen.dimText(text, (p[0] + q[0]) / 2 - pen.width(text, TH) / 2, p[1] + 2.5, TH);
+    const ext = Math.hypot(...(P(fa[0], fa[1]).map((v, i) => v - p[i]) as [number, number]));
+    const lengthPt = Math.hypot(q[0] - p[0], q[1] - p[1]) * k;
+    dims.push({ text, metres, lengthPt, measure: ext >= TH ? "ticks" : "line", lineLengthPt: lengthPt, spans });
+  };
+  if (o.closeDims) {
+    flushDim([-0.1, -0.45], [10.1, -0.45], [-0.1, -0.1], [10.1, -0.1], false, "outside faces"); // outer faces, 0.35 m off the north face
+    flushDim([0.1, -0.7], [3.95, -0.7], [0.1, 0.1], [3.95, 0.1], false, "inside faces"); // bedroom 1's inside, stacked 0.25 m beyond
+    flushDim([-0.45, -0.1], [-0.45, 8.1], [-0.1, -0.1], [-0.1, 8.1], true, "outside faces"); // outer faces, 0.35 m off the west face
+    flushDim([-0.7, 0.1], [-0.7, 3.95], [0.1, 0.1], [0.1, 3.95], true, "inside faces"); // bedroom 1's depth, stacked
+    flushDim([4.05, 1.5], [9.9, 1.5], [4.05, 1.3], [9.9, 1.3], false, "inside faces"); // across the living room, face to face
+  } else if (o.dims) {
     dimH(0, 4, -1 + NY);
     dimH(4, 10, -1 + NY);
     dimH(0, 10, -1.8 + NY);
@@ -612,6 +724,7 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
   pen.text("Ground floor plan", tx + 10, ty + 55, 8);
   pen.text(titleText, tx + 10, ty + 35, 8);
   pen.text(o.sheet?.name ?? (o.imperial ? "Letter" : "A4"), tx + 10, ty + 15, 8);
+  if (o.note) pen.text(o.note, tx + 60, ty + 15, 7);
 
   if (k !== 1) pen.ops.push(popGraphicsState());
   pen.flush();
@@ -655,7 +768,7 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
     planOpenings: (o.doors ?? samplePlan.openings).filter((op) => !("style" in op) || op.style !== "oddgap").map((op) => {
       const style = "style" in op ? op.style : op.kind === "window" ? "window3" : "door";
       const fo = "style" in op ? op : null;
-      const kind = style === "window3" || style === "window2" ? ("window" as const) : ("door" as const);
+      const kind = style === "window3" || style === "window2" || style === "glass3" ? ("window" as const) : ("door" as const);
       const [s0, s1] = [op.offset - op.width / 2, op.offset + op.width / 2];
       // The leaf's side as a unit vector in the page's frame: the sample wall's (-dy, dx) normal times the side, mapped.
       const w = samplePlan.walls.find((x) => x.id === op.wallId)!;
@@ -724,6 +837,19 @@ export async function writePdfFixtures(): Promise<Truth[]> {
   truths.push(await make("plan-gaps.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", doors: GAP_FIXTURE, decoys: false })) })));
   // Step X.1: plan-filled at 1:100 in the middle of an A0 landscape sheet, the rest of it empty.
   truths.push(await make("plan-small-on-big.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", sheet: { name: "A0", size: A0_LANDSCAPE, shift: [1400, 800] } })) })));
+  // Step Q.1 fixtures, all SYNTHETIC. plan-bare-mm: plan-filled with every dimension a bare number of
+  // millimetres (the vertical ones reading bottom to top) and the general note "ALL DIMENSIONS IN mm".
+  truths.push(await make("plan-bare-mm.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "bare", note: "ALL DIMENSIONS IN mm" })) })));
+  // plan-dims-close: plan-lines with its dimensions drawn close to the walls (closeDims).
+  truths.push(await make("plan-dims-close.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", closeDims: true })) })));
+  // plan-against-wall: plan-lines with a bath against a wall and a centre line through a wall (againstWall).
+  truths.push(await make("plan-against-wall.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", againstWall: true })) })));
+  // plan-strike-jamb: swings ending at the strike jamb's face corner, short walls beyond (STRIKE_FIXTURE).
+  truths.push(await make("plan-strike-jamb.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", doors: STRIKE_FIXTURE, decoys: false })) })));
+  // plan-window-board: glazing lines in a real gap with a window board in front (BOARD_FIXTURE, windowBoard).
+  truths.push(await make("plan-window-board.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", doors: BOARD_FIXTURE, decoys: false, windowBoard: true })) })));
+  // plan-furniture: a corner cupboard and free-standing furniture and columns (furniture).
+  truths.push(await make("plan-furniture.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", furniture: true })) })));
   truths.push(await make("plan-no-dims.pdf", async (d, f) => ({ ...plain, expectedScale: "check", ...await drawPlan(d, f, { walls: "fill", dims: null }), dims: [] })));
   // The scan: plan-filled rendered at 150 dpi, embedded as one grey PNG filling the page.
   const { file: _file, pages: _pages, ...filled } = truths[0];

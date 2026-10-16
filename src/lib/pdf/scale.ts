@@ -44,6 +44,22 @@
  *   - Numbers with no unit matched to lines are measured the same way but only
  *     reported in `unitless` (the "Feet or metres?" question), and only when
  *     no dimension with a unit was matched.
+ *   - STATED UNIT (step Q.1): a metric drawing prints bare millimetres and says so
+ *     in its general notes. A text line such as "ALL DIMENSIONS IN mm",
+ *     "DIMENSIONS ARE IN CENTIMETRES" or "UNITS: m" (mm, cm or m only; feet and
+ *     inches never) makes every bare number on a dimension line a dimension in that
+ *     unit, with a row and a sample like any other. Two notes that disagree state
+ *     nothing. The reason says where the unit came from.
+ *   - ANNOTATION (step Q.1): dimensions are annotation, never walls. `annotation`
+ *     lists the segments (indexes into page.segments) of every dimension whose
+ *     sample agrees with its band's median within 5% (the line's length is
+ *     explained by its text at the page's scale, with or without a unit): the
+ *     drawn line (both parts when broken) and its extension lines, which are
+ *     perpendicular to it, have an end within 0.5 text heights of one of its
+ *     ends, and do not cross it (both ends on one side, within 0.05 text
+ *     heights). A wall face that passes THROUGH a dimension line's end (a
+ *     dimension drawn face to face inside a room) is never one. walls.ts leaves
+ *     them all out of the wall faces. Ticks are too short to be faces anyway.
  *
  * OCR (step M.1b): an outlined page's text, read by OCR, goes through the SAME
  * rules (pdfScale(page, "ocr")); the matches say so, and the title block
@@ -90,6 +106,20 @@ export function parseDimension(raw: string): number | null {
 }
 
 const BARE = /^\d+(?:\.\d+)?$/;
+/** A general note stating the dimension unit (header, step Q.1): mm, cm or m only. */
+const UNIT_NOTE = /\b(?:dimensions?|dims\.?|units?)\s*(?:are\s+)?(?:in\b|:|-|–)?\s*(mm|millimet(?:er|re)s?|cm|centimet(?:er|re)s?|m|met(?:er|re)s?)(?![a-z²\d])/i;
+
+/** The unit the page's notes state for bare numbers, or null (none, or two that disagree). */
+export function statedUnit(lines: Pick<TextLine, "text">[]): { unit: "mm" | "cm" | "m"; metres: number; note: string } | null {
+  const found = lines.flatMap((l) => {
+    const m = l.text.match(UNIT_NOTE);
+    if (!m) return [];
+    const w = m[1].toLowerCase();
+    const unit = w.startsWith("mm") || w.startsWith("milli") ? "mm" : w.startsWith("c") ? "cm" : "m";
+    return [{ unit, metres: { mm: 0.001, cm: 0.01, m: 1 }[unit], note: l.text } as const];
+  });
+  return found.length && found.every((f) => f.unit === found[0].unit) ? found[0] : null;
+}
 const RATIO = /(?<![\d.:/])1\s*:\s*(\d+(?:\.\d+)?)(?![\d.:])/;
 const IMPERIAL = /(\d+(?:\/\d+)?)\s*(?:"|''|in\.?)\s*=\s*1\s*(?:'|ft\.?)(?:\s*-?\s*0\s*(?:"|in\.?)?)?/i;
 
@@ -229,6 +259,24 @@ function tickEnds(page: Pick<VectorPage, "segments">, line: DimensionLine["line"
   return { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y };
 }
 
+/** Extension lines of a dimension line (header, ANNOTATION): segment indexes. */
+function extensionLines(page: Pick<VectorPage, "segments">, line: DimensionLine["line"], h: number): number[] {
+  const len = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
+  const u = { x: (line.x2 - line.x1) / len, y: (line.y2 - line.y1) / len };
+  const ends = [{ x: line.x1, y: line.y1 }, { x: line.x2, y: line.y2 }];
+  const out: number[] = [];
+  page.segments.forEach((g, i) => {
+    const gl = Math.hypot(g.x2 - g.x1, g.y2 - g.y1);
+    if (gl === 0 || Math.abs(((g.x2 - g.x1) / gl) * u.x + ((g.y2 - g.y1) / gl) * u.y) > PARALLEL) return;
+    const off = (x: number, y: number) => (x - line.x1) * -u.y + (y - line.y1) * u.x; // across the dimension line
+    const [o1, o2] = [off(g.x1, g.y1), off(g.x2, g.y2)];
+    if (Math.min(o1, o2) < -0.05 * h && Math.max(o1, o2) > 0.05 * h) return; // crosses it: a wall face through its end
+    const near = (x: number, y: number) => ends.some((e) => Math.hypot(x - e.x, y - e.y) <= TICK_NEAR_H * h);
+    if (near(g.x1, g.y1) || near(g.x2, g.y2)) out.push(i);
+  });
+  return out;
+}
+
 /** The result rules (header) from the dimension samples and the title block. */
 export function combineScale(samples: number[], title: TitleBlockScale | null, paper: string): Pick<PdfScale, "mPerPt" | "confidence" | "reason" | "mismatch" | "dimensions"> {
   const b = band(samples);
@@ -274,6 +322,10 @@ export function pdfScale(page: Pick<VectorPage, "segments" | "texts" | "paper">,
   const bare: number[] = []; // printed units per point
   const used = new Map<string, number[]>(); // drawn line -> values already counted on it
   const titles: { t: TitleBlockScale; says: boolean }[] = [];
+  const stated = statedUnit(lines);
+  let fromNote = 0;
+  /** Every dimension found, with its sample, for the annotation rule (header). */
+  const found: { key: string; line: DimensionLine["line"]; h: number; sample: number; bare: boolean }[] = [];
 
   for (const l of lines) {
     const title = parseTitleScale(l.text);
@@ -281,8 +333,9 @@ export function pdfScale(page: Pick<VectorPage, "segments" | "texts" | "paper">,
       titles.push({ t: title, says: /scale/i.test(l.text) });
       continue;
     }
-    const metres = parseDimension(l.text);
-    const isBare = metres === null && BARE.test(l.text);
+    const parsed = parseDimension(l.text);
+    const isBare = parsed === null && BARE.test(l.text) && !stated;
+    const metres = parsed ?? (stated && BARE.test(l.text) && Number(l.text) > 0 ? Number(l.text) * stated.metres : null);
     if (metres === null && !isBare) continue;
     const dim = dimensionLine(page, l);
     if (!dim) {
@@ -290,9 +343,14 @@ export function pdfScale(page: Pick<VectorPage, "segments" | "texts" | "paper">,
       continue;
     }
     if (isBare) {
-      if (Number(l.text) > 0) bare.push(Number(l.text) / dim.lengthPt);
+      if (Number(l.text) > 0) {
+        bare.push(Number(l.text) / dim.lengthPt);
+        found.push({ key: dim.key, line: dim.line, h: l.height, sample: Number(l.text) / dim.lengthPt, bare: true });
+      }
       continue;
     }
+    found.push({ key: dim.key, line: dim.line, h: l.height, sample: metres! / dim.lengthPt, bare: false });
+    if (parsed === null) fromNote++;
     const before = used.get(dim.key) ?? [];
     const counted = !before.some((v) => Math.abs(v - metres!) <= (SAME_PCT / 100) * v);
     if (counted) used.set(dim.key, [...before, metres!]);
@@ -303,5 +361,15 @@ export function pdfScale(page: Pick<VectorPage, "segments" | "texts" | "paper">,
   const samples = matches.filter((m) => m.counted).map((m) => m.metres / m.lengthPt);
   const bareBand = matches.length === 0 ? band(bare) : null;
   const unitless = bareBand && bareBand.confidence !== "none" ? { unitsPerPt: bareBand.median, n: bare.length, spreadPct: bareBand.spreadPct, confidence: bareBand.confidence as "good" | "check" } : null;
-  return { ...combineScale(samples, title, page.paper), title, matches, rejected, unitless };
+  const combined = combineScale(samples, title, page.paper);
+  if (fromNote) combined.reason += ` Bare numbers are read in ${stated!.unit}, as the drawing's note "${stated!.note}" says.`;
+  // ANNOTATION (header): the dimensions whose length their text explains, and their extension lines.
+  const annotation = new Set<number>();
+  for (const f of found) {
+    const median = f.bare ? unitless?.unitsPerPt : combined.dimensions.mPerPt;
+    if (!median || Math.abs(f.sample / median - 1) > 0.05) continue;
+    for (const i of f.key.split("+")) annotation.add(Number(i));
+    for (const i of extensionLines(page, f.line, f.h)) annotation.add(i);
+  }
+  return { ...combined, title, matches, rejected, unitless, annotation: [...annotation].sort((p, q) => p - q) };
 }

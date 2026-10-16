@@ -243,7 +243,7 @@ export async function analysePdfPage(
   analysis.warnings = analysis.warnings.filter((w) => w.code !== "no-scale" && w.code !== "check-scale");
 
   // Walls from the PDF's own lines need a scale to read thicknesses in metres.
-  const vectorWalls = scale.mPerPt ? readVectorWalls(vector, scale.mPerPt) : null;
+  const vectorWalls = scale.mPerPt ? readVectorWalls(vector, scale.mPerPt, { annotation: scale.annotation }) : null;
   const traceMm = scale.mPerPt ? (scale.mPerPt / pxPerPt) * 1000 : null; // one raster pixel
   const notes = [
     "Read from PDF vectors.",
