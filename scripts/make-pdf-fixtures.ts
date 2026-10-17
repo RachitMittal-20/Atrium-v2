@@ -408,6 +408,10 @@ interface Options {
   /** Step Q.2 (plan-dims-one-wrong): the first dimension printed as this text instead (a value far
    *  off its line, unlike `misprint`'s 2.5%), every other dimension right. */
   wrongFirst?: string;
+  /** Step Q.2b (plan-levels): level notes beside the room names, as a plan prints floor levels:
+   *  "FFL +0.150" under Bedroom 1, "+0.000" under Bedroom 2, "LEVEL 1" and "SSL +0.100" under the
+   *  living room, and "FL -0.020" on the Bathroom's own line (so it joins the name's text line). */
+  levels?: boolean;
   /** Step X.1 (plan-small-on-big): the sheet's size in points and where the drawing sits on it
    *  (added to every user-space position), so a small plan can sit on a big, mostly empty sheet. */
   sheet?: { name: string; size: [number, number]; shift: [number, number] };
@@ -737,6 +741,19 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
     const [ux, uy] = P(x, y);
     pen.text(name, ux - pen.width(name, 9) / 2, uy - 3, 9);
   }
+  if (o.levels) {
+    // Under a name: 11 pt below its baseline, centred; on its line: 4 pt after its end.
+    const under = (str: string, x: number, y: number, k: number) => {
+      const [ux, uy] = P(x, y);
+      pen.text(str, ux - pen.width(str, 7) / 2, uy - 3 - 11 * k, 7);
+    };
+    under("FFL +0.150", 2, 2, 1);
+    under("+0.000", 2, 6, 1);
+    under("LEVEL 1", 7, 2.5, 1);
+    under("SSL +0.100", 7, 2.5, 2);
+    const [bx, by] = P(8.5, 6.5);
+    pen.text("FL -0.020", bx + pen.width("Bathroom", 9) / 2 + 4, by - 3, 9);
+  }
 
   // Dimensions: a 0.5 pt line, extension lines and 45° ticks, the text 2.5 pt off
   // the line (above it, or left of it reading bottom to top).
@@ -1032,6 +1049,8 @@ export async function writePdfFixtures(): Promise<Truth[]> {
       return { ...plain, expectedScale: "good" as const, ...r, planWalls: [...r.planWalls.filter((x) => x.id !== "w-BC"), ...extra] };
     }),
   );
+  // plan-levels: plan-filled with floor-level notes beside the room names (levels), never part of a name.
+  truths.push(await make("plan-levels.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", levels: true })) })));
   truths.push(await make("plan-no-dims.pdf", async (d, f) => ({ ...plain, expectedScale: "check", ...await drawPlan(d, f, { walls: "fill", dims: null }), dims: [] })));
   // The scan: plan-filled rendered at 150 dpi, embedded as one grey PNG filling the page.
   const { file: _file, pages: _pages, ...filled } = truths[0];

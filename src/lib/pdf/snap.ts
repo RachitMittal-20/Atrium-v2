@@ -59,10 +59,16 @@
  * Rule 8b (step Q.2): a drawing may leave a wall end free for real (a nib or wing wall, a wall that
  * stops short), and then rule 8 fails and the merge's validator rounds drop wall after wall around it.
  * So when rule 8 fails, the PDF's walls are merged once more with no rounds and no fallback (`keepAll`),
- * and that plan is used when it keeps EVERY PDF wall, has strictly FEWER validator problems than the
- * merged plan and closes no fewer rooms. `pdfOnly` is set, and Coverage.freeEnds (every coverage has
- * it) lists the free ends left, which the review counts. plan-single-line, whose merge is clean, is
- * never beaten: no plan has fewer than zero problems.
+ * and that plan is used when it keeps EVERY PDF wall and beats the merged plan by `pdfAloneWins`
+ * (step Q.2b): more PDF walls kept (read exactly or stood in for by their traced version), then fewer
+ * validator problems, then more rooms; a full tie keeps the merge. `pdfOnly` is set, and
+ * Coverage.freeEnds (every coverage has it) lists the free ends left, which the review counts.
+ * plan-single-line, whose merge keeps every wall and is clean, is never beaten.
+ *
+ * Conflicts (step Q.2b): an opening walls.ts did not read because a wall ends inside it is not read
+ * from the tracing either. A traced opening lying on one (within 3 px plus half the wall's
+ * thickness across, overlapping it by more than 3 px) is removed, in the merge and in the whole-plan
+ * fallback alike, and listed on that conflict (`traced`), which the review's line counts.
  *
  * Out-of-range gaps (step M.1d): walls.ts reports every collinear gap outside 0.45–4 m
  * that it did not read as an opening; they are carried to the coverage report in plan
@@ -181,8 +187,9 @@ export interface Coverage {
    *  border evidence) or kept, and why. The review outlines each one. */
   detached: { walls: number; min: Vec2; max: Vec2; size: { w: number; d: number }; dropped: boolean; why: string }[];
   /** Step Q.2 (walls.ts): openings not read because a wall ends inside them or crosses them, in PLAN
-   *  metres (jambs on the centre line). The review names each one (conflictText) and boxes it. */
-  conflicts: { kind: OpeningKind; a: Vec2; b: Vec2; width: number; thickness: number; why: string }[];
+   *  metres (jambs on the centre line). The review names each one (conflictText) and boxes it.
+   *  Step Q.2b: `traced` lists the traced openings removed because they lay on it (absent when none). */
+  conflicts: { kind: OpeningKind; a: Vec2; b: Vec2; width: number; thickness: number; why: string; traced?: string[] }[];
   /** Fallbacks and refused snaps, in plain words. */
   notes: string[];
   /** Plan (0, 0) in page metres at the scale in use. */
@@ -270,6 +277,29 @@ export interface PdfBuild {
   report: BuildReport;
   naming: NamingReport;
   coverage: Coverage;
+  /** Step Q.2b: how many of the PDF's walls the plan keeps, read exactly or stood in for by their
+   *  traced version (a group kept traced). A PDF wall left out with nothing in its place is not kept. */
+  kept: number;
+}
+
+/** Step Q.2b: what rule 8b compares between the merged plan and the PDF's walls alone. */
+export interface PlanTally {
+  kept: number;
+  problems: number;
+  rooms: number;
+}
+
+/**
+ * Step Q.2b: whether the PDF's walls alone (`alone`) beat the merged plan (`merged`), compared in
+ * order: more PDF walls kept, then fewer validator problems, then more rooms; a full tie keeps the
+ * merge. Walls come first, so a plan keeping under 70% of the PDF's walls never beats one keeping
+ * all of them, however clean it is (Q.2's rule compared problems first, and a merge whose rounds had
+ * dropped 12 of 16 walls beat a complete reading with one real free end).
+ */
+export function pdfAloneWins(merged: PlanTally, alone: PlanTally): boolean {
+  if (alone.kept !== merged.kept) return alone.kept > merged.kept;
+  if (alone.problems !== merged.problems) return alone.problems < merged.problems;
+  return alone.rooms > merged.rooms;
 }
 
 /**
@@ -294,11 +324,11 @@ export function buildPdfPlan(analysis: Analysis, pdf: PdfInfo, scale: PlanScale,
     const complete = !alone.coverage.fellBack && alone.plan.walls.length === vector.walls.length && validatePlan(alone.plan).length === 0 && alone.report.freeEnds.length === 0 && deriveRooms(alone.plan).length >= 1;
     if (complete) out = { ...alone, coverage: { ...alone.coverage, pdfOnly: true } };
     else {
-      // Rule 8b (step Q.2, header): every PDF wall kept, free ends and all, wins only when it is better
-      // by the validator than what the merge produced and closes no fewer rooms.
+      // Rule 8b (step Q.2, header): every PDF wall kept, free ends and all, wins when pdfAloneWins says
+      // it is better than what the merge produced (step Q.2b: walls kept, then problems, then rooms).
       const all = mergeVector({ plan: { ...traced.plan, walls: [], openings: [] }, report: { ...traced.report, problems: [] } }, vector, { ...merge, forceTraced: [], keepAll: true });
-      const better = validatePlan(all.plan).length < validatePlan(out.plan).length && deriveRooms(all.plan).length >= deriveRooms(out.plan).length;
-      if (all.plan.walls.filter((w) => w.provenance === "vector").length >= vector.walls.length && all.coverage.traced === 0 && better) out = { ...all, coverage: { ...all.coverage, pdfOnly: true } };
+      const tally = (b: PdfBuild): PlanTally => ({ kept: b.kept, problems: validatePlan(b.plan).length, rooms: deriveRooms(b.plan).length });
+      if (all.kept >= vector.walls.length && all.coverage.traced === 0 && pdfAloneWins(tally(out), tally(all))) out = { ...all, coverage: { ...all.coverage, pdfOnly: true } };
     }
   }
   const now = new Date().toISOString(); // real creation times, as buildFromAnalysis stamps them
@@ -527,6 +557,7 @@ export function mergeVector(
   };
   /** Page metres; turned into plan metres and reported once the origin is known. */
   const droppedOps: { id: string; a: Vec2; b: Vec2; thickness: number }[] = [];
+  const conflictTraced = new Map<number, string[]>(); // conflict index -> traced openings removed there
   for (const op of traced.plan.openings) {
     const w = byId.get(op.wallId);
     if (!w) continue;
@@ -555,6 +586,12 @@ export function mergeVector(
       notes.push(`Traced opening ${op.id} (${dist(p, q).toFixed(2)} m) replaced by ${v.id} read from the PDF (${dist(v.a, v.b).toFixed(2)} m): the traced jambs were up to ${fmtM(off)} out, more than ${SNAP_PX.move} px.`);
     }
     if (near.length) continue;
+    // Step Q.2b: the PDF says a wall ends inside the opening here, so the tracing's opening is not read either.
+    const ci = conflictAt(vector, f, p, q, reach);
+    if (ci >= 0) {
+      conflictTraced.set(ci, [...(conflictTraced.get(ci) ?? []), op.id]);
+      continue;
+    }
     // Step M.2b: a narrow traced opening where the PDF's wall runs unbroken is dropped, not kept.
     // Never on a wall that is itself traced (its group kept its traced walls, so the PDF has no
     // wall there to speak for): that opening stays traced, as before.
@@ -649,7 +686,7 @@ export function mergeVector(
   const rooms = deriveRooms(plan).length;
   if (!o.keepAll && (fresh.length || rooms < tracedRooms)) {
     const reason = fresh.length ? `reading the PDF's lines gave a problem the tracing didn't ("${fresh[0]}")` : `reading the PDF's lines closed ${rooms} rooms, fewer than the tracing's ${tracedRooms}`;
-    return fallback(traced, o, vector, `The traced plan was used because ${reason}.`);
+    return fallback(traced, o, vector, `The traced plan was used because ${reason}.`, relatedT.size);
   }
 
   const lengthOf = (ws: Wall[]) => ws.reduce((s, w) => s + wallLength(w), 0);
@@ -660,10 +697,14 @@ export function mergeVector(
   const originPx = { x: origin.x * o.pxPerM - r.x * o.pxPerPt, y: origin.y * o.pxPerM - r.y * o.pxPerPt };
   const { plan: namedPlan, report: naming } = nameRooms(plan, o.labels, originPx, o.pxPerM);
   const report: BuildReport = { ...traced.report, origin: originPx, freeEnds: freeEnds(planWalls), problems: validatePlan(namedPlan) };
+  // Step Q.2b: a PDF wall is kept when it is in the plan, or when a traced wall of its group stands in for it.
+  const inPlan = new Set(walls.map((w) => w.id.split(".s")[0]));
+  const kept = V.filter((v, j) => inPlan.has(v.id) || T.some((t, i) => inPlan.has(t.id) && relatedV.get(i)?.includes(j))).length;
   return {
     plan: namedPlan,
     report,
     naming,
+    kept,
     coverage: {
       walls: planWalls.length,
       exact: exact.length,
@@ -677,7 +718,7 @@ export function mergeVector(
       }),
       added,
       skipped: vector.skipped,
-      ...openingCoverage(namedPlan, classOf, tracedWhy, (p) => ({ x: p.x - origin.x, y: p.y - origin.y }), vector, f, counts),
+      ...openingCoverage(namedPlan, classOf, tracedWhy, (p) => ({ x: p.x - origin.x, y: p.y - origin.y }), vector, f, counts, conflictTraced),
       droppedOpenings: droppedOps.map((o) => ({ id: o.id, a: toPlan(o.a), b: toPlan(o.b), thickness: o.thickness, size: dist(o.a, o.b) })),
       notes,
       origin,
@@ -700,6 +741,7 @@ function openingCoverage(
   vector: VectorWalls,
   f: number,
   counts: { snapped: number; traced: number; added: number; replaced: number },
+  conflictTraced: Map<number, string[]>,
 ): Pick<Coverage, "openings" | "tracedOpenings" | "unclassifiedOpenings" | "unusedArcs" | "outOfRangeGaps" | "furniture" | "detached" | "conflicts"> {
   const wall = new Map(plan.walls.map((w) => [w.id, w]));
   const mark = (o: Opening) => {
@@ -727,7 +769,7 @@ function openingCoverage(
     // Step Q.1: what was left out as furniture, at the scale in use.
     furniture: (vector.furniture ?? []).map((x) => ({ kind: x.kind, walls: x.walls, size: { w: (x.box.x1 - x.box.x0) * f, d: (x.box.y1 - x.box.y0) * f }, centre: pageToPlan({ x: ((x.box.x0 + x.box.x1) / 2) * f, y: ((x.box.y0 + x.box.y1) / 2) * f }) })),
     // Step Q.2: openings a wall ends inside (or crosses), not read, at the scale in use.
-    conflicts: (vector.conflicts ?? []).map((x) => ({ kind: x.kind, a: pageToPlan({ x: x.a.x * f, y: x.a.y * f }), b: pageToPlan({ x: x.b.x * f, y: x.b.y * f }), width: x.width * f, thickness: thicknessAt(vector, x) * f, why: x.why })),
+    conflicts: (vector.conflicts ?? []).map((x, i) => ({ kind: x.kind, a: pageToPlan({ x: x.a.x * f, y: x.a.y * f }), b: pageToPlan({ x: x.b.x * f, y: x.b.y * f }), width: x.width * f, thickness: thicknessAt(vector, x) * f, why: x.why, ...(conflictTraced.has(i) ? { traced: conflictTraced.get(i) } : {}) })),
     // Step Q.2: detached groups, dropped or kept, at the scale in use.
     detached: (vector.detached ?? []).map((x) => ({ walls: x.walls, min: pageToPlan({ x: x.box.x0 * f, y: x.box.y0 * f }), max: pageToPlan({ x: x.box.x1 * f, y: x.box.y1 * f }), size: { w: (x.box.x1 - x.box.x0) * f, d: (x.box.y1 - x.box.y0) * f }, dropped: x.dropped, why: x.why })),
   };
@@ -740,10 +782,25 @@ function thicknessAt(vector: VectorWalls, o: { a: Vec2; b: Vec2 }): number {
   return on?.thickness ?? 0.1;
 }
 
+/** Step Q.2b: the index of the reported conflict (walls.ts) a traced opening with jambs p, q lies
+ *  on, or -1. Page metres at the scale in use (`f` rescales the reading); `reach` is 3 raster px. */
+function conflictAt(vector: VectorWalls, f: number, p: Vec2, q: Vec2, reach: number): number {
+  return (vector.conflicts ?? []).findIndex((x) => {
+    const s = { a: { x: x.a.x * f, y: x.a.y * f }, b: { x: x.b.x * f, y: x.b.y * f } };
+    const [c0, c1] = [lineCoords(p, s), lineCoords(q, s)];
+    const across = (thicknessAt(vector, x) * f) / 2 + 2 * reach;
+    const overlap = Math.min(Math.max(c0.along, c1.along), dist(s.a, s.b)) - Math.max(Math.min(c0.along, c1.along), 0);
+    return Math.abs(c0.off) <= across && Math.abs(c1.off) <= across && overlap > reach;
+  });
+}
+
 /** Step Q.2: one opening a wall ends inside, in plain words, as the review says it:
- *  "Window 1 (1.20 m) conflicts with a wall ending inside it; not read." (`i` from 0). */
+ *  "Window 1 (1.20 m) conflicts with a wall ending inside it; not read." (`i` from 0). Step Q.2b adds
+ *  the traced openings removed there: "… not read. 1 traced opening at the same place was removed too." */
 export function conflictText(c: Coverage["conflicts"][number], i: number, unit: LengthUnit = "mm"): string {
-  return `${c.kind === "window" ? "Window" : "Door"} ${i + 1} (${formatLength(c.width, unit, STUDIO_DP.length)}) conflicts with ${c.why}; not read.`;
+  const n = c.traced?.length ?? 0;
+  const removed = n ? ` ${n} traced ${n === 1 ? "opening" : "openings"} at the same place ${n === 1 ? "was" : "were"} removed too.` : "";
+  return `${c.kind === "window" ? "Window" : "Door"} ${i + 1} (${formatLength(c.width, unit, STUDIO_DP.length)}) conflicts with ${c.why}; not read.${removed}`;
 }
 
 /** Dot product of two directions. */
@@ -761,20 +818,34 @@ function tracedOrigin(originPx: Vec2, o: { pxPerM: number; pxPerPt: number; rast
   return { x: r.x * mPerPt + originPx.x / o.pxPerM, y: r.y * mPerPt + originPx.y / o.pxPerM };
 }
 
-function fallback(traced: { plan: Plan; report: BuildReport }, o: { pxPerM: number; pxPerPt: number; rasterOrigin?: Vec2; labels: Analysis["labels"] }, vector: VectorWalls, note: string): PdfBuild {
+/** `kept`: the PDF walls some traced wall stands in for (every traced wall is kept). */
+function fallback(traced: { plan: Plan; report: BuildReport }, o: { pxPerM: number; pxPerPt: number; rasterOrigin?: Vec2; labels: Analysis["labels"] }, vector: VectorWalls, note: string, kept: number): PdfBuild {
+  const px = 1 / o.pxPerM;
+  const origin = tracedOrigin(traced.report.origin, o);
+  const f = o.pxPerPt / o.pxPerM / vector.mPerPt;
+  // Step Q.2b: a traced opening where the PDF reports a wall ending inside one is removed here too.
+  const byId = new Map(traced.plan.walls.map((w) => [w.id, w]));
+  const conflictTraced = new Map<number, string[]>();
+  const openings = traced.plan.openings.filter((x) => {
+    const w = byId.get(x.wallId);
+    if (!w) return true;
+    const page = (p: Vec2) => ({ x: p.x + origin.x, y: p.y + origin.y });
+    const ci = conflictAt(vector, f, page(pointAt(w, x.offset - x.width / 2)), page(pointAt(w, x.offset + x.width / 2)), SNAP_PX.move * px);
+    if (ci >= 0) conflictTraced.set(ci, [...(conflictTraced.get(ci) ?? []), x.id]);
+    return ci < 0;
+  });
   const plan: Plan = {
     ...traced.plan,
     walls: traced.plan.walls.map((w) => ({ ...w, provenance: "traced" as const })),
-    openings: traced.plan.openings.map((x) => ({ ...x, provenance: "traced" as const, defaultHeight: true as const })),
+    openings: openings.map((x) => ({ ...x, provenance: "traced" as const, defaultHeight: true as const })),
   };
   const { plan: namedPlan, report: naming } = nameRooms(plan, o.labels, traced.report.origin, o.pxPerM);
-  const px = 1 / o.pxPerM;
-  const origin = tracedOrigin(traced.report.origin, o);
   const len = plan.walls.reduce((s, w) => s + wallLength(w), 0);
   return {
     plan: namedPlan,
     report: traced.report,
     naming,
+    kept,
     coverage: {
       walls: plan.walls.length,
       exact: 0,
@@ -792,8 +863,9 @@ function fallback(traced: { plan: Plan; report: BuildReport }, o: { pxPerM: numb
         new Map(plan.openings.map((x) => [x.id, "the whole plan fell back to traced"])),
         (p) => ({ x: p.x - origin.x, y: p.y - origin.y }),
         vector,
-        o.pxPerPt / o.pxPerM / vector.mPerPt,
+        f,
         { snapped: 0, traced: plan.openings.length, added: 0, replaced: 0 },
+        conflictTraced,
       ),
       droppedOpenings: [], // no opening from the PDF is used, so nothing of the tracing's is dropped
       notes: [note],

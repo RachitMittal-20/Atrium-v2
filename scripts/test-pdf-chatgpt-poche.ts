@@ -154,6 +154,8 @@ async function main() {
   // Still wrong, and right by the drawing: no wall between Dining and Kitchen, and the 25 mm slot.
   assert.ok(rooms.some((x) => /Dining/.test(x.name) && /Kitchen/.test(x.name)), `Dining and Kitchen are one room (${rooms.map((x) => x.name)})`);
   assert.ok(rooms.some((x) => /Living/.test(x.name) && /Corridor/.test(x.name)), `Living and Corridor are one room (${rooms.map((x) => x.name)})`);
+  // Step Q.2b: "FFL +0.150", printed inside Living, is a level note and no part of the room's name.
+  assert.ok(!rooms.some((x) => /ffl|0\.150/i.test(x.name)), `no level note in a room name (${rooms.map((x) => x.name)})`);
 
   console.log(
     `plan-chatgpt-poche.pdf (ChatGPT-generated, not real CAD): walls ${c.exact} exact, ${c.traced} traced, read entirely from the PDF, ${c.freeEnds.length} free end; ` +

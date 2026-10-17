@@ -67,6 +67,15 @@
  *      more problems, and the
  *      PDF's walls alone are used with the nib's free end reported. plan-single-line, whose merge is
  *      clean, still merges (test-pdf-conventions.ts section 8).
+ *   10b. The merge choice (step Q.2b, snap.ts pdfAloneWins): between the merged plan and the PDF's walls
+ *      alone, more PDF walls kept wins, then fewer validator problems, then more rooms; a full tie
+ *      keeps the merge. A wall is kept when it is in the plan or its traced version stands in for it,
+ *      so a merge whose rounds DROPPED walls (4 of 16, clean) no longer beats a complete reading with
+ *      one real free end, and a plan keeping under 70% never beats one keeping all.
+ *   11. A level note is never a room name (step Q.2b, analysePdf.ts pdfLabels): "FFL +0.150", "SSL",
+ *      "FL", "LEVEL 1" and bare signed decimals ("+0.000") printed beside a room name are not part of
+ *      it, alone on their line or at the end of the name's own line (plan-levels). Before, the
+ *      ChatGPT poche plan named a room "Corridor / Living / Ffl +0.150".
  *
  * Shares its helpers with scripts/test-pdf-conventions.ts.
  * Run: npx tsx scripts/test-pdf-poche.ts
@@ -76,7 +85,9 @@ import { dimensionRows } from "../src/lib/pdf/dimensions";
 import { readVectorWalls } from "../src/lib/pdf/walls";
 import type { PdfSegment } from "../src/types/pdf";
 import { combineScale, parseTitleScale, pdfScale } from "../src/lib/pdf/scale";
-import { buildPdfPlan, conflictText } from "../src/lib/pdf/snap";
+import { buildPdfPlan, conflictText, pdfAloneWins } from "../src/lib/pdf/snap";
+import { deriveRooms } from "../src/lib/plan/rooms";
+import { validatePlan } from "../src/lib/plan/validate";
 import { build, exactOpenings, exactWalls, page, sameWall, toTruthFrame, truth, vectorFrame } from "./test-pdf-conventions";
 
 async function main() {
@@ -248,7 +259,9 @@ async function main() {
     assert.deepEqual(exactOpenings(file, vectorFrame(vw).openings), ["win-bed1: not read"], `${file}: only the window the partition ends in is not read`);
     const c = r.b.coverage.conflicts;
     assert.ok(c.length === 1 && c[0].kind === "window" && Math.abs(c[0].width - 1.2) < 1e-4, `${file}: that window is reported (${JSON.stringify(c)})`);
-    assert.equal(conflictText(c[0], 0, "m"), "Window 1 (1.20 m) conflicts with a wall ending inside it; not read.", `${file}: by name, in plain words`);
+    // Step Q.2b (as stated, this line now also counts the traced window removed at the same place).
+    assert.equal(conflictText(c[0], 0, "m"), "Window 1 (1.20 m) conflicts with a wall ending inside it; not read. 1 traced opening at the same place was removed too.", `${file}: by name, in plain words`);
+    assert.equal(r.b.coverage.openings.traced, 0, `${file}: the tracing's window there is not kept (${JSON.stringify(r.b.coverage.tracedOpenings)})`);
     exactWalls(file, r.b);
     console.log(`8. wall ending in a window: ${file} ${t.planWalls.length}/${t.planWalls.length} walls exact; "${conflictText(c[0], 0, "m")}"`);
   }
@@ -298,6 +311,30 @@ async function main() {
     assert.ok(nib && [nib.a, nib.b].some((p) => Math.hypot(p.x - c.freeEnds[0].x, p.y - c.freeEnds[0].y) < 1e-6), `${file}, poor tracing: the free end is the nib's far end`);
     assert.equal(c.openings.exact, t.planOpenings.length, `${file}, poor tracing: every opening from the PDF`);
     console.log(`10. rule 8b: ${file} as traced the merge ties and stands (${r.b.coverage.exact} exact, 1 traced); with a poor tracing ${c.exact}/${c.walls} walls from the PDF alone, ${c.freeEnds.length} free end left (the nib's), ${c.openings.exact}/${t.planOpenings.length} openings`);
+
+    // 10b (step Q.2b): the merge choice compares PDF walls kept, then validator problems, then rooms.
+    // The complete PDF reading above (every wall, one real free end) against a merge whose validator
+    // rounds dropped 12 of the 16 walls and so came out clean.
+    const alone = { kept: b.kept, problems: validatePlan(b.plan).length, rooms: deriveRooms(b.plan).length };
+    assert.deepEqual(alone, { kept: 16, problems: 1, rooms: 4 }, `${file}: the complete PDF reading keeps all 16 walls with 1 problem (its free end)`);
+    assert.equal(r.b.kept, 16, `${file}: as traced the merge keeps all 16 (the nib by its traced version), so it still ties`);
+    assert.ok(pdfAloneWins({ kept: 4, problems: 0, rooms: 1 }, alone), `${file}: a merge keeping 4 of 16 walls with 0 problems loses to the complete reading with 1 free end`);
+    assert.ok(pdfAloneWins({ kept: 11, problems: 0, rooms: 4 }, alone), `${file}: so does one keeping 11 of 16 (under 70%), with as many rooms`);
+    assert.ok(!pdfAloneWins({ kept: 16, problems: 1, rooms: 4 }, alone), `${file}: a full tie keeps the merge`);
+    assert.ok(pdfAloneWins({ kept: 16, problems: 2, rooms: 5 }, alone), `${file}: with as many walls kept, fewer problems win before rooms`);
+    assert.ok(pdfAloneWins({ kept: 16, problems: 1, rooms: 3 }, alone), `${file}: and with as many problems, more rooms`);
+    console.log(`10b. merge choice: walls kept, then problems, then rooms; 4 of 16 with 0 problems loses to 16 of 16 with 1 free end`);
+  }
+  // ------------------------------------------------------------ 11. level notes are never room names
+  {
+    const file = "plan-levels.pdf";
+    const r = await build(file);
+    const base = await build("plan-filled.pdf");
+    const names = (b: typeof r.b) => b.plan.rooms.map((x) => x.name).sort();
+    assert.deepEqual(names(r.b), names(base.b), `${file}: the room names are plan-filled's, no level note in any of them`);
+    assert.deepEqual(names(r.b), ["Bathroom", "Bedroom 1", "Bedroom 2", "Living Room"], `${file}: the four names`);
+    exactWalls(file, r.b);
+    console.log(`11. level notes: ${file} rooms ${names(r.b).join(", ")} with FFL +0.150, +0.000, LEVEL 1, SSL +0.100 and "Bathroom FL -0.020" printed beside them`);
   }
   console.log("OK");
 }

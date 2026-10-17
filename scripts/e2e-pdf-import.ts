@@ -588,7 +588,10 @@ async function session(browser: Browser, width: number, height: number, touch: b
       const text = (await conflicts.first().innerText()).trim();
       assert.match(text, /^Window 1 \(.+\) conflicts with a wall ending inside it; not read\./, `${file}: the window named`);
       assert.equal(await page.locator("[data-testid=plan-viewer] [data-layer=gaps-not-read] [data-id=conflict1]").count(), 1, `${file}: and boxed on the overlay`);
-      out.push(`"${text.split(".")[0]}." boxed`);
+      // Step Q.2b: the window the tracing read there is removed too, and that line counts it.
+      assert.ok(text.includes("1 traced opening at the same place was removed too."), `${file}: the traced window at the conflict removed and counted (${text})`);
+      assert.equal(await tid(page, "coverage-openings-line").getAttribute("data-traced"), "0", `${file}: no traced opening left`);
+      out.push(`"${text.split(".")[0]}." boxed, its traced window removed`);
     } else assert.equal(await conflicts.count(), 0, `${file}: no opening a wall ends inside`);
     if (q?.outlier) {
       const reason = await tid(page, "pdf-scale-reason").innerText();
@@ -844,22 +847,23 @@ async function session(browser: Browser, width: number, height: number, touch: b
     assert.equal(await tid(page, "dim-row").count(), 12, `${file}: the twelve bare-mm dimensions are rows`);
     assert.equal(await page.locator("[data-testid=dim-row][data-status=ok]").count(), 12, `${file}: all OK (the 2000 on the 5975's line measured on its own)`);
     const cl = tid(page, "coverage-line");
-    // Chromium's tracing of this page is good enough that the merge keeps 5 traced walls (33–123 mm
-    // from the PDF's lines, round the corridor and bathrooms) and is no worse by the validator than the
-    // PDF alone, so rule 8b does not apply here (in Node, whose tracing is poorer, it does: 33 of 33).
-    assert.deepEqual([await cl.getAttribute("data-walls"), await cl.getAttribute("data-exact"), await cl.getAttribute("data-traced")], ["32", "27", "5"], `${file}: 27 of 32 walls exact, 5 traced`);
-    assert.equal(await tid(page, "coverage-pdf-only").count(), 0, `${file}: the merge stands (rule 8b not applied in Chromium)`);
+    // Chromium's merge keeps 27 PDF walls exact and 5 traced ones standing in for 4 more, and leaves 2
+    // out: 31 of 33 kept, as clean by the validator as the PDF alone (one free end each). Step Q.2b's
+    // merge choice compares walls kept first, so the PDF's walls alone are used, as in Node: 33 of 33
+    // (before Q.2b: 27 exact of 32, 5 traced).
+    assert.deepEqual([await cl.getAttribute("data-walls"), await cl.getAttribute("data-exact"), await cl.getAttribute("data-traced")], ["33", "33", "0"], `${file}: 33 of 33 walls exact, 0 traced`);
+    assert.equal((await tid(page, "coverage-pdf-only").innerText()).trim(), PDF_ONLY_LINE, `${file}: the PDF's walls alone (rule 8b, step Q.2b's merge choice)`);
     const ol = (await tid(page, "coverage-openings-line").innerText()).trim();
     assert.equal(ol, "13 of 13 openings read exactly (doors 6, windows 5, unclassified 2); 0 traced approximately; 2 arcs not used.", `${file}: openings line`);
     const conflict = (await tid(page, "coverage-conflicts").locator("li").first().innerText()).trim();
     assert.match(conflict, /^Window 1 \(.+\) conflicts with a wall ending inside it; not read\./, `${file}: W4 named as not read`);
     assert.ok((await tid(page, "coverage-detached").locator("li[data-dropped=true]").count()) >= 1, `${file}: the title block left out and listed`);
     const plan = await buildAndOpen();
-    assert.ok(plan.walls.length === 32 && plan.walls.filter((w) => w.provenance === "vector").length === 27, `${file}: 32 walls in the studio, 27 read from the PDF`);
+    assert.ok(plan.walls.length === 33 && plan.walls.every((w) => w.provenance === "vector"), `${file}: 33 walls in the studio, all read from the PDF`);
     const names = plan.rooms.map((r) => r.name).sort();
-    assert.deepEqual(names, ["Bathroom 1", "Bathroom 2", "Bedroom 2", "Bedroom 3", "Corridor / Living / Ffl +0.150", "Dining / Kitchen", "Master Bedroom", "Utility"], `${file}: the eight rooms the drawing closes`);
+    assert.deepEqual(names, ["Bathroom 1", "Bathroom 2", "Bedroom 2", "Bedroom 3", "Corridor / Living", "Dining / Kitchen", "Master Bedroom", "Utility"], `${file}: the eight rooms the drawing closes, no level note in a name (step Q.2b)`);
     report.push(
-      `1440 ${file} (ChatGPT-generated, not real CAD): walls 27 exact, 5 traced (the merge stands; rule 8b not applied); "${ol}"; "${conflict.split(".")[0]}."; 12 dimensions read, 0 flagged; title block left out; rooms ${names.join(", ")}. Still wrong: 5 walls traced round the corridor and bathrooms, W4 (a partition ends inside it), D7 and OP1 unclassified, Dining + Kitchen and Living + Corridor one room each (the drawing); ${(ms / 1000).toFixed(1)} s`,
+      `1440 ${file} (ChatGPT-generated, not real CAD): walls 33 exact, 0 traced ("${PDF_ONLY_LINE}"); "${ol}"; "${conflict.split(".")[0]}."; 12 dimensions read, 0 flagged; title block left out; rooms ${names.join(", ")}. Still wrong: one free end (the drawing's 25 mm slot), W4 (a partition ends inside it), D7 and OP1 unclassified, Dining + Kitchen and Living + Corridor one room each (the drawing); ${(ms / 1000).toFixed(1)} s`,
       extra,
     );
     console.log(report.slice(-2).join("\n"));

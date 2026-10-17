@@ -962,6 +962,13 @@ After the last fix every suite was rerun on the final tree, the whole sweep, one
 - **Cause (deterministic, so not rerun before the fix).** The row's numbers had been copied from the Node test. Node renders the page with @napi-rs/canvas, Chromium with its own rasteriser, so the TRACING differs, and so does the merge: in Node the merge falls back to a poor tracing and rule 8b uses the PDF alone (33 of 33, one free end); in Chromium the tracing is good enough that the merge keeps 27 PDF walls and 5 traced ones (33–123 mm from the PDF's lines, round the corridor and bathrooms), its validator is no worse than the PDF-only plan's, and rule 8b rightly does not replace it. A Playwright probe showed the rest of the review the same as Node's (13 of 13 openings, 12 dimensions OK, W4 named, the title block left out, the same eight rooms).
 - **Fix (in the test, no product change):** the e2e row now asserts what Chromium reads; the test-plans baseline is taken from Chromium for the same reason (as asked). The Node test keeps Node's honest numbers.
 
+### Logged during Q.2b (2026-10-17): `e2e-pdf-import` failed on plan-chatgpt-poche's wall count (the intended effect of the new merge choice, not a flake)
+
+- **Failure.** First full run after the three Q.2b fixes, step "1440 plan-chatgpt-poche" (`e2e-pdf-import.ts:853`): `27 of 32 walls exact, 5 traced`. Chromium read `["33", "33", "0"]` (walls, exact, traced). Every fixture before it had passed, plan-stem-in-window's new Q.2b assertion and plan-levels included.
+- **Server state.** The `npm run dev` left from Q.2 (pid 64183), its second suite this session (the first was the failing-first run for fix 2); nothing else on port 3000; no source edited while it ran.
+- **Cause (deterministic, so not rerun before the fix).** A temporary log of rule 8b's tallies, read from Chromium's console and then removed, gave merged `{ kept: 31, problems: 1, rooms: 8 }` (27 exact + 5 traced standing in for 4, two PDF walls left out with nothing in their place) against the PDF alone `{ kept: 33, problems: 1, rooms: 8 }`. Q.2's rule needed strictly fewer problems, so the tie kept the merge; Q.2b compares walls kept first, so the complete reading wins. Chromium now reads what Node reads.
+- **Fix (the expectation, as a consequence of fix 1):** the e2e row now asserts 33 of 33 exact, 0 traced, the PDF-only line and 33 walls in the studio. The test-plans baseline improves the same way (§28).
+
 ## 24. O.1 — self-hosted OCR: DONE (2026-10-14)
 
 - OCR makes no third-party request. Before: `worker.min.js` (124 kB) and `tesseract-core-simd-lstm.wasm.js` (3.9 MB) from jsdelivr, `eng.traineddata.gz` (2.95 MB, `@tesseract.js-data/eng` `4.0.0_best_int`) from jsdelivr, for both the image import and the PDF OCR fallback; tesseract.js and tesseract.js-core 5.1.1. Now served from `public/tesseract/` (about 11 MB with the non-SIMD core as fallback; under the 15 MB limit, so no LFS), config in `src/lib/blueprint/ocrAssets.ts`.
@@ -1256,6 +1263,8 @@ Committed as `tests/fixtures/pdf/plan-chatgpt-poche.pdf` (43 KB), labelled ChatG
 
 ### 5. Known failures and limits, asserted or recorded
 
+(Step Q.2b, §28, fixed three of these: rule 8b's gap, the traced window kept at plan-stem-in-window's conflict, and "FFL +0.150" in a room name. They stay listed here as they were at Q.2.)
+
 - Rule 8b's gap (above): a merge made clean by dropping walls beats a complete PDF reading with a real free end.
 - In Chromium, plan-stem-in-window's tracing still reads the window the partition ends in, and keeps it as a TRACED window clamped onto one side of the joint (the conflict is still named). A traced opening where the PDF reports a conflict could be dropped as M.2b drops phantoms; not done.
 - A detached outbuilding with title-block words inside its box (a shed labelled "SHED — SEE DRAWING 3") or drawn against the sheet border is dropped as a title block (reported and outlined, not silent). A building box holding title-block words could lose "the building" to a smaller group.
@@ -1278,3 +1287,42 @@ Committed as `tests/fixtures/pdf/plan-chatgpt-poche.pdf` (43 KB), labelled ChatG
 - Cold build: no dev server running (`lsof -i :3000` empty), `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`: exit 0 in 12.6 s. Both greps after the build (dev hooks incl. `__background`, and CDN): `clean`.
 - `npm run dev` started (pid 64183, `/studio` 200, nothing else on port 3000). `e2e-pdf-import` failed twice on the way, both logged in §23 before rerunning (a fixture text printed twice; an expectation copied from Node), then passed while writing the Chromium baseline, then failed ON PURPOSE against a doctored baseline (the harness check, restored after). No source under `src/` changed after the cold build (only scripts, fixtures and docs).
 - The final sweep, one suite at a time, no source edited meanwhile: e2e-pdf-import (110 s), e2e-background (22 s), e2e-snap (22 s), e2e-takeoff (17 s), e2e-calibrate (75 s), e2e-studio (147 s), all exit 0 first time.
+
+## 28. Q.2b — the merge choice, traced windows at a conflict, level notes (2026-10-17; not committed)
+
+**No real CAD PDF has been tested.** Three small fixes; no other rule changed, and image input is unchanged. CLAUDE.md has the rules ("Merge choice, conflicts and level notes (step Q.2b)").
+
+### 1. The merge choice (`snap.ts` `pdfAloneWins`)
+
+- **Rule:** rule 8b compares the merged plan and the PDF's walls alone by PDF walls KEPT, then validator problems, then rooms; a full tie keeps the merge. The 70% guard (a plan keeping under 70% never beats one keeping all) follows from comparing walls first, so it is not a separate check.
+- **"Kept"** (`PdfBuild.kept`): a PDF wall in the plan, or one a traced wall of its group stands in for. Counting only exact walls was ruled out because it would flip plan-free-end (15 exact + its nib traced, against 16 with the nib's real free end: a tie by problems today), and every existing fixture result had to stay.
+- **Failing first:** the rule was first moved into `pdfAloneWins` with Q.2's logic unchanged (snapshot of all 35 fixtures identical). Then `test-pdf-poche.ts` section 10b was added: plan-free-end's complete reading, measured as `{ kept 16, problems 1, rooms 4 }`, against a merge `{ kept 4, problems 0, rooms 1 }`. It failed ("a merge keeping 4 of 16 walls with 0 problems loses…": Q.2's rule picked the 4-wall plan). Then the fix. No synthetic fixture reproduces a merge that keeps only 4 of 16 (poor tracings all go PDF-only already; dropping takes validator rounds on walls with no traced stand-in), so the test is on the tallies, with the complete reading's tally taken from the real build.
+- **Node:** every fixture's snapshot unchanged after the fix (35 compared).
+- **Chromium:** plan-chatgpt-poche changed, logged in §23. The merge kept 31 of 33 PDF walls (27 exact + 5 traced standing in for 4; 2 left out) with 1 problem and 8 rooms; the PDF alone keeps 33 with 1 problem and 8 rooms. It now reads 33 of 33 exact, 0 traced, PDF only, the same as Node.
+
+### 2. A traced opening at a conflict (`snap.ts` `conflictAt`)
+
+- **Rule:** a traced opening on an opening walls.ts reported as a conflict (a wall ends inside it) is removed, in the merge and in the whole-plan fallback. It is listed on the conflict (`traced`, present only when non-empty), and the review's line counts it: "… not read. 1 traced opening at the same place was removed too." (`li` `data-traced`).
+- **Failing first in Chromium:** the e2e assertion was added and run on the unchanged source. It failed: "the traced window at the conflict removed and counted (Window 1 (1200 mm) conflicts with a wall ending inside it; not read. …)".
+- **Node** has the same traced window (o1, clamped to y 2.01–3.20 beside the 1.4–2.6 conflict). Its snapshot changed only there: the opening is gone, traced 1 → 0, total 9 → 8, and `traced: ["o1"]` is on the conflict.
+- **Assertion changed:** section 8's exact line, as stated, plus a new "0 traced" assertion.
+
+### 3. Level notes (`analysePdf.ts` `withoutLevel`, in `pdfLabels`)
+
+- **Rule:** a line that is a level note (starts with FFL / SSL / FL / LEVEL / LVL, dotted or not, or is a bare signed number) is no room label, and a trailing level note on a name's own line is stripped. PDF text only.
+- **Fixture:** `plan-levels.pdf`, plan-filled with "FFL +0.150", "+0.000", "LEVEL 1", "SSL +0.100" under the names and "FL -0.020" on the Bathroom's own line (new generator option `levels`, default off). Regenerating left every older PDF byte-identical (md5) and every older truth entry identical.
+- **Failing first** (section 11): the names were "Bathroom Fl -0.020", "Bedroom 1 / Ffl +0.150", "Living Room / Level 1 / Ssl +0.100". "+0.000" was already dropped as a dimension-like number.
+- **Effect elsewhere:** plan-chatgpt-poche's room is now "Corridor / Living", in Node and Chromium. Its snapshot changed only in that name. The e2e row's name list changed as stated, and test-pdf-chatgpt-poche gained a "no level note in a room name" assertion.
+- **Limit:** a room really named "Level …" or ending in a signed number loses that text.
+
+### 4. Baseline
+
+`test-plans-baseline.json`, plan-test-2.pdf: wallsExact 27 → 33, wallsTraced 5 → 0 (fix 1, the Chromium change above). Every other number is unchanged; plan-test.pdf is unchanged.
+
+### 5. Verification
+
+- `npm test`: exit 0. `npx tsc --noEmit`: clean.
+- Cold build: dev server (pids 64182/64183) stopped, port 3000 free, `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`: exit 0 in 12 s. Both greps after the build (dev hooks incl. `__background`, and CDN): `clean`.
+- `npm run dev` restarted (pid 80412, `/studio` 200).
+- Final sweep, one at a time, no source edited meanwhile, all exit 0 first time: e2e-pdf-import (100 s), e2e-snap (22 s), e2e-background (23 s), e2e-studio (152 s).
+- Earlier, `e2e-pdf-import` failed once on purpose (fix 2's failing-first run) and once on plan-chatgpt-poche (§23), before the passing rerun.

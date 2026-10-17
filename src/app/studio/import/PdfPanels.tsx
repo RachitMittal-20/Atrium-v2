@@ -230,7 +230,7 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
       {c.conflicts.length > 0 && (
         <ul className="list-disc pl-5" data-testid="coverage-conflicts" data-count={c.conflicts.length}>
           {c.conflicts.map((x, i) => (
-            <li key={i} data-kind={x.kind} data-width={x.width.toFixed(4)}>
+            <li key={i} data-kind={x.kind} data-width={x.width.toFixed(4)} data-traced={x.traced?.length ?? 0}>
               <span aria-hidden className="mr-2 inline-block h-2.5 w-4 border-2 border-dashed border-overlay-door align-middle" />
               {conflictText(x, i, unit)} Atrium never puts a wall&apos;s end inside an opening: place it again in the studio if it is real.
             </li>

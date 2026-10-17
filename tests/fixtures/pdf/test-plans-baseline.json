@@ -1,7 +1,7 @@
 {
  "plan-test-2.pdf": {
-  "wallsExact": 27,
-  "wallsTraced": 5,
+  "wallsExact": 33,
+  "wallsTraced": 0,
   "openingsExact": 13,
   "openingsTraced": 0,
   "unclassified": 2,

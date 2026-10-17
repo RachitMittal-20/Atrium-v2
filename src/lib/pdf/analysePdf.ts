@@ -26,7 +26,9 @@
  *     goes through rasterOrigin. analyseBlueprint then runs on that raster
  *     with `straighten: false` (the page's own axes are kept) and, in place of
  *     OCR, the PDF's own text: every text line that is not a dimension, a bare
- *     number or the title-block scale becomes a room-name label at its centre
+ *     number, the title-block scale or a level note (step Q.2b: "FFL +0.150",
+ *     "LEVEL 1", "+0.000", also stripped from the end of a name's own line)
+ *     becomes a room-name label at its centre
  *     × pixels per point, which nameRooms places by position as usual. The
  *     Analysis' scale is then replaced by the PDF's (ScaleEstimate in pixels
  *     per metre: pxPerM = pixels per point / metres per point) and the OCR
@@ -158,10 +160,25 @@ export function ocrTexts(words: OcrWord[], pxPerPt: number): PdfText[] {
 
 const ZERO = { x: 0, y: 0 };
 
-/** Room-name labels from the page's text, in raster pixels (header); `origin` is the raster's top-left in points. */
+/** Step Q.2b: a floor-level word (FFL, SSL, FL, LEVEL, LVL; dotted or not) and a signed level (+0.150, -20, ±0.000). */
+const LEVEL_WORD = String.raw`(?:F\.?F\.?L|S\.?S\.?L|F\.?L|LEVEL|LVL)\b\.?`;
+const SIGNED = String.raw`[+\-±−]\s*\d+(?:[.,]\d+)?`;
+/** A whole line that is a level note: "FFL +0.150", "FL", "LEVEL 1", "+0.000". */
+const LEVEL_LINE = new RegExp(`^(?:${LEVEL_WORD}.*|${SIGNED})$`, "i");
+/** A level note at the end of a name's own line: "Bathroom FL -0.020", "Living +0.150", "Hall FFL". */
+const LEVEL_TAIL = new RegExp(`\\s+(?:(?:${LEVEL_WORD}\\s*:?\\s*)?${SIGNED}|(?:F\\.?F\\.?L|S\\.?S\\.?L|F\\.?L)\\b\\.?)$`, "i");
+
+/** Step Q.2b: a text line without its level note ("" when it is only one): a level is never part of a room name. */
+export function withoutLevel(text: string): string {
+  return LEVEL_LINE.test(text.trim()) ? "" : text.replace(LEVEL_TAIL, "").trim();
+}
+
+/** Room-name labels from the page's text, in raster pixels (header); `origin` is the raster's top-left in points.
+ *  Step Q.2b: level notes are left out of them (`withoutLevel`). */
 export function pdfLabels(page: Pick<VectorPage, "texts">, pxPerPt: number, origin = ZERO): PlanLabel[] {
   return textLines(page.texts)
-    .filter((l) => !parseTitleScale(l.text) && parseDimension(l.text) === null && !/^\d+(?:\.\d+)?$/.test(l.text))
+    .map((l) => ({ ...l, text: withoutLevel(l.text) }))
+    .filter((l) => l.text && !parseTitleScale(l.text) && parseDimension(l.text) === null && !/^\d+(?:\.\d+)?$/.test(l.text))
     .map((l) => ({ text: l.text, x: (l.centre.x - origin.x) * pxPerPt, y: (l.centre.y - origin.y) * pxPerPt, confidence: 100 }));
 }
 
