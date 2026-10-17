@@ -8,7 +8,8 @@
   "dimensions": 12,
   "flagged": 0,
   "flaggedModel": 0,
-  "rooms": 8
+  "rooms": 8,
+  "verdict": "check"
  },
  "plan-test.pdf": {
   "wallsExact": 16,
@@ -19,6 +20,7 @@
   "dimensions": 9,
   "flagged": 0,
   "flaggedModel": 0,
-  "rooms": 5
+  "rooms": 5,
+  "verdict": "good"
  }
 }

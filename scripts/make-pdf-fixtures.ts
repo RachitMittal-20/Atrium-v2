@@ -412,6 +412,9 @@ interface Options {
    *  "FFL +0.150" under Bedroom 1, "+0.000" under Bedroom 2, "LEVEL 1" and "SSL +0.100" under the
    *  living room, and "FL -0.020" on the Bathroom's own line (so it joins the name's text line). */
   levels?: boolean;
+  /** Step H.1 (plan-strips): draw THESE walls instead of the sample's, with no openings: parallel
+   *  strips that touch nothing, so the PDF has plenty of wall-like line work but no building. */
+  strips?: typeof samplePlan.walls;
   /** Step X.1 (plan-small-on-big): the sheet's size in points and where the drawing sits on it
    *  (added to every user-space position), so a small plan can sit on a big, mostly empty sheet. */
   sheet?: { name: string; size: [number, number]; shift: [number, number] };
@@ -559,7 +562,9 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
 
   // Walls: one rectangle per piece between openings, extended by half its own
   // thickness at both ends so corners and T-junctions close.
-  for (const w of samplePlan.walls) {
+  const sourceWalls = o.strips ?? samplePlan.walls;
+  const sourceOpenings = o.strips ? [] : samplePlan.openings;
+  for (const w of sourceWalls) {
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
     const d = { x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L };
     const n = { x: -d.y, y: d.x };
@@ -567,7 +572,7 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
     const at = (u: number, v: number) => P(w.a.x + d.x * u + n.x * v, w.a.y + d.y * u + n.y * v);
     // The sample's openings drawn as before, or plan-doors' (step M.1c) in their own styles.
     const styleOf = (op: Opening | FixtureOpening): FixtureOpening["style"] => ("style" in op ? op.style : op.kind === "window" ? "window3" : "door");
-    const gaps = (o.doors ?? samplePlan.openings).filter((op) => op.wallId === w.id).map((op) => [op.offset - op.width / 2, op.offset + op.width / 2, op] as const).sort((p, q) => p[0] - q[0]);
+    const gaps = (o.doors ?? sourceOpenings).filter((op) => op.wallId === w.id).map((op) => [op.offset - op.width / 2, op.offset + op.width / 2, op] as const).sort((p, q) => p[0] - q[0]);
     if (o.singleLine?.includes(w.id) && !gaps.length) {
       pen.line(at(-t / 2, 0), at(L + t / 2, 0), t * s); // one line as thick as the wall (butt caps)
       continue;
@@ -885,11 +890,11 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
     const [x, y] = view(...(P(p.x, p.y) as [number, number]));
     return { x: x * mPP, y: y * mPP };
   };
-  const raw = samplePlan.walls.map((w) => ({ id: w.id, a: inView(w.a), b: inView(w.b), thickness: w.thickness * unit }));
+  const raw = sourceWalls.map((w) => ({ id: w.id, a: inView(w.a), b: inView(w.b), thickness: w.thickness * unit }));
   const [ox, oy] = [Math.min(...raw.flatMap((w) => [w.a.x, w.b.x])), Math.min(...raw.flatMap((w) => [w.a.y, w.b.y]))];
   const shift = (p: { x: number; y: number }) => ({ x: p.x - ox, y: p.y - oy });
   const jamb = (wallId: string, at: number) => {
-    const w = samplePlan.walls.find((x) => x.id === wallId)!;
+    const w = sourceWalls.find((x) => x.id === wallId)!;
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
     return shift(inView({ x: w.a.x + ((w.b.x - w.a.x) / L) * at, y: w.a.y + ((w.b.y - w.a.y) / L) * at }));
   };
@@ -903,17 +908,17 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
     arcs: pen.arcs,
     texts: pen.texts,
     rooms: NAMES.map((n) => n[0]),
-    walls: samplePlan.walls.map((w) => ({ id: w.id, a: { x: w.a.x * unit, y: w.a.y * unit }, b: { x: w.b.x * unit, y: w.b.y * unit }, thickness: w.thickness * unit })),
+    walls: sourceWalls.map((w) => ({ id: w.id, a: { x: w.a.x * unit, y: w.a.y * unit }, b: { x: w.b.x * unit, y: w.b.y * unit }, thickness: w.thickness * unit })),
     planWalls: raw.map((w) => ({ ...w, a: shift(w.a), b: shift(w.b) })),
     // Step M.1d: an "oddgap" is drawn but never read as an opening, so it is reported, not listed here.
     outOfRangeGaps: (o.doors ?? []).filter((op) => "style" in op && op.style === "oddgap").map((op) => op.width),
-    planOpenings: (o.doors ?? samplePlan.openings).filter((op) => !("style" in op) || op.style !== "oddgap").map((op) => {
+    planOpenings: (o.doors ?? sourceOpenings).filter((op) => !("style" in op) || op.style !== "oddgap").map((op) => {
       const style = "style" in op ? op.style : op.kind === "window" ? "window3" : "door";
       const fo = "style" in op ? op : null;
       const kind = style === "window3" || style === "window2" || style === "glass3" || style === "sill2" ? ("window" as const) : ("door" as const);
       const [s0, s1] = [op.offset - op.width / 2, op.offset + op.width / 2];
       // The leaf's side as a unit vector in the page's frame: the sample wall's (-dy, dx) normal times the side, mapped.
-      const w = samplePlan.walls.find((x) => x.id === op.wallId)!;
+      const w = sourceWalls.find((x) => x.id === op.wallId)!;
       const Lw = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
       const n = { x: -(w.b.y - w.a.y) / Lw, y: (w.b.x - w.a.x) / Lw };
       const sd = fo ? (fo.side ?? 1) : 1;
@@ -950,6 +955,17 @@ export async function misprintedPdf(): Promise<Uint8Array> {
   await drawPlan(doc, await doc.embedFont(StandardFonts.Helvetica), { walls: "fill", dims: "mm", misprint: true });
   return doc.save({ useObjectStreams: false });
 }
+
+/** Step H.1: six horizontal strips, 3 m long and 0.2 m thick, no two on one line (a bridged gap would join them) and none
+ *  within 0.6 m of another across (a face pair): no joint, no room. */
+const STRIPS = [
+  { id: "s1", a: { x: 0.5, y: 1 }, b: { x: 3.5, y: 1 } },
+  { id: "s2", a: { x: 5, y: 1.7 }, b: { x: 8, y: 1.7 } },
+  { id: "s3", a: { x: 0.5, y: 3.5 }, b: { x: 3.5, y: 3.5 } },
+  { id: "s4", a: { x: 5, y: 4.3 }, b: { x: 8, y: 4.3 } },
+  { id: "s5", a: { x: 0.5, y: 6 }, b: { x: 3.5, y: 6 } },
+  { id: "s6", a: { x: 5, y: 6.8 }, b: { x: 8, y: 6.8 } },
+].map((w) => ({ ...w, thickness: 0.2, height: 2.7 })) as typeof samplePlan.walls;
 
 const plain = { kind: "vector" as const, planPage: 1, mismatchRatio: null };
 
@@ -1051,6 +1067,10 @@ export async function writePdfFixtures(): Promise<Truth[]> {
   );
   // plan-levels: plan-filled with floor-level notes beside the room names (levels), never part of a name.
   truths.push(await make("plan-levels.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", levels: true })) })));
+  // Step H.1: plan-strips, six 3 m wall strips that touch nothing (STRIPS), with the sample's dimensions and names.
+  // Written but NOT in truth.json: it has no building, so the generic "every fixture reads its walls exactly"
+  // loops (which would need vector walls kept in the plan) do not apply; scripts/test-pdf-verdict.ts reads the file itself.
+  await make("plan-strips.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", strips: STRIPS })) }));
   truths.push(await make("plan-no-dims.pdf", async (d, f) => ({ ...plain, expectedScale: "check", ...await drawPlan(d, f, { walls: "fill", dims: null }), dims: [] })));
   // The scan: plan-filled rendered at 150 dpi, embedded as one grey PNG filling the page.
   const { file: _file, pages: _pages, ...filled } = truths[0];

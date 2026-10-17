@@ -140,7 +140,10 @@ type Win = Window & {
   /** Development only (PlanModel): the door leaves as rendered — where each one pivots (step M.1d). */
   __scene3d?: { openings(): { id: string; kind: string; leafTurn: number | null; leafPivot: { x: number; y: number; z: number } | null; leafBox: Box3d | null }[] };
 };
-const COVERAGE = /^(\d+) of (\d+) walls read exactly from the PDF \((\d+)% of wall length\); (\d+) walls? (?:is|are) traced approximately \(about (\d+) mm\)\.$/;
+// Step H.1: "N walls match lines in the PDF", not "N of M read exactly"; M is the line's data-walls.
+const COVERAGE = /^(\d+) (?:wall matches a line|walls match lines) in the PDF \((\d+)% of wall length\); (\d+) walls? (?:is|are) traced approximately \(about (\d+) mm\)\.$/;
+/** Step H.1: worst to best, for the verdict compared with the baseline. */
+const VERDICT_RANK = { good: 0, check: 1, unusable: 2 } as const;
 /** Fixtures checked at 390 by touch (besides the two-page picker). */
 const PHONE = ["plan-filled.pdf", "plan-clutter.pdf", "plan-broken-dims.pdf", "plan-outlined.pdf", "plan-single-line.pdf", "plan-doors.pdf", "plan-doors-rect.pdf", "plan-gaps.pdf"];
 /** Fixtures whose openings and door hinges are checked in full (step M.1c, M.1d). */
@@ -164,7 +167,9 @@ const FREE_END_FILE = "plan-free-end.pdf";
 const BASELINE = join(process.cwd(), "tests/fixtures/pdf/test-plans-baseline.json");
 /** The test-plans/ numbers compared with the baseline; for each, whether more is better. */
 const BASELINE_KEYS = { wallsExact: true, wallsTraced: false, openingsExact: true, openingsTraced: false, unclassified: false, dimensions: true, flagged: false, flaggedModel: false, rooms: true } as const;
-type Row = Record<keyof typeof BASELINE_KEYS, number>;
+type Counts = Record<keyof typeof BASELINE_KEYS, number>;
+/** Step H.1: the baseline also records the plan check's verdict; it may only get better. */
+type Row = Counts & { verdict?: keyof typeof VERDICT_RANK };
 const OPENINGS = /^(\d+) of (\d+) openings read exactly \(doors (\d+), windows (\d+), unclassified (\d+)\); (\d+) traced approximately; (\d+) arcs? not used\.$/;
 
 const errors: string[] = [];
@@ -280,10 +285,18 @@ async function session(browser: Browser, width: number, height: number, touch: b
 
   /** The coverage line and the dashed traced walls on the overlay; returns [exact, walls, traced]. */
   const checkCoverage = async (file: string, t: Truth) => {
-    const text = (await tid(page, "coverage-line").innerText()).trim();
+    const text = (await tid(page, "coverage-line-text").innerText()).trim();
     const m = text.match(COVERAGE);
     assert.ok(m, `${file}: coverage line "${text}"`);
-    const [exact, walls, pct, traced] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+    const [exact, pct, traced] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    const walls = Number(await tid(page, "coverage-line").getAttribute("data-walls"));
+    // Step H.1: the verdict heads the review; a fixture is Good unless it is one of the two that leave an opening out
+    // or keep a separate building (Q2), never Not usable, and the caveat rides with the line exactly when it is not Good.
+    const level = await tid(page, "plan-verdict").getAttribute("data-level");
+    const want = Q2[file]?.conflict || Q2[file]?.detached?.kept ? "check" : "good";
+    assert.equal(level, want, `${file}: plan check "${await tid(page, "plan-verdict-text").innerText()}"`);
+    assert.equal(await tid(page, "coverage-line-caveat").count(), level === "good" ? 0 : 1, `${file}: the caveat rides with the walls line unless the plan is Good`);
+    assert.ok(!/exact/i.test(text), `${file}: the walls line never says exact ("${text}")`);
     if (t.tracedWalls) assert.ok(traced >= t.tracedWalls.length && exact + traced === t.planWalls.length, `${file}: ${exact} exact and ${traced} traced (${t.tracedWalls} can only be traced)`);
     else assert.equal(exact, t.planWalls.length, `${file}: every real wall read exactly`);
     assert.equal(traced, walls - exact, `${file}: the rest traced`);
@@ -817,6 +830,7 @@ async function session(browser: Browser, width: number, height: number, touch: b
     assert.equal(await page.locator("[data-testid=model-row][data-status=ok]").count(), 9, `${file}: all nine land on the model, OK`);
     const cl = tid(page, "coverage-line");
     assert.deepEqual([await cl.getAttribute("data-walls"), await cl.getAttribute("data-exact"), await cl.getAttribute("data-traced")], ["16", "16", "0"], `${file}: 16 of 16 walls exact`);
+    assert.equal(await tid(page, "plan-verdict").getAttribute("data-level"), "good", `${file}: the plan check is Good`);
     assert.equal((await tid(page, "coverage-pdf-only").innerText()).trim(), PDF_ONLY_LINE, `${file}: the tracing was not used`);
     const ol = (await tid(page, "coverage-openings-line").innerText()).trim();
     assert.equal(ol, "10 of 10 openings read exactly (doors 5, windows 4, unclassified 1); 0 traced approximately; 0 arcs not used.", `${file}: openings line`);
@@ -852,6 +866,7 @@ async function session(browser: Browser, width: number, height: number, touch: b
     // merge choice compares walls kept first, so the PDF's walls alone are used, as in Node: 33 of 33
     // (before Q.2b: 27 exact of 32, 5 traced).
     assert.deepEqual([await cl.getAttribute("data-walls"), await cl.getAttribute("data-exact"), await cl.getAttribute("data-traced")], ["33", "33", "0"], `${file}: 33 of 33 walls exact, 0 traced`);
+    assert.equal(await tid(page, "plan-verdict").getAttribute("data-level"), "check", `${file}: the plan check is Check (a free end, an opening not read)`);
     assert.equal((await tid(page, "coverage-pdf-only").innerText()).trim(), PDF_ONLY_LINE, `${file}: the PDF's walls alone (rule 8b, step Q.2b's merge choice)`);
     const ol = (await tid(page, "coverage-openings-line").innerText()).trim();
     assert.equal(ol, "13 of 13 openings read exactly (doors 6, windows 5, unclassified 2); 0 traced approximately; 2 arcs not used.", `${file}: openings line`);
@@ -867,6 +882,44 @@ async function session(browser: Browser, width: number, height: number, touch: b
       extra,
     );
     console.log(report.slice(-2).join("\n"));
+  }
+
+  // ---------------------------------------------------------------- step H.1: six disconnected strips are Not usable
+  // Six pieces, 12 free ends and no room: the review says so first, and Build waits for a second click, then works.
+  // (Chromium's default build of this page is all traced; the case where every wall "matches a line" and the plan is
+  // still Not usable is the PDF's-walls-alone build in scripts/test-pdf-verdict.ts.)
+  {
+    step(`${tag} plan-strips`);
+    const file = "plan-strips.pdf";
+    await upload(join(DIR, file));
+    await press(tid(page, "scale-found").getByRole("button", { name: /^(Use this scale|Confirm this scale)$/ }));
+    const v = tid(page, "plan-verdict");
+    await v.waitFor();
+    assert.equal(await v.getAttribute("data-level"), "unusable", `${file}: Not usable`);
+    const text = (await tid(page, "plan-verdict-text").innerText()).trim();
+    assert.equal(text, "Not usable: the walls form 6 separate pieces (the largest holds 17% of the wall length), 12 free wall ends and no closed room.", `${file}: the verdict in words`);
+    const aside = page.locator("[data-testid=results] aside");
+    assert.equal(await aside.locator("[data-testid]").first().getAttribute("data-testid"), "plan-verdict", `${file}: the verdict is first in the review panel`);
+    const lineText = (await tid(page, "coverage-line-text").innerText()).trim();
+    assert.ok(!/exact/i.test(lineText) && /^\d+ (?:wall matches a line|walls match lines) in the PDF/.test(lineText), `${file}: the walls line reads "match lines" ("${lineText}")`);
+    assert.match((await tid(page, "coverage-line-caveat").innerText()).trim(), /the plan is "Not usable"/, `${file}: the walls line carries the verdict`);
+    const build = page.getByRole("button", { name: /^(Build anyway|Confirm: build anyway)$/ });
+    assert.equal((await build.innerText()).trim(), "Build anyway", `${file}: the button says Build anyway`);
+    assert.equal(await page.getByRole("button", { name: "Build model", exact: true }).count(), 0, `${file}: and not Build model`);
+    await press(build);
+    await tid(page, "build-anyway-note").waitFor();
+    assert.equal(await tid(page, "summary").count(), 0, `${file}: one click only asks`);
+    assert.equal((await build.innerText()).trim(), "Confirm: build anyway", `${file}: the button now asks to confirm`);
+    await press(build);
+    await guard(tid(page, "summary").waitFor());
+    await press(page.getByRole("button", { name: "Open in studio" }));
+    await guard(page.waitForURL(/\/studio$/));
+    await guard(waitForHook(page, "__planStore", "Open in studio had just been pressed"));
+    const plan = await page.evaluate(() => (window as Win).__planStore!.getState().plan);
+    assert.equal(plan.walls.length, 6, `${file}: the second click built the 6 walls`);
+    const line = `${tag} ${file}: "${text}" Build anyway asked once, then built ${plan.walls.length} walls; the walls line reads "${lineText}"`;
+    report.push(line);
+    console.log(line);
   }
 
   // ---------------------------------------------------------------- local real PDFs (never committed)
@@ -913,6 +966,8 @@ async function session(browser: Browser, width: number, height: number, touch: b
         flagged,
         flaggedModel: flagged2,
         rooms: 0,
+        // Step H.1: the plan check, when the page was read as vector line work with a scale.
+        ...((await tid(page, "plan-verdict").count()) ? { verdict: (await tid(page, "plan-verdict").getAttribute("data-level")) as keyof typeof VERDICT_RANK } : {}),
       };
       if (!err && (await tid(page, "scale-found").count())) {
         try {
@@ -925,7 +980,7 @@ async function session(browser: Browser, width: number, height: number, touch: b
           hinges = `not built (${String(e).slice(0, 80)})`;
         }
       }
-      report.push(`test-plans/${f}: ${err ? `error "${err}"` : `${pdf?.kind}, ${walls}, ${openings}, ${hinges}, ${gaps}, ${rows} dimensions read, ${flagged} flagged in the first table, ${flagged2} in the second, ${row.rooms} rooms`}, ${((Date.now() - t0) / 1000).toFixed(1)} s`, extra);
+      report.push(`test-plans/${f}: ${err ? `error "${err}"` : `${pdf?.kind}, plan check ${row.verdict ?? "none"}, ${walls}, ${openings}, ${hinges}, ${gaps}, ${rows} dimensions read, ${flagged} flagged in the first table, ${flagged2} in the second, ${row.rooms} rooms`}, ${((Date.now() - t0) / 1000).toFixed(1)} s`, extra);
       console.log(report.slice(-2).join("\n"));
       planRows[f] = row;
     }
@@ -941,9 +996,10 @@ async function session(browser: Browser, width: number, height: number, touch: b
           report.push(`test-plans/${f}: no baseline yet (run with E2E_WRITE_BASELINE=1 to record one)`);
           continue;
         }
-        const worse = (Object.keys(BASELINE_KEYS) as (keyof Row)[]).filter((k) => (BASELINE_KEYS[k] ? row[k] < b[k] : row[k] > b[k]));
+        const worse = (Object.keys(BASELINE_KEYS) as (keyof Counts)[]).filter((k) => (BASELINE_KEYS[k] ? row[k] < b[k] : row[k] > b[k]));
         assert.deepEqual(worse.map((k) => `${k} ${b[k]} -> ${row[k]}`), [], `test-plans/${f}: worse than its baseline`);
-        report.push(`test-plans/${f}: no number worse than its baseline`);
+        if (b.verdict) assert.ok(VERDICT_RANK[row.verdict ?? "unusable"] <= VERDICT_RANK[b.verdict], `test-plans/${f}: the plan check got worse, ${b.verdict} -> ${row.verdict ?? "none"}`);
+        report.push(`test-plans/${f}: no number worse than its baseline${b.verdict ? `, plan check ${row.verdict} (baseline ${b.verdict})` : "; no verdict recorded yet"}`);
       }
   }
   // ------------------------------------------------- step F.1: Build model's plan wins over a restore

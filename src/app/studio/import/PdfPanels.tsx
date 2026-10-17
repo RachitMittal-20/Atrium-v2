@@ -24,6 +24,10 @@
  *     openings (assumed doors), the traced ones and the arcs not used, with why.
  *     Step M.2b adds the dropped-phantom sentence ("N traced openings dropped because
  *     the PDF draws solid wall there (sizes: …)").
+ *     Step H.1 adds VerdictBanner (the plan-quality verdict, verdict.ts, at the top of the review) and
+ *     rewords the walls line to "N walls match lines in the PDF": matching lines says nothing about
+ *     whether the walls join into rooms, so with a verdict other than Good the line carries it
+ *     (coverageCaveat).
  * Connects to: src/types/pdf.ts (PdfInfo), src/lib/pdf/extract.ts (paperName),
  * src/lib/pdf/snap.ts (Coverage).
  */
@@ -31,6 +35,7 @@ import { DOOR_SIZE, WINDOW_SIZE } from "@/data/samplePlan";
 import { paperName } from "@/lib/pdf/extract";
 import { OPENING_WIDTH } from "@/lib/pdf/openings";
 import { conflictText, PDF_ONLY_LINE, type Coverage } from "@/lib/pdf/snap";
+import { VERDICT_LABEL, verdictText, type Verdict } from "@/lib/pdf/verdict";
 import { formatLength, STUDIO_DP, type LengthUnit } from "@/lib/units/format";
 import { useUnitsStore } from "@/store/unitsStore";
 import type { PdfInfo } from "@/types/pdf";
@@ -133,10 +138,47 @@ export function PdfPanel({ pdf }: { pdf: PdfInfo }) {
 
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-/** The coverage line, as the review screen and the tests read it. */
+/**
+ * The walls line, as the review screen and the tests read it. Step H.1: it says how many walls MATCH
+ * lines in the PDF, not that they are "read exactly": matching lines is not a usable model (a run
+ * with every wall matching built 14 separate pieces). Never show it alone when the verdict is not
+ * Good: `coverageCaveat` goes beside it.
+ */
 export function coverageLine(c: Coverage, unit: LengthUnit = "mm"): string {
   const pct = c.lengthM > 0 ? Math.round((100 * c.exactLengthM) / c.lengthM) : 0;
-  return `${c.exact} of ${c.walls} walls read exactly from the PDF (${pct}% of wall length); ${count(c.traced, "wall is", "walls are")} traced approximately (about ${formatLength(c.traceMm / 1000, unit)}).`;
+  return `${count(c.exact, "wall matches a line", "walls match lines")} in the PDF (${pct}% of wall length); ${count(c.traced, "wall is", "walls are")} traced approximately (about ${formatLength(c.traceMm / 1000, unit)}).`;
+}
+
+/** Step H.1: the sentence that rides with the walls line when the plan is not Good, or "". */
+export function coverageCaveat(v: Verdict): string {
+  return v.level === "good" ? "" : `That counts matching lines only, not whether the walls join into rooms: the plan is "${VERDICT_LABEL[v.level]}".`;
+}
+
+const VERDICT_STYLE: Record<Verdict["level"], string> = {
+  good: "border-cyanotype",
+  check: "border-gilt",
+  unusable: "border-2 border-overlay-end",
+};
+
+/** Step H.1: the plan-quality verdict, first in the review, in plain words with its reasons. */
+export function VerdictBanner({ verdict }: { verdict: Verdict }) {
+  return (
+    <section
+      aria-label="Plan check"
+      role="status"
+      className={`rounded border bg-vellum p-4 ${VERDICT_STYLE[verdict.level]}`}
+      data-testid="plan-verdict"
+      data-level={verdict.level}
+      data-pieces={verdict.facts.pieces}
+      data-rooms={verdict.facts.rooms}
+      data-free-ends={verdict.facts.freeEnds}
+    >
+      <p className="font-medium" data-testid="plan-verdict-text">
+        {verdictText(verdict)}
+      </p>
+      {verdict.level === "unusable" && <p className="mt-1 text-sm text-smoke">The model can still be built, but expect to redraw most of it in the studio.</p>}
+    </section>
+  );
 }
 
 /** The openings line (step M.1c), as the review screen and the tests read it. */
@@ -191,7 +233,7 @@ export function droppedLine(c: Coverage, unit: LengthUnit = "mm"): string {
   return `${count(d.length, "traced opening", "traced openings")} dropped because the PDF draws solid wall there (sizes: ${d.map((o) => len(o.size)).join(", ")}).`;
 }
 
-export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
+export function CoveragePanel({ coverage: c, verdict }: { coverage: Coverage; verdict: Verdict }) {
   const unit = useUnitsStore((st) => st.length); // the one units setting (step U.1)
   const len = (m: number) => formatLength(m, unit, STUDIO_DP.length);
   const wallLen = (w: Coverage["tracedWalls"][number]) => Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
@@ -200,8 +242,14 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
       <h2 id="coverage-heading" className="font-display text-lg">
         Read from the PDF
       </h2>
-      <p data-testid="coverage-line" data-exact={c.exact} data-walls={c.walls} data-traced={c.traced}>
-        {coverageLine(c, unit)}
+      <p data-testid="coverage-line" data-exact={c.exact} data-walls={c.walls} data-traced={c.traced} data-verdict={verdict.level}>
+        <span data-testid="coverage-line-text">{coverageLine(c, unit)}</span>
+        {verdict.level !== "good" && (
+          <>
+            {" "}
+            <strong data-testid="coverage-line-caveat">{coverageCaveat(verdict)}</strong>
+          </>
+        )}
       </p>
       {c.pdfOnly && (
         <p className="font-medium" data-testid="coverage-pdf-only">

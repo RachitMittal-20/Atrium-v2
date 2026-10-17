@@ -1326,3 +1326,38 @@ Committed as `tests/fixtures/pdf/plan-chatgpt-poche.pdf` (43 KB), labelled ChatG
 - `npm run dev` restarted (pid 80412, `/studio` 200).
 - Final sweep, one at a time, no source edited meanwhile, all exit 0 first time: e2e-pdf-import (100 s), e2e-snap (22 s), e2e-background (23 s), e2e-studio (152 s).
 - Earlier, `e2e-pdf-import` failed once on purpose (fix 2's failing-first run) and once on plan-chatgpt-poche (§23), before the passing rerun.
+
+## 29. H.1 — the review never calls a broken reading "exact" (2026-10-18; not committed)
+
+**No real CAD PDF has been tested.** No wall or opening reading rule changed, no image-input behaviour changed, and no existing assertion changed except the ones stated below. CLAUDE.md has the rules ("The plan verdict (step H.1)").
+
+### 1. The problem
+A real run said "52 of 52 walls read exactly from the PDF (100%)" beside 38 free wall ends, 17 detached groups, 23 gaps not read, 12 windows rejected and a built model of one "room" made of disconnected blocks. The coverage line only says how many walls match lines; nothing judged the plan.
+
+### 2. What was built
+- `src/lib/pdf/verdict.ts` (pure): `planVerdict(plan, coverage)` → Good / Check / Not usable with reasons; `verdictText` writes "Not usable: the walls form 6 separate pieces (the largest holds 17% of the wall length), 12 free wall ends and no closed room." Thresholds in `RULES` with their reasons (70% largest-group share, 2 and 10 free ends); Not usable = largest group under 70%, or no room, or over 10 free ends; Good = one connected building, at most 2 free ends, a room, nothing rejected, no kept detached group; Check = anything else.
+- `Coverage.refused` (snap.ts): PDF openings the model's rules turned away; counted with `conflicts` as "rejected openings". `freeEnds` moved from snap.ts to verdict.ts (same rule, 1 cm).
+- Review screen: `VerdictBanner` first in the side panel; the walls line is now "N walls match lines in the PDF (X% of wall length); K walls are traced approximately…" and carries `coverageCaveat` whenever the verdict is not Good; on Not usable the button reads "Build anyway", the first click only shows the note, the second ("Confirm: build anyway") builds as before. The openings line still says "read exactly" (not in the brief; a rejected opening shows in the verdict).
+- Image input and scanned PDFs have no Coverage, so no verdict.
+
+### 3. Failing first
+`scripts/test-pdf-verdict.ts` and the fixture `plan-strips.pdf` were written before `verdict.ts` existed; the run failed with MODULE_NOT_FOUND. The text it replaces was shown on the new fixture: "0 of 6 walls read exactly…" (the default build) and, for the PDF's-walls-alone build, "6 of 6 walls read exactly from the PDF (100% of wall length)" with 12 free ends and no room.
+
+### 4. The fixture
+`plan-strips.pdf`: six 3 m strips, 0.2 m thick, no two on one line (a first version put pairs on one line and walls.ts bridged them into 3 walls with an opening) and none within 0.6 m of another across. Generator option `strips`; regenerating left all 37 older PDFs byte-identical (md5) and `truth.json` unchanged: it is deliberately NOT in `truth.json`, because `test-pdf-budget`'s "every vector fixture's walls within 0.5 mm" loop (and the others like it) need walls kept as exact, which a no-building fixture does not have (the validator rounds send its walls back to the tracing). That loop's assertion is unchanged.
+
+### 5. Recorded verdicts (Node, `test-pdf-verdict.ts`; 38 PDFs)
+32 Good; 3 Check (plan-outbuilding: a separate shed, two pieces; plan-stem-in-window: an opening left out; plan-chatgpt-poche: a free end and an opening conflict, its known discrepancies); 1 Not usable (plan-strips); 2 with nothing to judge in Node (plan-outlined needs OCR for its scale; plan-scanned is a picture). None Not usable except plan-strips, which genuinely has no room. Chromium (`e2e-pdf-import`) agrees on every fixture (Good except the two Q2 ones, which are Check), plan-chatgpt-flat Good, plan-chatgpt-poche Check. Local files: plan-test.pdf Good, plan-test-2.pdf Check.
+
+### 6. Baseline
+`test-plans-baseline.json` gained a `verdict` field per file (plan-test.pdf `good`, plan-test-2.pdf `check`). **No number changed** (both rows unchanged: 16/0/10/0/1/9/0/0/5 and 33/0/13/0/2/12/0/0/8); `e2e-pdf-import` now also fails if a file's verdict gets worse.
+
+### 7. Assertions changed, as stated
+`e2e-pdf-import.ts`: the `COVERAGE` regex and `checkCoverage` read the new wording (`coverage-line-text`; `data-walls` for M), and every fixture's plan check is asserted (Good, or Check for the conflict and outbuilding ones, never Not usable, the caveat present exactly when not Good). New: the plan-strips flow at 1440 and 390 (verdict text, verdict first in the panel, "Build anyway", one click only asks, the second builds 6 walls). plan-chatgpt-flat/poche rows assert Good / Check.
+
+### 8. Verification
+- `npm test`: exit 0 (new `test-pdf-verdict.ts` last). `npx tsc --noEmit`: clean.
+- Cold build: no dev server was running, `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`: exit 0 in 14 s. Both greps after the build (dev hooks incl. `__background`, and CDN): `clean`. `.next` deleted again and `npm run dev` restarted (port 3000, this checkout).
+- e2e-pdf-import: exit 0, first run. e2e-studio: exit 0, first run. e2e-calibrate (not asked for; it drives the review): exit 0.
+- **One-off, logged:** e2e-calibrate's local `test-plans/` rows (plan-test.pdf, plan-test-2.pdf) report "FAILED … locator.click: Timeout 30000ms" — `localPlans` clicks "Use this scale" itself and then calls `buildAndOpen`, which clicks it again, and the button is gone. It reports soft (the suite still exits 0). Reproduced identically on a clean checkout of HEAD with all H.1 changes stashed, so it predates H.1 and is not fixed here.
+- Limits: the thresholds are rules of thumb tested on synthetic fixtures only; pieces are counted by shared ends (a wall ending on another's middle without a split counts as free); the verdict says openings were left out, not whether the ones kept are right.

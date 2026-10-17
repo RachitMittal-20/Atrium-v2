@@ -58,6 +58,7 @@ import { usePlanStore } from "@/store/planStore";
 import { flushSavedPlan, usePersistenceReady } from "@/store/persistence";
 import { dimensionRows, modelRows, rowsToCsv, type Overrides } from "@/lib/pdf/dimensions";
 import { buildPdfPlan, planToPixels, type PdfBuild } from "@/lib/pdf/snap";
+import { planVerdict, verdictText } from "@/lib/pdf/verdict";
 import { buildMapping } from "@/lib/background/mapping";
 import { keepDrawing } from "@/lib/background/keep";
 import { assetStore } from "@/lib/import/assetCache";
@@ -68,7 +69,7 @@ import type { PdfInfo } from "@/types/pdf";
 import type { Vec2 } from "@/types/plan";
 import { DimensionCheck } from "./DimensionCheck";
 import { Cancelled, checkFile, decodeImage, isPdf, runAnalysis, runPdf, STAGE_LABELS, type PdfPageSize } from "./importFile";
-import { CoveragePanel, detachedLabel, PagePicker, PdfPanel } from "./PdfPanels";
+import { CoveragePanel, detachedLabel, PagePicker, PdfPanel, VerdictBanner } from "./PdfPanels";
 import { PlanViewer } from "./PlanViewer";
 import { primaryBtn, ScalePanel, secondaryBtn } from "./ScalePanel";
 
@@ -240,6 +241,12 @@ export default function ImportPage() {
       return null; // Build model shows the error
     }
   }, [results, scaleInUse?.pxPerM]); // eslint-disable-line react-hooks/exhaustive-deps -- the scale's value, not its object
+
+  // Step H.1: the verdict on the plan Build would make. Not usable asks for a second click.
+  const verdict = useMemo(() => (review ? planVerdict(review.plan, review.coverage) : null), [review]);
+  const [armedFor, setArmedFor] = useState<PdfBuild | null>(null);
+  const unusable = verdict?.level === "unusable";
+  const armed = unusable && armedFor === review; // armed for THIS reading; a new scale makes a new review and disarms
 
   async function build(analysis: Analysis, original: { width: number; height: number }, pdf?: PdfInfo) {
     if (!chosen) return;
@@ -422,6 +429,7 @@ export default function ImportPage() {
           </div>
 
           <aside className="flex w-full flex-col gap-4 lg:col-start-2 lg:row-span-2 lg:row-start-1">
+            {verdict && <VerdictBanner verdict={verdict} />}
             {phase.analysis.warnings.length > 0 && (
               <ul role="status" className="flex flex-col gap-1 rounded border border-gilt/50 bg-vellum p-4 text-sm" data-testid="warnings">
                 {phase.analysis.warnings.map((w) => (
@@ -431,7 +439,7 @@ export default function ImportPage() {
             )}
 
             {phase.pdf && <PdfPanel pdf={phase.pdf} />}
-            {review && <CoveragePanel coverage={review.coverage} />}
+            {review && verdict && <CoveragePanel coverage={review.coverage} verdict={verdict} />}
 
             <ScalePanel
               analysis={phase.analysis}
@@ -444,9 +452,22 @@ export default function ImportPage() {
               clearPoints={() => setPoints([])}
             />
 
-            <button type="button" className={primaryBtn} disabled={!chosen} onClick={() => void build(phase.analysis, phase.original, phase.pdf)}>
-              Build model
+            <button
+              type="button"
+              className={primaryBtn}
+              disabled={!chosen}
+              onClick={() => {
+                if (unusable && !armed) return setArmedFor(review); // Not usable: the first click only asks
+                void build(phase.analysis, phase.original, phase.pdf);
+              }}
+            >
+              {unusable ? (armed ? "Confirm: build anyway" : "Build anyway") : "Build model"}
             </button>
+            {armed && verdict && (
+              <p role="status" className="-mt-2 text-sm" data-testid="build-anyway-note">
+                {verdictText(verdict)} Building it as read gives a model you will mostly have to redraw. Click again to build it.
+              </p>
+            )}
             {!chosen && <p className="-mt-2 text-sm text-smoke">Choose a scale first.</p>}
             {buildError && <p role="alert">{buildError}</p>}
             {built && <Summary built={built} carried={phase.pdf?.scale?.matches.length ?? 0} drawingNote={drawingNote} onOpen={openInStudio} />}

@@ -122,6 +122,7 @@ import type { Analysis } from "@/lib/blueprint/analyse";
 import { nameRooms, type NamingReport } from "@/lib/blueprint/nameRooms";
 import { buildPlan } from "@/lib/blueprint/toPlan";
 import { openingProblem } from "@/lib/plan/edit";
+import { freeEnds } from "@/lib/pdf/verdict";
 import { clampOpening, wallLength, wallNormal } from "@/lib/plan/geometry";
 import { deriveRooms } from "@/lib/plan/rooms";
 import { validatePlan } from "@/lib/plan/validate";
@@ -190,6 +191,10 @@ export interface Coverage {
    *  metres (jambs on the centre line). The review names each one (conflictText) and boxes it.
    *  Step Q.2b: `traced` lists the traced openings removed because they lay on it (absent when none). */
   conflicts: { kind: OpeningKind; a: Vec2; b: Vec2; width: number; thickness: number; why: string; traced?: string[] }[];
+  /** Step H.1: openings read from the PDF that the plan lacks because the model's rules refused them
+   *  (outside the wall's usable span, overlapping, too narrow, no wall under them). `conflicts` are
+   *  counted separately. The plan verdict (verdict.ts) adds the two. */
+  refused: number;
   /** Fallbacks and refused snaps, in plain words. */
   notes: string[];
   /** Plan (0, 0) in page metres at the scale in use. */
@@ -612,6 +617,7 @@ export function mergeVector(
   const hingeAt = new Map<string, "a" | "b">(); // doors read from an arc: the jamb they hang on, on their plan wall
   const classOf = new Map<string, OpeningClass>();
   let lost = 0;
+  let refused = 0; // PDF openings the model's rules turned away (Coverage.refused)
   /** Places an opening (jambs in page metres) on the wall under it; null when there is none. */
   const place = (id: string, kind: OpeningKind, a: Vec2, b: Vec2, extra: Partial<Opening>): Opening | null => {
     const host = hostOf(a, b);
@@ -629,6 +635,7 @@ export function mergeVector(
     const o = place(v.from === "snapped" ? v.tracedOp!.id : v.id, v.kind, v.a, v.b, { ...swing, provenance: "vector" });
     const problem = o ? openingProblem({ walls: planWalls, openings: planOpenings }, o) : "no wall under it";
     if (!o || problem) {
+      refused++;
       notes.push(`Opening ${v.id} from the PDF left out: ${problem}${v.tracedOp ? ` The traced opening ${v.tracedOp.id} is kept instead.` : ""}`);
       if (!o) lost++;
       if (v.tracedOp && !tracedOps.includes(v.tracedOp)) {
@@ -719,6 +726,7 @@ export function mergeVector(
       added,
       skipped: vector.skipped,
       ...openingCoverage(namedPlan, classOf, tracedWhy, (p) => ({ x: p.x - origin.x, y: p.y - origin.y }), vector, f, counts, conflictTraced),
+      refused,
       droppedOpenings: droppedOps.map((o) => ({ id: o.id, a: toPlan(o.a), b: toPlan(o.b), thickness: o.thickness, size: dist(o.a, o.b) })),
       notes,
       origin,
@@ -806,10 +814,6 @@ export function conflictText(c: Coverage["conflicts"][number], i: number, unit: 
 /** Dot product of two directions. */
 const dotN = (p: Vec2, q: Vec2) => p.x * q.x + p.y * q.y;
 
-function freeEnds(walls: Wall[]): Vec2[] {
-  return walls.flatMap((w) => [w.a, w.b].filter((p) => !walls.some((o) => o !== w && (dist(o.a, p) < 0.01 || dist(o.b, p) < 0.01))));
-}
-
 /** The whole traced plan, every wall marked traced, with the reason. */
 /** The traced plan's (0, 0), a raster pixel `originPx`, in page metres: the crop's top-left (step X.1) plus the pixels. */
 function tracedOrigin(originPx: Vec2, o: { pxPerM: number; pxPerPt: number; rasterOrigin?: Vec2 }): Vec2 {
@@ -868,6 +872,7 @@ function fallback(traced: { plan: Plan; report: BuildReport }, o: { pxPerM: numb
         conflictTraced,
       ),
       droppedOpenings: [], // no opening from the PDF is used, so nothing of the tracing's is dropped
+      refused: 0, // and none is refused
       notes: [note],
       origin,
       mPerPt: o.pxPerPt / o.pxPerM,
