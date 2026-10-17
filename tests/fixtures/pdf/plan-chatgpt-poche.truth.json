@@ -1,0 +1,620 @@
+{
+ "note": "ChatGPT-generated, NOT a real CAD export. Trimmed from the generator's own truth file for step Q.2; millimetres, y north, origin at the building's south-west outer corner. Page frame: x_pt = 310 + 0.0566929 x_mm, y_pt = 875.551181 - 0.0566929 y_mm (A2 landscape, 1:50).",
+ "discrepancies": [
+  "DIM09 \"2000\" (0 to 2000) and DIM03 \"5975\" (300 to 6275) are drawn on ONE dimension line (y -1000), overlapping; CAD never overlaps two strings on one line.",
+  "No wall is drawn between Dining and Kitchen: the truth gives them as two rooms (Dining to x 10450, Kitchen from x 10550) and DIM04 / DIM05 measure to those lines, but there is no poche at x 10450-10550 south of the corridor. The drawing closes one room.",
+  "INT_CORRIDOR_SOUTH stops 25 mm short of the bathroom block: its poche (y 3525-3675, from x 4225) and INT_BATH_EAST's / INT_BATH_SOUTH's (from y 3700) leave a 25 mm slot, so Corridor and Living are one space; the truth's Corridor outline assumes a closed corner at (4300, 3675). Its west end is a real free end.",
+  "INT_BEDROOM_2_3 ends at (7600, 9350), inside window W4 (7000-8400 on EXT_NORTH): a partition meeting glass.",
+  "Wall ends mix conventions: the header says centre-line ends, but INT_BEDROOM_FRONT, INT_BATH_* and INT_CORRIDOR_SOUTH's west end end at faces, INT_BEDROOM_2_3 and INT_CORRIDOR_UTILITY at centre lines; in the poche interior pieces run 50 or 75 mm into the walls they meet.",
+  "INT_MASTER_DIAGONAL ends at (4201.47, 9348.53), 1.47 mm short of EXT_NORTH's centre line; its poche runs 50 mm past both ends.",
+  "INT_KITCHEN_UTILITY (centre y 3650) and INT_CORRIDOR_SOUTH (centre y 3600) meet 50 mm out of line at x 10500; the truth starts INT_CORRIDOR_UTILITY at y 3650, the poche at 3600.",
+  "Living's bounding box stops at y 3525, but under the bathrooms its area runs up to y 3700.",
+  "\"FFL +0.150\" is a level mark printed inside Living as selectable text.",
+  "Bedroom 2 ends at x 7550 and Bedroom 3 starts at x 7650 in the truth's room bounds, the faces of a 100 mm wall, but INT_BEDROOM_2_3 is 150 mm thick (7525-7675) in the truth's own wall list and in the poche: Bedroom 3 is 2525 x 2500 mm (6.3125 m2) as drawn, not 2550 x 2500."
+ ],
+ "walls": [
+  {
+   "id": "EXT_SOUTH",
+   "a": [
+    150,
+    150
+   ],
+   "b": [
+    13850,
+    150
+   ],
+   "thickness": 300
+  },
+  {
+   "id": "EXT_EAST_LOWER",
+   "a": [
+    13850,
+    150
+   ],
+   "b": [
+    13850,
+    6350
+   ],
+   "thickness": 300
+  },
+  {
+   "id": "EXT_NOTCH_HORIZ",
+   "a": [
+    13850,
+    6350
+   ],
+   "b": [
+    10350,
+    6350
+   ],
+   "thickness": 300
+  },
+  {
+   "id": "EXT_NOTCH_VERT",
+   "a": [
+    10350,
+    6350
+   ],
+   "b": [
+    10350,
+    9350
+   ],
+   "thickness": 300
+  },
+  {
+   "id": "EXT_NORTH",
+   "a": [
+    10350,
+    9350
+   ],
+   "b": [
+    150,
+    9350
+   ],
+   "thickness": 300
+  },
+  {
+   "id": "EXT_WEST",
+   "a": [
+    150,
+    9350
+   ],
+   "b": [
+    150,
+    150
+   ],
+   "thickness": 300
+  },
+  {
+   "id": "INT_BEDROOM_FRONT",
+   "a": [
+    300,
+    6650
+   ],
+   "b": [
+    10200,
+    6650
+   ],
+   "thickness": 100
+  },
+  {
+   "id": "INT_MASTER_SIDE",
+   "a": [
+    5050,
+    6650
+   ],
+   "b": [
+    5050,
+    8500
+   ],
+   "thickness": 100
+  },
+  {
+   "id": "INT_MASTER_DIAGONAL",
+   "a": [
+    5050,
+    8500
+   ],
+   "b": [
+    4201.471863,
+    9348.528137
+   ],
+   "thickness": 100
+  },
+  {
+   "id": "INT_BEDROOM_2_3",
+   "a": [
+    7600,
+    6650
+   ],
+   "b": [
+    7600,
+    9350
+   ],
+   "thickness": 150
+  },
+  {
+   "id": "INT_CORRIDOR_SOUTH",
+   "a": [
+    4300,
+    3600
+   ],
+   "b": [
+    10500,
+    3600
+   ],
+   "thickness": 150
+  },
+  {
+   "id": "INT_BATH_TOP",
+   "a": [
+    300,
+    5700
+   ],
+   "b": [
+    4250,
+    5700
+   ],
+   "thickness": 100
+  },
+  {
+   "id": "INT_BATH_SOUTH",
+   "a": [
+    300,
+    3750
+   ],
+   "b": [
+    4250,
+    3750
+   ],
+   "thickness": 100
+  },
+  {
+   "id": "INT_BATH_DIVIDER",
+   "a": [
+    2250,
+    3750
+   ],
+   "b": [
+    2250,
+    5700
+   ],
+   "thickness": 100
+  },
+  {
+   "id": "INT_BATH_EAST",
+   "a": [
+    4250,
+    3750
+   ],
+   "b": [
+    4250,
+    5700
+   ],
+   "thickness": 100
+  },
+  {
+   "id": "INT_LIVING_DINING",
+   "a": [
+    6350,
+    150
+   ],
+   "b": [
+    6350,
+    3650
+   ],
+   "thickness": 150
+  },
+  {
+   "id": "INT_KITCHEN_UTILITY",
+   "a": [
+    10500,
+    3650
+   ],
+   "b": [
+    13850,
+    3650
+   ],
+   "thickness": 100
+  },
+  {
+   "id": "INT_CORRIDOR_UTILITY",
+   "a": [
+    10500,
+    3650
+   ],
+   "b": [
+    10500,
+    6200
+   ],
+   "thickness": 100
+  }
+ ],
+ "doors": [
+  {
+   "id": "D1_MASTER",
+   "a": [
+    1400,
+    6650
+   ],
+   "b": [
+    2300,
+    6650
+   ],
+   "width": 900,
+   "style": "single hinged",
+   "hinge": [
+    1400,
+    6650
+   ],
+   "side": [
+    0.0,
+    1.0
+   ]
+  },
+  {
+   "id": "D2_BEDROOM_2",
+   "a": [
+    5700,
+    6650
+   ],
+   "b": [
+    6600,
+    6650
+   ],
+   "width": 900,
+   "style": "single hinged",
+   "hinge": [
+    5700,
+    6650
+   ],
+   "side": [
+    0.0,
+    1.0
+   ]
+  },
+  {
+   "id": "D3_BEDROOM_3",
+   "a": [
+    8300,
+    6650
+   ],
+   "b": [
+    9200,
+    6650
+   ],
+   "width": 900,
+   "style": "single hinged",
+   "hinge": [
+    9200,
+    6650
+   ],
+   "side": [
+    0.0,
+    1.0
+   ]
+  },
+  {
+   "id": "D4_BATHROOM_1",
+   "a": [
+    900,
+    5700
+   ],
+   "b": [
+    1800,
+    5700
+   ],
+   "width": 900,
+   "style": "single hinged",
+   "hinge": [
+    900,
+    5700
+   ],
+   "side": [
+    -0.0,
+    -1.0
+   ]
+  },
+  {
+   "id": "D5_BATHROOM_2",
+   "a": [
+    2700,
+    5700
+   ],
+   "b": [
+    3600,
+    5700
+   ],
+   "width": 900,
+   "style": "single hinged",
+   "hinge": [
+    3600,
+    5700
+   ],
+   "side": [
+    -0.0,
+    -1.0
+   ]
+  },
+  {
+   "id": "D6_LIVING_DINING_DOUBLE",
+   "a": [
+    6350,
+    1150
+   ],
+   "b": [
+    6350,
+    2750
+   ],
+   "width": 1600,
+   "style": "double hinged",
+   "side": [
+    1.0,
+    -0.0
+   ]
+  },
+  {
+   "id": "D7_KITCHEN_UTILITY_SLIDING",
+   "a": [
+    11400,
+    3650
+   ],
+   "b": [
+    12600,
+    3650
+   ],
+   "width": 1200,
+   "style": "sliding"
+  }
+ ],
+ "windows": [
+  {
+   "id": "W1_SOUTH_LIVING",
+   "a": [
+    2000,
+    150
+   ],
+   "b": [
+    3600,
+    150
+   ],
+   "width": 1600
+  },
+  {
+   "id": "W2_SOUTH_DINING",
+   "a": [
+    6900,
+    150
+   ],
+   "b": [
+    8500,
+    150
+   ],
+   "width": 1600
+  },
+  {
+   "id": "W3_WEST_MASTER",
+   "a": [
+    150,
+    8400
+   ],
+   "b": [
+    150,
+    7000
+   ],
+   "width": 1400
+  },
+  {
+   "id": "W4_NORTH_BEDROOM_2",
+   "a": [
+    8400,
+    9350
+   ],
+   "b": [
+    7000,
+    9350
+   ],
+   "width": 1400
+  },
+  {
+   "id": "W5_EAST_KITCHEN",
+   "a": [
+    13850,
+    1800
+   ],
+   "b": [
+    13850,
+    3300
+   ],
+   "width": 1500
+  },
+  {
+   "id": "W6_NOTCH_BEDROOM_3",
+   "a": [
+    10350,
+    7300
+   ],
+   "b": [
+    10350,
+    8700
+   ],
+   "width": 1400
+  }
+ ],
+ "passages": [
+  {
+   "id": "OP1_CORRIDOR_PASSAGE",
+   "a": [
+    7100,
+    3600
+   ],
+   "b": [
+    8100,
+    3600
+   ],
+   "width": 1000
+  }
+ ],
+ "rooms": [
+  {
+   "name": "Living",
+   "min": [
+    300,
+    300
+   ],
+   "max": [
+    6275,
+    3525
+   ]
+  },
+  {
+   "name": "Dining",
+   "min": [
+    6425,
+    300
+   ],
+   "max": [
+    10450,
+    3525
+   ]
+  },
+  {
+   "name": "Kitchen",
+   "min": [
+    10550,
+    300
+   ],
+   "max": [
+    13700,
+    3525
+   ]
+  },
+  {
+   "name": "Master Bedroom",
+   "min": [
+    300,
+    6700
+   ],
+   "max": [
+    5000,
+    9200
+   ]
+  },
+  {
+   "name": "Bedroom 2",
+   "min": [
+    4350,
+    6700
+   ],
+   "max": [
+    7550,
+    9200
+   ]
+  },
+  {
+   "name": "Bedroom 3",
+   "min": [
+    7650,
+    6700
+   ],
+   "max": [
+    10200,
+    9200
+   ]
+  },
+  {
+   "name": "Bathroom 1",
+   "min": [
+    300,
+    3800
+   ],
+   "max": [
+    2200,
+    5650
+   ]
+  },
+  {
+   "name": "Bathroom 2",
+   "min": [
+    2300,
+    3800
+   ],
+   "max": [
+    4200,
+    5650
+   ]
+  },
+  {
+   "name": "Corridor",
+   "min": [
+    300,
+    3675
+   ],
+   "max": [
+    10450,
+    6600
+   ]
+  },
+  {
+   "name": "Utility",
+   "min": [
+    10550,
+    3700
+   ],
+   "max": [
+    13700,
+    6200
+   ]
+  }
+ ],
+ "dimensions": [
+  {
+   "id": "DIM01_OVERALL_LENGTH",
+   "value": 14000
+  },
+  {
+   "id": "DIM02_OVERALL_DEPTH",
+   "value": 9500
+  },
+  {
+   "id": "DIM03_LIVING_ZONE_WIDTH",
+   "value": 5975
+  },
+  {
+   "id": "DIM04_DINING_ZONE_WIDTH",
+   "value": 4025
+  },
+  {
+   "id": "DIM05_KITCHEN_ZONE_WIDTH",
+   "value": 3150
+  },
+  {
+   "id": "DIM06_SOUTH_WINDOW_1",
+   "value": 1600
+  },
+  {
+   "id": "DIM07_SOLID_SPAN_BETWEEN_WINDOWS",
+   "value": 3300
+  },
+  {
+   "id": "DIM08_SOUTH_WINDOW_2",
+   "value": 1600
+  },
+  {
+   "id": "DIM09_SOUTH_LEFT_REVEAL",
+   "value": 2000
+  },
+  {
+   "id": "DIM10_SOUTH_RIGHT_REMAINDER",
+   "value": 5500
+  },
+  {
+   "id": "DIM11_BATHROOM_DEPTH",
+   "value": 1850
+  },
+  {
+   "id": "DIM12_EAST_LOWER_WALL_HEIGHT",
+   "value": 6500
+  }
+ ]
+}

@@ -15,7 +15,9 @@
  * walls the coverage report says were traced rather than read from the PDF, and
  * (step M.1c) two more mark the openings to check: traced openings in gilt and
  * unclassified ones (nothing drawn in the gap, assumed doors) in orange, each a
- * dashed box around the gap.
+ * dashed box around the gap. Step Q.2 adds "Detached groups": walls joined to nothing in the
+ * building and lying outside it (walls.ts rule 7b), each outlined with its size, orange when it was
+ * left out (a title block) and gilt when it was kept (a separate building).
  *
  * Picking: while `picking` is on, a click (a press that hardly moves) reports
  * the image pixel under it through onPick; ScalePanel.tsx uses this to set
@@ -27,9 +29,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Analysis } from "@/lib/blueprint/analyse";
 import type { Vec2 } from "@/types/plan";
 
-type Layer = "walls" | "doors" | "windows" | "ends" | "traced" | "tracedOpenings" | "unclassified" | "gaps";
+type Layer = "walls" | "doors" | "windows" | "ends" | "traced" | "tracedOpenings" | "unclassified" | "gaps" | "detached";
 /** A wall or an opening's gap (jambs on the centre line) in image pixels, for the PDF layers. */
 type Mark = { id: string; a: Vec2; b: Vec2; thickness: number };
+/** Step Q.2: a detached group's footprint in image pixels (corners min and max), its label and whether it was left out. */
+type Outline = { id: string; min: Vec2; max: Vec2; label: string; dropped: boolean };
 const MIN_K = 0.02;
 const MAX_K = 40;
 const CLICK_PX = 5; // a press that moves less than this is a click, not a pan
@@ -72,6 +76,7 @@ export function PlanViewer({
   onPick,
   traced,
   openingMarks,
+  detached,
 }: {
   analysis: Analysis;
   picking: boolean;
@@ -82,13 +87,15 @@ export function PlanViewer({
   /** Openings to check, in image pixels (step M.1c): traced, and read from the PDF but unclassified.
    *  Step M.1d adds `gaps`: collinear gaps outside 0.45–4 m, not read as openings at all. */
   openingMarks?: { traced: Mark[]; unclassified: Mark[]; gaps: Mark[] };
+  /** Step Q.2: detached groups (walls.ts rule 7b), outlined with their sizes. */
+  detached?: Outline[];
 }) {
   const { width: W, height: H } = analysis.pixels;
   const url = useImageUrl(analysis);
   const boxRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [view, setView] = useState<View>({ k: 1, x: 0, y: 0 });
-  const [show, setShow] = useState<Record<Layer, boolean>>({ walls: true, doors: true, windows: true, ends: true, traced: true, tracedOpenings: true, unclassified: true, gaps: true });
+  const [show, setShow] = useState<Record<Layer, boolean>>({ walls: true, doors: true, windows: true, ends: true, traced: true, tracedOpenings: true, unclassified: true, gaps: true, detached: true });
   const touched = useRef(false); // once the user zooms or pans, resizing no longer refits
 
   const fit = useCallback(() => {
@@ -173,8 +180,11 @@ export function PlanViewer({
       ? [
           { id: "tracedOpenings" as const, label: "Traced openings", count: openingMarks.traced.length, swatch: "bg-gilt", hint: "Doors and windows not read from the PDF's lines: traced from the picture, about a pixel out." },
           { id: "unclassified" as const, label: "Unclassified openings", count: openingMarks.unclassified.length, swatch: "bg-overlay-end", hint: "Gaps with no swing, glazing or panels drawn in them: kept as doors. Check them." },
-          { id: "gaps" as const, label: "Gaps not read", count: openingMarks.gaps.length, swatch: "bg-overlay-door", hint: "Gaps in the PDF's lines too narrow or too wide to be a door or window: a narrow one is closed as wall, a wide one leaves the wall open." },
+          { id: "gaps" as const, label: "Gaps not read", count: openingMarks.gaps.length, swatch: "bg-overlay-door", hint: "Gaps in the PDF's lines too narrow or too wide to be a door or window (a narrow one is closed as wall, a wide one leaves the wall open), and openings a wall ends inside, which are not read." },
         ]
+      : []),
+    ...(detached?.length
+      ? [{ id: "detached" as const, label: "Detached groups", count: detached.length, swatch: "bg-overlay-end", hint: "Walls joined to nothing in the building and lying outside it: a title block is left out, anything else is kept as a separate building." }]
       : []),
   ];
   /** A dashed box round an opening's gap. */
@@ -238,6 +248,19 @@ export function PlanViewer({
             {openingMarks && show.gaps && (
               <g data-layer="gaps-not-read" className="stroke-overlay-door" strokeLinecap="butt" fill="none">
                 {openingMarks.gaps.map((m) => box(m, "gap"))}
+              </g>
+            )}
+            {/* Step Q.2: detached groups, outlined with their size; orange when left out, gilt when kept. */}
+            {detached && show.detached && (
+              <g data-layer="detached" fill="none">
+                {detached.map((d) => (
+                  <g key={d.id} data-detached={d.id} data-dropped={d.dropped} className={d.dropped ? "stroke-overlay-end fill-overlay-end" : "stroke-gilt fill-gilt"}>
+                    <rect x={d.min.x} y={d.min.y} width={d.max.x - d.min.x} height={d.max.y - d.min.y} fill="none" strokeWidth={2.5 * px} strokeDasharray={`${10 * px} ${6 * px}`} />
+                    <text x={d.min.x} y={d.min.y - 6 * px} fontSize={13 * px} stroke="none">
+                      {d.label}
+                    </text>
+                  </g>
+                ))}
               </g>
             )}
             {points.length > 0 && (

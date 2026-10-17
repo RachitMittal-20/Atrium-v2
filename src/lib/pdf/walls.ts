@@ -95,6 +95,32 @@
  *    leaf is found exactly (openings.ts), and its far end lies on the strike jamb, where the wall's
  *    face goes on: that face, if short, used to be thrown away as a "leaf".
  *
+ * Step Q.2, more conventions (each proven on its own fixture, scripts/test-pdf-poche.ts):
+ *  - Dashed lines are never faces (extract.ts marks them): a dash-dot line is a centre line, a hidden
+ *    or overhead line or a setting-out line, and a wall's cut face is drawn continuous. Left out with
+ *    the curves, so a centre line can't pair with a finish line beside it, join a window's middle
+ *    glazing line, or count as an opening's line in openings.classifyOpening.
+ *  - Rule 3 sees a filled wall's edges: a filled rectangle is a pair as it stands and its edges are
+ *    not faces again, but they are the lines a poche wall's faces are drawn with, so a pair that
+ *    straddles one (a finish line on one side, a shelf on the other) is refused like any other.
+ *
+ *  - A window's own lines are never a wall: a pair lying within a bridged opening's span with one of
+ *    its lines inside the wall's band (away from the faces) is the window's, like M.1c's glazing pair
+ *    inside the band: a glazing line paired with the sill line drawn in front of the wall.
+ *  - A wall closes a gap only by passing through it: a perpendicular piece stops a gap being bridged
+ *    only when it crosses the wall's whole thickness. One that ends inside the band (a partition drawn
+ *    into the middle of a window) does not, so the wall is read whole and the partition joins it; the
+ *    opening the joint then cuts is not read (Atrium never puts a T-junction inside an opening) and is
+ *    listed in `conflicts` with its kind, never dropped silently.
+ *  - A sheet holds more than the building (rule 7b): a group of walls joined to nothing in the
+ *    building (the biggest group) and lying wholly OUTSIDE its box is either sheet furniture or a
+ *    separate building, and only evidence decides which, never distance alone. It is dropped as
+ *    "title block" when a title block's words lie inside it (TITLE_WORDS: scale, drawing, project,
+ *    sheet, issue, a 1:N ...) or when it sits within BORDER_NEAR of the sheet's border (the biggest
+ *    rectangle drawn on the page, covering most of it) or of the page's edge. Without evidence it is
+ *    KEPT (an outbuilding, a garage). Either way it is reported in `detached`, with its footprint as
+ *    read, so the review screen can outline it and say why.
+ *
  * Output ids are "v1", "v2", ... ; a is the end with the smaller x (horizontal
  * walls) or y (vertical ones). Doors without an arc get LEGACY_SWING, as
  * buildPlan's do. Connects to: extract.ts (VectorPage, `path` and `curve` on
@@ -198,15 +224,20 @@ function joinFaces(faces: Face[]): Face[] {
   return out;
 }
 
-/** Rule 3 (step Q.1, header): a face strictly between fs[i] and fs[j], not on their centre line,
- *  that with one of them (0.05 m or more apart) runs on past their overlap `span`. `fs` is one axis,
- *  sorted by offset. */
-function throughWall(fs: Face[], i: number, j: number, span: { s0: number; s1: number }): boolean {
-  const [f, g] = [fs[i], fs[j]];
+/** Rule 3 (step Q.1, header): a line strictly between f and g, not on their centre line, that with one
+ *  of them (0.05 m or more apart) runs on past their overlap `span`. `lines` is one axis, sorted by
+ *  offset: the faces and (step Q.2) the filled rectangles' edges, a poche wall's faces. */
+function throughWall(lines: Face[], f: Face, g: Face, span: { s0: number; s1: number }): boolean {
   const mid = (f.c + g.c) / 2;
-  for (let k = i + 1; k < j; k++) {
-    const h = fs[k];
-    if (h.c <= f.c + SAME || h.c >= g.c - SAME || Math.abs(h.c - mid) <= SAME || overlapOf(h, span) <= SAME) continue;
+  let lo = 0;
+  for (let hi = lines.length; lo < hi; ) {
+    const m = (lo + hi) >> 1;
+    if (lines[m].c <= f.c + SAME) lo = m + 1;
+    else hi = m;
+  }
+  for (let k = lo; k < lines.length && lines[k].c < g.c - SAME; k++) {
+    const h = lines[k];
+    if (Math.abs(h.c - mid) <= SAME || overlapOf(h, span) <= SAME) continue;
     for (const e of [f, g]) {
       if (Math.abs(h.c - e.c) < WALL_RULES.gap[0] - EPS) continue;
       const both = { s0: Math.max(h.s0, e.s0), s1: Math.min(h.s1, e.s1) };
@@ -216,12 +247,14 @@ function throughWall(fs: Face[], i: number, j: number, span: { s0: number; s1: n
   return false;
 }
 
-/** Candidate pieces from parallel faces (rule 3), before the widest-wins selection. */
-function pairFaces(faces: Face[]): Piece[] {
+/** Candidate pieces from parallel faces (rule 3), before the widest-wins selection. `edges` are
+ *  the filled rectangles' edges, which rule 3 sees as lines but which never pair again (step Q.2). */
+function pairFaces(faces: Face[], edges: Face[] = []): Piece[] {
   const out: Piece[] = [];
   const [gMin, gMax] = WALL_RULES.gap;
   for (const axis of ["h", "v"] as const) {
     const fs = faces.filter((f) => f.axis === axis).sort((p, q) => p.c - q.c);
+    const lines = [...fs, ...edges.filter((f) => f.axis === axis)].sort((p, q) => p.c - q.c);
     for (let i = 0; i < fs.length; i++)
       for (let j = i + 1; j < fs.length && fs[j].c - fs[i].c <= gMax + EPS; j++) {
         const [f, g] = [fs[i], fs[j]];
@@ -230,7 +263,7 @@ function pairFaces(faces: Face[]): Piece[] {
         const ov = overlapOf(f, g);
         if (ov <= 0 || ov < WALL_RULES.overlap * Math.min(flen(f), flen(g)) - EPS) continue;
         const span = { s0: Math.max(f.s0, g.s0), s1: Math.min(f.s1, g.s1) };
-        if (throughWall(fs, i, j, span)) continue;
+        if (throughWall(lines, f, g, span)) continue;
         out.push({ axis, c: (f.c + g.c) / 2, t: gap, ...span, openings: [] });
       }
   }
@@ -293,8 +326,14 @@ function mergeLines(pieces: Piece[], gaps: NonNullable<VectorWalls["gaps"]>): Pi
   // Doors: consecutive pieces on one line 0.45–4 m apart, with no other piece crossing the gap. A
   // thinner pair wholly inside the gap and inside the walls' band is two glazing lines (a window in a
   // real gap, step M.1c): it doesn't block the bridge, and it is no wall (openings.ts reads its lines).
+  // Step Q.2: also any pair within the gap's span with one of its lines inside the wall's band, away
+  // from the faces: a glazing line paired with the window's sill line in front of the wall.
+  const inBand = (v: number, host: Piece) => Math.abs(v - host.c) < host.t / 2 - SAME;
   const glazing = (w: Piece, gap: Face, host: Piece) =>
-    w.axis === gap.axis && w.t < host.t - SAME && Math.abs(w.c - host.c) + w.t / 2 <= host.t / 2 + SAME && w.s0 >= gap.s0 - SAME && w.s1 <= gap.s1 + SAME;
+    w.axis === gap.axis &&
+    w.s0 >= gap.s0 - SAME &&
+    w.s1 <= gap.s1 + SAME &&
+    ((w.t < host.t - SAME && Math.abs(w.c - host.c) + w.t / 2 <= host.t / 2 + SAME) || inBand(w.c - w.t / 2, host) || inBand(w.c + w.t / 2, host));
   const absorbed = new Set<Piece>();
   const crosses = (gap: Face, skip: Piece[]) =>
     merged.some((w) => {
@@ -303,8 +342,13 @@ function mergeLines(pieces: Piece[], gaps: NonNullable<VectorWalls["gaps"]>): Pi
       // one overlapping part of it shares a line drawn inside the opening (glazing), not the wall.
       const host = skip[0];
       if (w.axis === gap.axis) return w.c - w.t / 2 <= host.c - host.t / 2 + SAME && w.c + w.t / 2 >= host.c + host.t / 2 - SAME && overlapOf(w, gap) > SAME;
+      // A perpendicular piece closes the gap only by passing through the wall's whole thickness (step
+      // Q.2); one ending inside its band (a partition drawn into a window) does not. joinWalls then
+      // joins it and reports the opening it cuts.
       const s = w.c; // a perpendicular piece crosses the gap's line at s = its offset
-      return s > gap.s0 + SAME && s < gap.s1 - SAME && gap.c >= w.s0 - w.t / 2 && gap.c <= w.s1 + w.t / 2;
+      // Its own drawn span, not grown by half its thickness: a stem drawn half its thickness past the
+      // centre line would otherwise reach the far face exactly.
+      return s > gap.s0 + SAME && s < gap.s1 - SAME && w.s0 <= gap.c - host.t / 2 + SAME && w.s1 >= gap.c + host.t / 2 - SAME;
     });
   const out: Piece[] = [];
   for (const g of groups.map((g) => merged.filter((p) => sameLine(g[0], p)))) {
@@ -346,8 +390,12 @@ function findWindows(walls: Piece[], faces: Face[]) {
   }
 }
 
-/** Rule 7: ends to centre-line crossings, then split at every joint. */
-function joinWalls(walls: Piece[], dropped: VectorWalls["dropped"]): Piece[] {
+/** An opening a joint cut (step Q.2): its span, and whether a wall ENDS inside it or crosses it. */
+type Cut = { axis: Axis; c: number; t: number; s0: number; s1: number; ends: boolean };
+
+/** Rule 7: ends to centre-line crossings, then split at every joint. Openings a split would cut
+ *  are dropped, counted and (step Q.2) listed in `cut`. */
+function joinWalls(walls: Piece[], dropped: VectorWalls["dropped"], cut: Cut[] = []): Piece[] {
   // Move ends: each end of A that meets a non-parallel B goes to their crossing (the nearest such crossing).
   const ends = walls.map((a) =>
     ([a.s0, a.s1] as const).map((s) => {
@@ -367,15 +415,19 @@ function joinWalls(walls: Piece[], dropped: VectorWalls["dropped"]): Piece[] {
   const out: Piece[] = [];
   for (const [k, w] of walls.entries()) {
     const cuts = new Set<number>();
+    const endsAt = new Set<number>(); // cuts where the other wall ENDS on this one (a T), for the report
     for (const o of walls) {
       if (o === w) continue;
       if (o.axis === w.axis) {
         // A collinear neighbour's end on this wall's middle (different thickness, end to end).
-        for (const s of [o.s0, o.s1]) if (Math.abs(o.c - w.c) <= SAME && s > w.s0 + SAME && s < w.s1 - SAME) cuts.add(s);
+        for (const s of [o.s0, o.s1]) if (Math.abs(o.c - w.c) <= SAME && s > w.s0 + SAME && s < w.s1 - SAME) (cuts.add(s), endsAt.add(s));
         continue;
       }
       // o's line crosses w's line at s = o.c; it is a joint if o reaches w's line (its end on it, or passing through).
-      if (o.c > w.s0 + SAME && o.c < w.s1 - SAME && w.c >= o.s0 - SAME && w.c <= o.s1 + SAME) cuts.add(o.c);
+      if (o.c > w.s0 + SAME && o.c < w.s1 - SAME && w.c >= o.s0 - SAME && w.c <= o.s1 + SAME) {
+        cuts.add(o.c);
+        if (Math.abs(w.c - o.s0) <= SAME || Math.abs(w.c - o.s1) <= SAME) endsAt.add(o.c);
+      }
     }
     const stops = [w.s0, ...[...cuts].sort((p, q) => p - q), w.s1];
     for (let i = 1; i < stops.length; i++) {
@@ -385,10 +437,115 @@ function joinWalls(walls: Piece[], dropped: VectorWalls["dropped"]): Piece[] {
     for (const o of w.openings) {
       const host = out.find((p) => p.axis === w.axis && p.c === w.c && o.s0 >= p.s0 - SAME && o.s1 <= p.s1 + SAME);
       if (host) host.openings.push(o);
-      else dropped.openingsCut++;
+      else {
+        dropped.openingsCut++;
+        cut.push({ axis: w.axis, c: w.c, t: w.t, s0: o.s0, s1: o.s1, ends: [...endsAt].some((e) => e > o.s0 && e < o.s1) });
+      }
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------- filled diagonal rectangles (step Q.2)
+
+/** A filled rectangle at an angle: its centre line (short sides' midpoints) and thickness. */
+type Diag = { a: Vec2; b: Vec2; t: number };
+/** A diagonal wall once joined (ends moved onto the walls it meets). */
+type DiagWall = Diag;
+
+/** The four edges of one filled path as a rectangle whose short side is a wall thickness, or null. */
+function diagonalRect(ss: Seg[]): Diag | null {
+  const v = ss.map((s) => ({ x: s.x2 - s.x1, y: s.y2 - s.y1 }));
+  const L = v.map((e) => Math.hypot(e.x, e.y));
+  // Consecutive edges square, opposite edges equal and opposite (a closed rectangle, in path order).
+  const square = v.every((e, i) => Math.abs(e.x * v[(i + 1) % 4].x + e.y * v[(i + 1) % 4].y) <= SAME * (L[i] + L[(i + 1) % 4]));
+  const closed = ss.every((s, i) => Math.hypot(s.x2 - ss[(i + 1) % 4].x1, s.y2 - ss[(i + 1) % 4].y1) <= SAME);
+  if (!square || !closed || Math.abs(L[0] - L[2]) > SAME || Math.abs(L[1] - L[3]) > SAME) return null;
+  const short = L[0] <= L[1] ? 0 : 1; // edges `short` and `short + 2` are the ends
+  const t = L[short];
+  if (t < WALL_RULES.gap[0] - EPS || t > WALL_RULES.gap[1] + EPS) return null;
+  const mid = (s: Seg) => ({ x: (s.x1 + s.x2) / 2, y: (s.y1 + s.y2) / 2 });
+  return { a: mid(ss[short]), b: mid(ss[short + 2]), t };
+}
+
+/** Where line p + λu meets the axis line of `w` (its centre line), or null when parallel. */
+function onAxisLine(p: Vec2, u: Vec2, w: Piece): Vec2 | null {
+  const du = w.axis === "h" ? u.y : u.x;
+  if (Math.abs(du) < 1e-9) return null;
+  const lam = (w.c - (w.axis === "h" ? p.y : p.x)) / du;
+  return { x: p.x + u.x * lam, y: p.y + u.y * lam };
+}
+
+/**
+ * Joints between the diagonal walls and the axis pieces (step Q.2), as rule 7 makes them between axis
+ * walls: a diagonal's end within WALL_RULES.meet of an axis piece's footprint moves to the crossing of
+ * their centre lines (the nearest); an axis piece's FREE end within that of a diagonal's footprint moves
+ * along its own line onto the diagonal's centre line; and an axis piece with a diagonal's end on its
+ * middle is split there (an opening that split would cut goes to `cut`).
+ * ponytail: a diagonal is never split by an axis wall's end landing on its middle; split it if a
+ * drawing ever T-joins a wall into a diagonal.
+ */
+function joinDiagonals(pieces: Piece[], diags: Diag[], cut: Cut[], dropped: VectorWalls["dropped"]): { joined: Piece[]; walls: DiagWall[] } {
+  let joined = pieces.map((p) => ({ ...p, openings: [...p.openings] }));
+  const walls: DiagWall[] = [];
+  for (const d0 of diags) {
+    const len0 = Math.hypot(d0.b.x - d0.a.x, d0.b.y - d0.a.y);
+    const u = { x: (d0.b.x - d0.a.x) / len0, y: (d0.b.y - d0.a.y) / len0 };
+    const d = { ...d0 };
+    // Its ends to the nearest crossing with an axis piece they meet.
+    for (const k of ["a", "b"] as const) {
+      let best: Vec2 | null = null;
+      for (const w of joined) {
+        if (toFootprint(d[k], w) > WALL_RULES.meet + EPS) continue;
+        const x = onAxisLine(d0.a, u, w);
+        if (x && (!best || Math.hypot(x.x - d[k].x, x.y - d[k].y) < Math.hypot(best.x - d[k].x, best.y - d[k].y))) best = x;
+      }
+      if (best) d[k] = best;
+    }
+    // Free axis ends near its footprint onto its centre line.
+    const toDiag = (p: Vec2) => {
+      const lam = Math.max(-d0.t / 2, Math.min(len0 + d0.t / 2, (p.x - d0.a.x) * u.x + (p.y - d0.a.y) * u.y));
+      return Math.max(0, Math.hypot(p.x - d0.a.x - u.x * lam, p.y - d0.a.y - u.y * lam) - d0.t / 2);
+    };
+    const free = (p: Vec2, self: Piece) => !joined.some((q) => q !== self && pointToWallDistance(p, { a: at(q.axis, q.s0, q.c), b: at(q.axis, q.s1, q.c) }) <= SAME);
+    for (const w of joined)
+      for (const k of ["s0", "s1"] as const) {
+        const e = at(w.axis, w[k], w.c);
+        if (!free(e, w) || toDiag(e) > WALL_RULES.meet + EPS) continue;
+        const x = crossing(w, d0.a, u); // along w, where the diagonal's centre line crosses it
+        if (x !== null && Math.abs(x - w[k]) <= WALL_RULES.meet + d0.t) w[k] = x;
+      }
+    // T-junctions: an axis piece with the diagonal's end on its middle is split there.
+    for (const end of [d.a, d.b]) {
+      const next: Piece[] = [];
+      for (const w of joined) {
+        const s = along(w.axis, end);
+        if (Math.abs(across(w.axis, end) - w.c) > SAME || s <= w.s0 + SAME || s >= w.s1 - SAME) {
+          next.push(w);
+          continue;
+        }
+        const [p, q] = [{ ...w, s1: s, openings: [] as Span[] }, { ...w, s0: s, openings: [] as Span[] }];
+        for (const o of w.openings) {
+          if (o.s1 <= s + SAME) p.openings.push(o);
+          else if (o.s0 >= s - SAME) q.openings.push(o);
+          else {
+            dropped.openingsCut++;
+            cut.push({ axis: w.axis, c: w.c, t: w.t, s0: o.s0, s1: o.s1, ends: true });
+          }
+        }
+        next.push(p, q);
+      }
+      joined = next;
+    }
+    walls.push(d);
+  }
+  return { joined, walls };
+}
+
+/** Where the diagonal's line (p + λu) crosses w's centre line, as a coordinate ALONG w; null if parallel. */
+function crossing(w: Piece, p: Vec2, u: Vec2): number | null {
+  const x = onAxisLine(p, u, w);
+  return x ? along(w.axis, x) : null;
 }
 
 /** A piece's footprint as read: its span along, its band across. */
@@ -396,24 +553,40 @@ const boxOf = (p: Face & { t: number }) =>
   p.axis === "h" ? { x0: p.s0, x1: p.s1, y0: p.c - p.t / 2, y1: p.c + p.t / 2 } : { x0: p.c - p.t / 2, x1: p.c + p.t / 2, y0: p.s0, y1: p.s1 };
 const union = (bs: ReturnType<typeof boxOf>[]) => ({ x0: Math.min(...bs.map((b) => b.x0)), y0: Math.min(...bs.map((b) => b.y0)), x1: Math.max(...bs.map((b) => b.x1)), y1: Math.max(...bs.map((b) => b.y1)) });
 const SMALL_LOOP = { area: 1, width: 0.6 };
+/** Rule 7b (step Q.2): words of a title block or sheet notes, and a printed scale. */
+const TITLE_WORDS = /\b(scale|drawing|drawn|dwg|project|client|title|sheet|issue|rev|revision|date|checked|approved|job)\b|\b1\s*:\s*\d+\b/i;
+/** Rule 7b: within 10 mm on paper of the sheet's border or the page edge (points). */
+const BORDER_NEAR_PT = (10 / 25.4) * 72;
+type Box = ReturnType<typeof boxOf>;
 
-/** Rules 6 and 7 (step Q.1, header): the joined pieces that are furniture, in groups. */
-function furnitureOf(joined: Piece[]): { drop: Set<number>; groups: { kind: "loop" | "island"; members: number[] }[] } {
-  const ws: Wall[] = joined.map((p, i) => ({ id: `f${i}`, a: at(p.axis, p.s0, p.c), b: at(p.axis, p.s1, p.c), thickness: p.t, height: WALL_HEIGHT }));
+/** Rules 6, 7 (step Q.1) and 7b (step Q.2, header): the joined pieces that are furniture, in groups,
+ *  and the detached groups with the title-block evidence (`evidence` gives the reason, or null). */
+function furnitureOf(
+  joined: Piece[],
+  evidence: (box: Box) => string | null,
+  extra: DiagWall[] = [],
+): { drop: Set<number>; groups: { kind: "loop" | "island"; members: number[] }[]; detached: { members: number[]; why: string | null }[] } {
+  // Step Q.2: the diagonal walls (`extra`, indexes from n) close rooms and join groups, but are never dropped.
+  const n = joined.length;
+  const ws: Wall[] = [
+    ...joined.map((p, i) => ({ id: `f${i}`, a: at(p.axis, p.s0, p.c), b: at(p.axis, p.s1, p.c), thickness: p.t, height: WALL_HEIGHT })),
+    ...extra.map((d, j) => ({ id: `f${n + j}`, a: d.a, b: d.b, thickness: d.t, height: WALL_HEIGHT })),
+  ];
+  const bx = (i: number): Box => (i < n ? boxOf(joined[i]) : { x0: Math.min(ws[i].a.x, ws[i].b.x) - ws[i].thickness / 2, y0: Math.min(ws[i].a.y, ws[i].b.y) - ws[i].thickness / 2, x1: Math.max(ws[i].a.x, ws[i].b.x) + ws[i].thickness / 2, y1: Math.max(ws[i].a.y, ws[i].b.y) + ws[i].thickness / 2 });
   const plan: Plan = { id: "", name: "", units: "m", walls: ws, openings: [], rooms: [], items: [], meta: { createdAt: "", updatedAt: "", source: "sample" } };
   const index = (id: string) => Number(id.slice(1));
   const inradius = (poly: Vec2[], q: Vec2) => Math.min(...poly.map((a, i) => pointToWallDistance(q, { a, b: poly[(i + 1) % poly.length] })));
   const small = deriveRooms(plan).filter((r) => r.area < SMALL_LOOP.area || 2 * inradius(r.polygon, r.labelPoint) < SMALL_LOOP.width);
   const inSmall = new Set(small.flatMap((r) => r.wallIds.map(index)));
   // Rule 6: a small loop's walls, except one whose straight run goes on past the small loops.
-  const drop = new Set([...inSmall].filter((i) => !joined.some((p, j) => p.src === joined[i].src && !inSmall.has(j))));
+  const drop = new Set([...inSmall].filter((i) => i < n && !joined.some((p, j) => p.src === joined[i].src && !inSmall.has(j))));
   const loopDrop = new Set(drop);
   const touches = (i: number, j: number) => [ws[i].a, ws[i].b].some((q) => pointToWallDistance(q, ws[j]) < 0.01) || [ws[j].a, ws[j].b].some((q) => pointToWallDistance(q, ws[i]) < 0.01);
   const near = ws.map((_, i) => ws.map((_, j) => j).filter((j) => j !== i && touches(i, j)));
   // Then walls joined only to dropped walls, repeatedly.
   for (let grew = drop.size > 0; grew; ) {
     grew = false;
-    for (let i = 0; i < ws.length; i++)
+    for (let i = 0; i < n; i++)
       if (!drop.has(i) && near[i].length && near[i].every((j) => drop.has(j))) {
         drop.add(i);
         loopDrop.add(i);
@@ -436,25 +609,44 @@ function furnitureOf(joined: Piece[]): { drop: Set<number>; groups: { kind: "loo
   const groups: { kind: "loop" | "island"; members: number[] }[] = groupsOf([...loopDrop]).map((members) => ({ kind: "loop", members }));
   // Rule 7: islands inside the biggest group's box.
   const rest = groupsOf(ws.map((_, i) => i).filter((i) => !drop.has(i)));
-  const length = (g: number[]) => g.reduce((s, i) => s + flen(joined[i]), 0);
-  const main = rest.reduce<number[] | null>((m, g) => (!m || length(g) > length(m) ? g : m), null);
+  // The building (step Q.2): the biggest box among the groups with no title-block or border evidence
+  // (rule 7b), so a long ruled title block or a double-line sheet border is never taken for it; the
+  // biggest box of all when every group has evidence.
+  const boxes = rest.map((g) => union(g.map(bx)));
+  const why = boxes.map((b) => evidence(b));
+  const area = (k: number) => (boxes[k].x1 - boxes[k].x0) * (boxes[k].y1 - boxes[k].y0);
+  const pick = (ks: number[]) => ks.reduce<number | null>((m, k) => (m === null || area(k) > area(m) ? k : m), null);
+  const ks = rest.map((_, k) => k);
+  const mainK = pick(ks.filter((k) => why[k] === null)) ?? pick(ks);
+  const main = mainK === null ? null : rest[mainK];
+  const detached: { members: number[]; why: string | null }[] = [];
   if (main) {
     const box = union(main.map((i) => ({ x0: Math.min(ws[i].a.x, ws[i].b.x), y0: Math.min(ws[i].a.y, ws[i].b.y), x1: Math.max(ws[i].a.x, ws[i].b.x), y1: Math.max(ws[i].a.y, ws[i].b.y) })));
     const inside = (q: Vec2) => q.x > box.x0 + SAME && q.x < box.x1 - SAME && q.y > box.y0 + SAME && q.y < box.y1 - SAME;
-    for (const g of rest)
-      if (g !== main && g.every((i) => inside(ws[i].a) && inside(ws[i].b))) {
-        g.forEach((i) => drop.add(i));
-        groups.push({ kind: "island", members: g });
+    const outside = (q: Vec2) => q.x < box.x0 - SAME || q.x > box.x1 + SAME || q.y < box.y0 - SAME || q.y > box.y1 + SAME;
+    for (const g of rest) {
+      if (g === main) continue;
+      const own = g.filter((i) => i < n); // the diagonal walls in a group stay (step Q.2)
+      if (!own.length) continue;
+      if (g.every((i) => inside(ws[i].a) && inside(ws[i].b))) {
+        own.forEach((i) => drop.add(i));
+        groups.push({ kind: "island", members: own });
+      } else if (g.every((i) => outside(ws[i].a) && outside(ws[i].b))) {
+        // Rule 7b (step Q.2): dropped only on evidence; kept, and reported, without it.
+        const reason = why[rest.indexOf(g)];
+        if (reason) own.forEach((i) => drop.add(i));
+        detached.push({ members: own, why: reason });
       }
+    }
   }
-  return { drop, groups };
+  return { drop, groups, detached };
 }
 
 // ---------------------------------------------------------------- diagonal and curved walls (counted only)
 
 /** Diagonal wall pairs, after the same drops as straight ones (rules 3, 5 and inside an axis wall). */
 function countDiagonal(segs: Seg[], axisWalls: Piece[]): number {
-  type D = { th: number; u: Vec2; n: Vec2; c: number; s0: number; s1: number };
+  type D = { th: number; u: Vec2; n: Vec2; c: number; s0: number; s1: number; m: Vec2 };
   const ds: D[] = segs.map((s) => {
     let th = Math.atan2(s.y2 - s.y1, s.x2 - s.x1);
     if (th < 0) th += Math.PI;
@@ -463,9 +655,9 @@ function countDiagonal(segs: Seg[], axisWalls: Piece[]): number {
     const n = { x: -u.y, y: u.x };
     const p0 = s.x1 * u.x + s.y1 * u.y;
     const p1 = s.x2 * u.x + s.y2 * u.y;
-    return { th, u, n, c: (s.x1 * n.x + s.y1 * n.y + s.x2 * n.x + s.y2 * n.y) / 2, s0: Math.min(p0, p1), s1: Math.max(p0, p1) };
+    return { th, u, n, c: (s.x1 * n.x + s.y1 * n.y + s.x2 * n.x + s.y2 * n.y) / 2, s0: Math.min(p0, p1), s1: Math.max(p0, p1), m: { x: (s.x1 + s.x2) / 2, y: (s.y1 + s.y2) / 2 } };
   });
-  const pairs: (D & { t: number; mid: Vec2; ends: Vec2[] })[] = [];
+  const pairs: (D & { t: number; mid: Vec2; ends: Vec2[]; lines: Vec2[] })[] = [];
   const [gMin, gMax] = WALL_RULES.gap;
   // By angle (0.5° buckets, each checked with its neighbour), then by offset, so hatching stays near-linear.
   const TOL = (0.5 * Math.PI) / 180;
@@ -486,14 +678,17 @@ function countDiagonal(segs: Seg[], axisWalls: Piece[]): number {
       const [s0, s1] = [Math.max(f.s0, g.s0), Math.min(f.s1, g.s1)];
       if (s1 - s0 < WALL_RULES.minPiece - EPS) continue;
       const pt = (s: number) => ({ x: f.u.x * s + f.n.x * c, y: f.u.y * s + f.n.y * c });
-      pairs.push({ ...f, c, t: gap, s0, s1, mid: pt((s0 + s1) / 2), ends: [pt(s0), pt(s1)] });
+      pairs.push({ ...f, c, t: gap, s0, s1, mid: pt((s0 + s1) / 2), ends: [pt(s0), pt(s1)], lines: [f.m, g.m] });
     }
   // Widest wins; hatching (inside an axis wall) and lone short pairs are not walls.
   pairs.sort((p, q) => q.t - p.t);
   const kept: typeof pairs = [];
   for (const p of pairs) {
     const within = kept.some((q) => Math.abs(q.th - p.th) < 0.01 && Math.abs(p.c - q.c) + p.t / 2 <= q.t / 2 + SAME && overlapOf(p, q) >= 0.5 * flen(p));
-    if (within || axisWalls.some((w) => toFootprint(p.mid, w) === 0)) continue;
+    // Hatching: the pair's middle inside an axis wall, or (step Q.2) each of its two lines inside one,
+    // as at a corner, where a hatch line of one wall pairs with one of the other across the room's corner.
+    const inWall = (q: Vec2) => axisWalls.some((w) => toFootprint(q, w) === 0);
+    if (within || inWall(p.mid) || p.lines.every(inWall)) continue;
     kept.push(p);
   }
   return kept.filter((p) => {
@@ -532,7 +727,7 @@ function countCurved(curves: Map<number, Seg[]>): number {
 
 // ---------------------------------------------------------------- the reader
 
-export function readVectorWalls(page: Pick<VectorPage, "segments">, mPerPt: number, opts: { annotation?: readonly number[] } = {}): VectorWalls {
+export function readVectorWalls(page: Pick<VectorPage, "segments"> & Partial<Pick<VectorPage, "texts" | "width" | "height">>, mPerPt: number, opts: { annotation?: readonly number[] } = {}): VectorWalls {
   const dropped: VectorWalls["dropped"] = { short: 0, clutter: 0, inside: 0, openingsCut: 0 };
   const gaps: NonNullable<VectorWalls["gaps"]> = [];
   const m = (s: PdfSegment): Seg & { src: PdfSegment } => ({ x1: s.x1 * mPerPt, y1: s.y1 * mPerPt, x2: s.x2 * mPerPt, y2: s.y2 * mPerPt, src: s });
@@ -556,15 +751,24 @@ export function readVectorWalls(page: Pick<VectorPage, "segments">, mPerPt: numb
     return false;
   };
   const notFace = new Set(arcs.flatMap((a) => [...a.pieces, ...a.leaf]).map((i) => segs[i]));
-  const straight = segs.filter((s) => !s.src.curve && !notFace.has(s) && !(len(s) <= WALL_RULES.maxLeaf && (arcEnd(s.x1, s.y1) || arcEnd(s.x2, s.y2))));
+  const straight = segs.filter((s) => !s.src.curve && !s.src.dashed && !notFace.has(s) && !(len(s) <= WALL_RULES.maxLeaf && (arcEnd(s.x1, s.y1) || arcEnd(s.x2, s.y2))));
 
   // Rule 2: filled rectangles are pairs as they stand.
   const rects: Piece[] = [];
   const used = new Set<Seg>();
   const byPath = new Map<number, typeof straight>();
   for (const s of straight) if (s.src.filled) byPath.set(s.src.path, [...(byPath.get(s.src.path) ?? []), s]);
+  const diags: Diag[] = []; // step Q.2: filled rectangles at any other angle
   for (const ss of byPath.values()) {
-    if (ss.length !== 4 || !ss.every((s) => axisOf(s))) continue;
+    if (ss.length === 4 && !ss.every((s) => axisOf(s))) {
+      const d = diagonalRect(ss);
+      if (d) {
+        diags.push(d);
+        ss.forEach((s) => used.add(s));
+      }
+      continue;
+    }
+    if (ss.length !== 4) continue;
     const uniq = (vs: number[]) => vs.sort((p, q) => p - q).filter((v, i, a) => i === 0 || v - a[i - 1] > SAME);
     const xs = uniq(ss.flatMap((s) => [s.x1, s.x2]));
     const ys = uniq(ss.flatMap((s) => [s.y1, s.y2]));
@@ -580,7 +784,9 @@ export function readVectorWalls(page: Pick<VectorPage, "segments">, mPerPt: numb
   const rest = straight.filter((s) => !used.has(s) && len(s) >= WALL_RULES.minFace - EPS);
   const faces = joinFaces(rest.flatMap((s) => (axisOf(s) ? [faceOf(s, axisOf(s)!)] : [])));
   const diagonal = rest.filter((s) => !axisOf(s));
-  let pieces = selectPieces(oneSided([...rects, ...pairFaces(faces)]), dropped);
+  // Step Q.2: a filled rectangle's long edges are a poche wall's faces, so rule 3 sees them too.
+  const edges = joinFaces([...used].flatMap((s) => (axisOf(s) ? [faceOf(s, axisOf(s)!)] : [])));
+  let pieces = selectPieces(oneSided([...rects, ...pairFaces(faces, edges)]), dropped);
 
   // Rule 4: one line, doors and windows.
   pieces = mergeLines(pieces, gaps);
@@ -598,17 +804,27 @@ export function readVectorWalls(page: Pick<VectorPage, "segments">, mPerPt: numb
 
   // Rule 7: joints. Then (step Q.1) furniture is dropped and the joints are made again without it.
   const pre = pieces.map((p) => ({ ...p, openings: p.openings.map((o) => ({ ...o })) }));
-  let joined = joinWalls(pieces, dropped);
-  const { drop, groups } = furnitureOf(joined);
+  const cut: Cut[] = [];
+  let joined = joinWalls(pieces, dropped, cut);
+  let dj = joinDiagonals(joined, diags, cut, dropped);
+  joined = dj.joined;
+  const { drop, groups, detached: away } = furnitureOf(joined, (box) => titleEvidence(page, mPerPt, box), dj.walls);
   const gone = new Set(pre.map((_, k) => k).filter((k) => joined.some((p) => p.src === k) && joined.every((p, i) => p.src !== k || drop.has(i))));
   const furniture: NonNullable<VectorWalls["furniture"]> = groups.map((g) => {
     const srcs = [...new Set(g.members.map((i) => joined[i].src!))];
     return { kind: g.kind, walls: g.members.length, box: union(srcs.map((k) => boxOf(pre[k]))) };
   });
+  const detached: NonNullable<VectorWalls["detached"]> = away.map((g) => {
+    const srcs = [...new Set(g.members.map((i) => joined[i].src!))];
+    return { walls: g.members.length, box: union(srcs.map((k) => boxOf(pre[k]))), dropped: g.why !== null, why: g.why ?? "no title-block text or sheet border near it, so it is kept as a separate building" };
+  });
   furniture.push(...clutter.map((c) => ({ kind: "small" as const, walls: 1, box: { x0: Math.min(c.a.x, c.b.x) - (c.a.x === c.b.x ? c.thickness / 2 : 0), x1: Math.max(c.a.x, c.b.x) + (c.a.x === c.b.x ? c.thickness / 2 : 0), y0: Math.min(c.a.y, c.b.y) - (c.a.y === c.b.y ? c.thickness / 2 : 0), y1: Math.max(c.a.y, c.b.y) + (c.a.y === c.b.y ? c.thickness / 2 : 0) } })));
   if (gone.size) {
     dropped.openingsCut = 0;
-    joined = joinWalls(pre.filter((_, k) => !gone.has(k)), dropped);
+    cut.length = 0;
+    joined = joinWalls(pre.filter((_, k) => !gone.has(k)), dropped, cut);
+    dj = joinDiagonals(joined, diags, cut, dropped);
+    joined = dj.joined;
   }
   // Openings, classified from the lines and arcs in and around each gap (step M.1c).
   const walls: Wall[] = [];
@@ -636,6 +852,19 @@ export function readVectorWalls(page: Pick<VectorPage, "segments">, mPerPt: numb
       });
     }
   });
+  // Step Q.2: filled diagonal rectangles, joined, after the axis walls; a is the end with the smaller x.
+  for (const d of dj.walls) {
+    const [a, b] = d.a.x < d.b.x || (d.a.x === d.b.x && d.a.y < d.b.y) ? [d.a, d.b] : [d.b, d.a];
+    walls.push({ id: `v${walls.length + 1}`, a, b, thickness: d.t, height: WALL_HEIGHT, provenance: "vector" });
+  }
+  // Step Q.2: the openings a joint cut, classified as they are drawn (without taking any arc), for the report.
+  const conflicts: NonNullable<VectorWalls["conflicts"]> = cut.map((k) => ({
+    kind: classifyOpening(k, straight, arcs, new Set(arcsUsed)).kind,
+    a: at(k.axis, k.s0, k.c),
+    b: at(k.axis, k.s1, k.c),
+    width: k.s1 - k.s0,
+    why: k.ends ? "a wall ending inside it" : "a wall crossing it",
+  }));
   const notUsed = arcs.flatMap((a, i) => (arcsUsed.has(i) ? [] : [{ centre: a.centre, r: a.r, sweep: a.sweep, why: unusedWhy(a, spans) }]));
 
   return {
@@ -648,5 +877,33 @@ export function readVectorWalls(page: Pick<VectorPage, "segments">, mPerPt: numb
     gaps,
     arcs: { found: arcs.length, used: arcsUsed.size, notUsed },
     furniture,
+    detached,
+    conflicts,
   };
+}
+
+/** Rule 7b's evidence (header, step Q.2) for a detached group's box (page metres), or null. */
+function titleEvidence(page: Partial<Pick<VectorPage, "segments" | "texts" | "width" | "height">>, mPerPt: number, box: Box): string | null {
+  // Title-block words whose baseline's middle lies in the box.
+  const words = (page.texts ?? []).filter((t) => {
+    const r = (t.rotation * Math.PI) / 180;
+    const [x, y] = [(t.x + (Math.cos(r) * t.width) / 2) * mPerPt, (t.y + (Math.sin(r) * t.width) / 2) * mPerPt];
+    return x >= box.x0 && x <= box.x1 && y >= box.y0 && y <= box.y1 && TITLE_WORDS.test(t.str);
+  });
+  if (words.length) return `title-block text inside it (${words.slice(0, 3).map((t) => `"${t.str}"`).join(", ")})`;
+  // The sheet's border: the biggest axis-aligned rectangle path drawn, covering half the page or more.
+  const near = BORDER_NEAR_PT * mPerPt;
+  const frames: Box[] = [];
+  if (page.width && page.height) frames.push({ x0: 0, y0: 0, x1: page.width * mPerPt, y1: page.height * mPerPt });
+  const byPath = new Map<number, PdfSegment[]>();
+  for (const g of page.segments ?? []) if (!g.filled && !g.curve) byPath.set(g.path, [...(byPath.get(g.path) ?? []), g]);
+  let border: Box | null = null;
+  for (const ss of byPath.values()) {
+    if (ss.length !== 4 || !ss.every((g) => g.x1 === g.x2 || g.y1 === g.y2)) continue;
+    const b = { x0: Math.min(...ss.flatMap((g) => [g.x1, g.x2])) * mPerPt, y0: Math.min(...ss.flatMap((g) => [g.y1, g.y2])) * mPerPt, x1: Math.max(...ss.flatMap((g) => [g.x1, g.x2])) * mPerPt, y1: Math.max(...ss.flatMap((g) => [g.y1, g.y2])) * mPerPt };
+    if (!border || (b.x1 - b.x0) * (b.y1 - b.y0) > (border.x1 - border.x0) * (border.y1 - border.y0)) border = b;
+  }
+  if (border && page.width && page.height && (border.x1 - border.x0) * (border.y1 - border.y0) >= 0.5 * page.width * page.height * mPerPt * mPerPt) frames.push(border);
+  const against = frames.some((f) => box.x0 - f.x0 <= near || f.x1 - box.x1 <= near || box.y0 - f.y0 <= near || f.y1 - box.y1 <= near);
+  return against ? "it sits against the sheet's border" : null;
 }

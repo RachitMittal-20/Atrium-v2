@@ -22,6 +22,10 @@
  * near both ends (segments perpendicular to it, at least 1 text height long,
  * within 0.5 text heights of the end), the distance between those crossings
  * ("between ticks"), so a line that overshoots its ticks is not over-measured;
+ * CENTRED TEXT (step Q.2): CAD places a dimension's text at the middle of its line, so when two
+ * drawn lines pass beside a text equally near (within 0.05 text heights across: one line drawn
+ * twice, or two strings overlapping on one line), the one whose middle is nearer the text's centre
+ * is its line;
  * otherwise the line's own length ("line length"). Sample = value / measured
  * length. A second text on the same line with the same value (within 2%) is
  * checked but counted once.
@@ -41,6 +45,11 @@
  *     2% are used, and `mismatch` says so ("The title block says 1:100, but
  *     the printed dimensions measure 1:115, so the page was probably scaled to
  *     fit when printed. Using the dimensions.").
+ *   - OUTLIER (step Q.2, as agreed; no other rule changed): when the dimensions do not agree within
+ *     5% as a whole but at least OUTLIER.agree of them do and exactly ONE does not, and that one is
+ *     under OUTLIER.share (20%) of all the readings, the scale is the agreeing group's, "good", with
+ *     the title-block check as above; the wrong one then shows as a flagged row. "good" never comes
+ *     from this rule with fewer than OUTLIER.agree agreeing readings.
  *   - Numbers with no unit matched to lines are measured the same way but only
  *     reported in `unitless` (the "Feet or metres?" question), and only when
  *     no dimension with a unit was matched.
@@ -79,7 +88,10 @@ const NEAR_H = 1.5; // × text height
 const BROKEN_H = 2; // × text height: a broken line's parts end this close to the text
 const TICK_NEAR_H = 0.5; // × text height: a tick this close to a line end measures it
 const TICK_MIN_H = 1; // × text height: a tick or extension line at least this long
+const SAME_LINE_H = 0.05; // × text height: two candidate lines this close across are one line (centred text)
 const SAME_PCT = 2;
+/** The OUTLIER rule (header, step Q.2): at least `agree` readings agreeing, the one outlier under `share` of all. */
+const OUTLIER = { agree: 5, share: 0.2 };
 const TITLE_AGREE_PCT = 2;
 
 /** One joined line of text. `u` is the unit reading direction, `centre` the
@@ -198,7 +210,7 @@ export interface DimensionLine {
  *  collinear parts with the text in the gap between them; null when neither. */
 export function dimensionLine(page: Pick<VectorPage, "segments">, l: TextLine): DimensionLine | null {
   const h = l.height;
-  let best: { key: string; line: DimensionLine["line"]; d: number } | null = null;
+  let best: { key: string; line: DimensionLine["line"]; d: number; mid?: number } | null = null;
   const parts: { i: number; s: number; e: number; off: number }[] = []; // parallel segments on the text's line, in text coordinates
   page.segments.forEach((g, i) => {
     const dx = g.x2 - g.x1;
@@ -212,7 +224,10 @@ export function dimensionLine(page: Pick<VectorPage, "segments">, l: TextLine): 
     const d = Math.abs(off);
     if (d > NEAR_H * h) return;
     const [s, e] = a1 < a2 ? [a1, a2] : [a2, a1];
-    if (len >= MIN_LINE_H * h && s <= 0 && e >= 0 && (!best || d < best.d)) best = { key: `${i}`, line: { x1: g.x1, y1: g.y1, x2: g.x2, y2: g.y2 }, d };
+    // Nearest across; on one line (within SAME_LINE_H), the one centred on the text (header, step Q.2).
+    const mid = Math.abs((s + e) / 2);
+    const better = !best || d < best.d - SAME_LINE_H * h || (d <= best.d + SAME_LINE_H * h && mid < (best.mid ?? Infinity));
+    if (len >= MIN_LINE_H * h && s <= 0 && e >= 0 && better) best = { key: `${i}`, line: { x1: g.x1, y1: g.y1, x2: g.x2, y2: g.y2 }, d, mid };
     parts.push({ i, s, e, off });
   });
   // Broken around the text: a part ending before the text and one starting after it, on one line, each within 2 text heights of it.
@@ -279,7 +294,14 @@ function extensionLines(page: Pick<VectorPage, "segments">, line: DimensionLine[
 
 /** The result rules (header) from the dimension samples and the title block. */
 export function combineScale(samples: number[], title: TitleBlockScale | null, paper: string): Pick<PdfScale, "mPerPt" | "confidence" | "reason" | "mismatch" | "dimensions"> {
-  const b = band(samples);
+  let b = band(samples);
+  // OUTLIER (header): exactly one reading whose removal leaves at least OUTLIER.agree agreeing ones.
+  let agreeing = samples.length;
+  if (b && b.confidence !== "good" && samples.length - 1 >= OUTLIER.agree && 1 < OUTLIER.share * samples.length) {
+    const without = samples.map((_, i) => band(samples.filter((_, j) => j !== i)));
+    const good = without.filter((x) => x?.confidence === "good");
+    if (good.length === 1) [b, agreeing] = [good[0], samples.length - 1];
+  }
   const dimensions = { mPerPt: b && b.confidence !== "none" ? b.median : null, n: samples.length, spreadPct: b?.spreadPct ?? 0, confidence: b?.confidence ?? ("none" as const) };
   const CLICK = "Click one wall and type its length to set the scale.";
   const CHECK = "Check it against a wall you know.";
@@ -288,14 +310,15 @@ export function combineScale(samples: number[], title: TitleBlockScale | null, p
   const out = (mPerPt: number | null, confidence: PdfScale["confidence"], reason: string, mismatch: string | null = null) => ({ mPerPt, confidence, reason, mismatch, dimensions });
 
   if (b && b.confidence === "good") {
-    if (!title) return out(b.median, "good", `${n} printed dimensions agree within 5%.`);
+    const agree = agreeing === n ? `${n} printed dimensions agree within 5%` : `${agreeing} of ${n} printed dimensions agree within 5%; the other one does not and is flagged`;
+    if (!title) return out(b.median, "good", `${agree}.`);
     const off = (Math.abs(b.median - title.mPerPt) / title.mPerPt) * 100;
-    if (off <= TITLE_AGREE_PCT) return out(b.median, "good", `${n} printed dimensions agree within 5%, and the title block's ${title.text} agrees.`);
+    if (off <= TITLE_AGREE_PCT) return out(b.median, "good", `${agree}, and the title block's ${title.text} agrees.`);
     const measured = Math.round(b.median / PAPER_M_PER_PT);
     return out(
       b.median,
       "good",
-      `${n} printed dimensions agree within 5%.`,
+      `${agree}.`,
       `The title block says ${title.text}, but the printed dimensions measure 1:${measured}, so the page was probably scaled to fit when printed. Using the dimensions.`,
     );
   }

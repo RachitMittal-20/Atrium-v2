@@ -29,6 +29,8 @@ export interface PdfSegment {
   path: number;
   /** True for a piece of a flattened curve (a door swing, a curved wall). */
   curve: boolean;
+  /** Step Q.2: stroked with a dash pattern (a centre, hidden or setting-out line); absent when solid. */
+  dashed?: true;
 }
 
 /** One text item as pdf.js reports it, placed on the page. */
@@ -219,6 +221,13 @@ export interface VectorWalls {
    *  lone short piece (the clutter rule). `box` is the group's pairs' footprint as read (before the
    *  joints), `walls` how many pieces. Absent on readings made before Q.1. */
   furniture?: { kind: "loop" | "island" | "small"; walls: number; box: { x0: number; y0: number; x1: number; y1: number } }[];
+  /** Step Q.2 (walls.ts rule 7b): groups of walls joined to nothing in the building and lying outside
+   *  it, page metres. `dropped` when there was evidence they are sheet furniture (`why` says which);
+   *  kept otherwise (a separate building), and `why` says that. */
+  detached?: { walls: number; box: { x0: number; y0: number; x1: number; y1: number }; dropped: boolean; why: string }[];
+  /** Step Q.2 (walls.ts): openings a joint cut, so not read: a wall ends inside them or crosses them.
+   *  Jambs on the centre line, page metres; `kind` as the opening is drawn. */
+  conflicts?: { kind: OpeningKind; a: Vec2; b: Vec2; width: number; why: string }[];
 }
 
 /** One row of the dimension check (src/lib/pdf/dimensions.ts), or of the

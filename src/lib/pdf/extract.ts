@@ -22,6 +22,24 @@
  * src/lib/pdf/walls.ts reads a filled rectangle's edges as one wall, finds door
  * leaves by the swing arcs they meet, and counts curved walls (step M.1b).
  *
+ * A fill in the paper's colour is a MASK, not ink (step Q.2): a generated plan knocks a window out
+ * of its poche with a white rectangle a little bigger than the gap, and some exporters paint a white
+ * sheet behind the drawing. It paints paper, so a path that is only filled white gives no segments,
+ * and one filled white and stroked keeps its stroke only. pdf.js hands every fill colour over as
+ * setFillRGBColor with a hex string (gray, CMYK and the rest converted); white is every channel at
+ * least PAPER (250 of 255). A pattern or shading fill is ink.
+ *
+ * A stroke-only path with a dash pattern (setDash with a non-empty array) marks its segments `dashed` (step Q.2):
+ * CAD draws centre lines, hidden and overhead lines and setting-out lines dashed, and a wall's cut face
+ * continuous, so walls.ts never takes a dashed line as a face or an opening's line. The dash pattern is
+ * part of the graphics state (saved and restored with q / Q).
+ *
+ * CLIPPING (step Q.2): what a clip path hides is not on the drawing. A clip (W or W*, then the path)
+ * adds a region to the graphics state, saved and restored with q / Q; every segment is cut to the
+ * parts inside every region in force (even-odd or nonzero, as the clip said), so a poche's hatching,
+ * drawn as long lines clipped to each wall piece, arrives as only its visible parts. A clip path with
+ * no geometry clips nothing. Text and images are not clipped.
+ *
  * Stroke width in points is the line width × sqrt(|det|) of the CTM (a hairline,
  * width 0, stays 0). Text items come from getTextContent: position = the start
  * of the baseline, rotation from the text matrix's x axis, height from its y axis.
@@ -56,6 +74,9 @@ export const MAX_SEGMENTS = 500_000;
 export const MAX_TEXT_ITEMS = 50_000;
 export const FLATTEN_PT = 0.05;
 const CLASSIFY = { minSegments: 40, scanCover: 0.4 };
+/** A fill whose every channel is at least this (of 255) is the paper's colour (header, step Q.2). */
+const PAPER_CHANNEL = 250;
+const isPaper = (hex: unknown) => typeof hex === "string" && /^#[0-9a-f]{6}$/i.test(hex) && [1, 3, 5].every((i) => parseInt(hex.slice(i, i + 2), 16) >= PAPER_CHANNEL);
 
 type M = [number, number, number, number, number, number];
 
@@ -69,6 +90,133 @@ const mul = (m1: M, m2: number[]): M => [
   m1[1] * m2[4] + m1[3] * m2[5] + m1[5],
 ];
 const apply = (m: number[], x: number, y: number): [number, number] => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+
+/** pdf.js's path command codes inside constructPath (its DrawOPS, not exported). */
+const DRAW = { moveTo: 0, lineTo: 1, curveTo: 2, quadraticCurveTo: 3, closePath: 4 };
+
+/**
+ * Walks one constructPath's data through the CTM, emitting straight pieces in viewport points;
+ * curves are flattened within FLATTEN_PT (header) and emitted with `curve` true. `closeAll` closes
+ * every subpath (a fill or a clip does).
+ */
+function walkPath(data: ArrayLike<number>, ctm: M, closeAll: boolean, emit: (x1: number, y1: number, x2: number, y2: number, curve: boolean) => void) {
+  let cx = 0;
+  let cy = 0;
+  let sx = 0;
+  let sy = 0;
+  let open = false; // a subpath has started
+  const seg = (x1: number, y1: number, x2: number, y2: number, curve = false) => {
+    if (x1 !== x2 || y1 !== y2) emit(x1, y1, x2, y2, curve);
+  };
+  const close = () => {
+    if (open) seg(cx, cy, sx, sy);
+    cx = sx;
+    cy = sy;
+  };
+  const cubic = (p1x: number, p1y: number, p2x: number, p2y: number, p3x: number, p3y: number) => {
+    const ddx = Math.max(Math.abs(cx - 2 * p1x + p2x), Math.abs(p1x - 2 * p2x + p3x));
+    const ddy = Math.max(Math.abs(cy - 2 * p1y + p2y), Math.abs(p1y - 2 * p2y + p3y));
+    const n = Math.max(1, Math.ceil(Math.sqrt((0.75 * Math.hypot(ddx, ddy)) / FLATTEN_PT)));
+    let [px, py] = [cx, cy];
+    for (let k = 1; k <= n; k++) {
+      const t = k / n;
+      const u = 1 - t;
+      const x = u * u * u * cx + 3 * u * u * t * p1x + 3 * u * t * t * p2x + t * t * t * p3x;
+      const y = u * u * u * cy + 3 * u * u * t * p1y + 3 * u * t * t * p2y + t * t * t * p3y;
+      seg(px, py, x, y, true);
+      [px, py] = [x, y];
+    }
+    [cx, cy] = [p3x, p3y];
+  };
+  for (let j = 0; j < data.length; ) {
+    const cmd = data[j++];
+    if (cmd === DRAW.moveTo) {
+      if (closeAll) close();
+      [cx, cy] = apply(ctm, data[j++], data[j++]);
+      [sx, sy] = [cx, cy];
+      open = true;
+    } else if (cmd === DRAW.lineTo) {
+      const [x, y] = apply(ctm, data[j++], data[j++]);
+      seg(cx, cy, x, y);
+      [cx, cy] = [x, y];
+    } else if (cmd === DRAW.curveTo) {
+      const [p1x, p1y] = apply(ctm, data[j++], data[j++]);
+      const [p2x, p2y] = apply(ctm, data[j++], data[j++]);
+      const [p3x, p3y] = apply(ctm, data[j++], data[j++]);
+      cubic(p1x, p1y, p2x, p2y, p3x, p3y);
+    } else if (cmd === DRAW.quadraticCurveTo) {
+      const [qx, qy] = apply(ctm, data[j++], data[j++]);
+      const [p3x, p3y] = apply(ctm, data[j++], data[j++]);
+      // Raised to a cubic: control points 2/3 of the way to the quadratic's.
+      cubic(cx + (2 / 3) * (qx - cx), cy + (2 / 3) * (qy - cy), p3x + (2 / 3) * (qx - p3x), p3y + (2 / 3) * (qy - p3y), p3x, p3y);
+    } else if (cmd === DRAW.closePath) {
+      close();
+      open = false;
+    }
+  }
+  if (closeAll) close();
+}
+
+/** A clip region (header, CLIPPING): its closed edges in viewport points and its fill rule. */
+interface ClipRegion {
+  edges: [number, number, number, number][];
+  evenOdd: boolean;
+  box: [number, number, number, number];
+}
+
+/** True when (x, y) is inside the region, by its rule (crossings for even-odd, winding for nonzero). */
+function insideClip(r: ClipRegion, x: number, y: number): boolean {
+  let winding = 0;
+  let crossings = 0;
+  for (const [x1, y1, x2, y2] of r.edges) {
+    if (y1 <= y !== y2 <= y) {
+      const xc = x1 + ((y - y1) / (y2 - y1)) * (x2 - x1);
+      if (xc > x) {
+        crossings++;
+        winding += y2 > y1 ? 1 : -1;
+      }
+    }
+  }
+  return r.evenOdd ? crossings % 2 === 1 : winding !== 0;
+}
+
+/**
+ * The parameter intervals [t0, t1] of the segment that lie inside every region (header, CLIPPING):
+ * the segment is split where it crosses a region's edges, a piece is kept when its middle is
+ * inside, and touching kept pieces are joined.
+ * ponytail: O(edges) per segment per region; fine for clip rectangles and poche outlines, index the
+ * edges if a page ever clips everything to a path of thousands of edges.
+ */
+function clipIntervals(regions: ClipRegion[], x1: number, y1: number, x2: number, y2: number): [number, number][] {
+  let kept: [number, number][] = [[0, 1]];
+  const [dx, dy] = [x2 - x1, y2 - y1];
+  for (const r of regions) {
+    if (Math.max(x1, x2) < r.box[0] || Math.min(x1, x2) > r.box[2] || Math.max(y1, y2) < r.box[1] || Math.min(y1, y2) > r.box[3]) return [];
+    const cuts: number[] = [];
+    for (const [ex1, ey1, ex2, ey2] of r.edges) {
+      const [ex, ey] = [ex2 - ex1, ey2 - ey1];
+      const den = dx * ey - dy * ex;
+      if (den === 0) continue; // parallel: no single crossing
+      const t = ((ex1 - x1) * ey - (ey1 - y1) * ex) / den;
+      const u = ((ex1 - x1) * dy - (ey1 - y1) * dx) / den;
+      if (t > 0 && t < 1 && u >= 0 && u <= 1) cuts.push(t);
+    }
+    const next: [number, number][] = [];
+    for (const [a, b] of kept) {
+      const stops = [a, ...cuts.filter((t) => t > a && t < b).sort((p, q) => p - q), b];
+      for (let i = 1; i < stops.length; i++) {
+        const m = (stops[i - 1] + stops[i]) / 2;
+        if (!insideClip(r, x1 + dx * m, y1 + dy * m)) continue;
+        const last = next[next.length - 1];
+        if (last && last[1] === stops[i - 1]) last[1] = stops[i];
+        else next.push([stops[i - 1], stops[i]]);
+      }
+    }
+    kept = next;
+    if (!kept.length) return [];
+  }
+  return kept;
+}
 
 /** Paper names by their short × long side in points (unrotated). */
 const PAPER: [string, number, number][] = [
@@ -103,8 +251,6 @@ export const tooManyTexts = (max: number) =>
 
 export async function extractVectorPage(pdfjs: PdfJs, page: PDFPageProxy, opts: { maxPathOps?: number; maxSegments?: number; maxTexts?: number } = {}): Promise<VectorPage> {
   const { OPS } = pdfjs;
-  // pdf.js's path command codes inside constructPath (its DrawOPS, not exported).
-  const DRAW = { moveTo: 0, lineTo: 1, curveTo: 2, quadraticCurveTo: 3, closePath: 4 };
   const maxPathOps = opts.maxPathOps ?? MAX_PATH_OPS;
   const maxSegments = opts.maxSegments ?? MAX_SEGMENTS;
   const maxTexts = opts.maxTexts ?? MAX_TEXT_ITEMS;
@@ -141,91 +287,68 @@ export async function extractVectorPage(pdfjs: PdfJs, page: PDFPageProxy, opts: 
   const images: VectorPage["images"] = [];
   let ctm: M = [...base];
   let lineWidth = 1;
-  const stack: { ctm: M; lineWidth: number }[] = [];
+  let paperFill = false; // the fill colour is the paper's (header, step Q.2)
+  let dashed = false; // the stroke has a dash pattern (header, step Q.2)
+  let clips: ClipRegion[] = []; // the clip regions in force (header, CLIPPING); replaced, never mutated
+  let pendingClip: boolean | null = null; // W (false) or W* (true) seen: the next path is a clip
+  const stack: { ctm: M; lineWidth: number; paperFill: boolean; dashed: boolean; clips: ClipRegion[] }[] = [];
+  const state = () => ({ ctm: [...ctm] as M, lineWidth, paperFill, dashed, clips });
 
-  /** Adds the straight pieces of one painted path, in viewport points. */
+  /** Adds the straight pieces of one painted path, in viewport points, cut to the clip regions. */
   let pathIndex = 0;
   const addPath = (data: ArrayLike<number>, op: number) => {
     const path = pathIndex++; // every painted path gets its own number (walls.ts groups a filled polygon's edges by it)
     const stroked = STROKE.has(op) || BOTH.has(op);
-    const filled = FILL.has(op) || BOTH.has(op);
+    const filled = (FILL.has(op) || BOTH.has(op)) && !paperFill; // a white fill paints paper, not ink
     if (!stroked && !filled) return; // endPath: a clip only
-    const closeAll = filled || CLOSES.has(op);
     const w = stroked ? lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])) : 0;
-    let cx = 0;
-    let cy = 0;
-    let sx = 0;
-    let sy = 0;
-    let open = false; // a subpath has started
-    const seg = (x1: number, y1: number, x2: number, y2: number, curve = false) => {
-      if (x1 === x2 && y1 === y2) return;
+    // A filled edge is ink whatever its outline's dash; only a stroke-only path is marked dashed.
+    const mark = stroked && !filled && dashed ? { dashed: true as const } : {};
+    const push = (x1: number, y1: number, x2: number, y2: number, curve: boolean) => {
       if (segments.length >= maxSegments) throw new BlueprintError(tooManySegments(maxSegments));
-      segments.push({ x1, y1, x2, y2, width: w, filled, path, curve });
+      segments.push({ x1, y1, x2, y2, width: w, filled, path, curve, ...mark });
     };
-    const close = () => {
-      if (open) seg(cx, cy, sx, sy);
-      cx = sx;
-      cy = sy;
-    };
-    const cubic = (p1x: number, p1y: number, p2x: number, p2y: number, p3x: number, p3y: number) => {
-      const ddx = Math.max(Math.abs(cx - 2 * p1x + p2x), Math.abs(p1x - 2 * p2x + p3x));
-      const ddy = Math.max(Math.abs(cy - 2 * p1y + p2y), Math.abs(p1y - 2 * p2y + p3y));
-      const n = Math.max(1, Math.ceil(Math.sqrt((0.75 * Math.hypot(ddx, ddy)) / FLATTEN_PT)));
-      let [px, py] = [cx, cy];
-      for (let k = 1; k <= n; k++) {
-        const t = k / n;
-        const u = 1 - t;
-        const x = u * u * u * cx + 3 * u * u * t * p1x + 3 * u * t * t * p2x + t * t * t * p3x;
-        const y = u * u * u * cy + 3 * u * u * t * p1y + 3 * u * t * t * p2y + t * t * t * p3y;
-        seg(px, py, x, y, true);
-        [px, py] = [x, y];
-      }
-      [cx, cy] = [p3x, p3y];
-    };
-    for (let j = 0; j < data.length; ) {
-      const cmd = data[j++];
-      if (cmd === DRAW.moveTo) {
-        if (closeAll) close();
-        [cx, cy] = apply(ctm, data[j++], data[j++]);
-        [sx, sy] = [cx, cy];
-        open = true;
-      } else if (cmd === DRAW.lineTo) {
-        const [x, y] = apply(ctm, data[j++], data[j++]);
-        seg(cx, cy, x, y);
-        [cx, cy] = [x, y];
-      } else if (cmd === DRAW.curveTo) {
-        const [p1x, p1y] = apply(ctm, data[j++], data[j++]);
-        const [p2x, p2y] = apply(ctm, data[j++], data[j++]);
-        const [p3x, p3y] = apply(ctm, data[j++], data[j++]);
-        cubic(p1x, p1y, p2x, p2y, p3x, p3y);
-      } else if (cmd === DRAW.quadraticCurveTo) {
-        const [qx, qy] = apply(ctm, data[j++], data[j++]);
-        const [p3x, p3y] = apply(ctm, data[j++], data[j++]);
-        // Raised to a cubic: control points 2/3 of the way to the quadratic's.
-        cubic(cx + (2 / 3) * (qx - cx), cy + (2 / 3) * (qy - cy), p3x + (2 / 3) * (qx - p3x), p3y + (2 / 3) * (qy - p3y), p3x, p3y);
-      } else if (cmd === DRAW.closePath) {
-        close();
-        open = false;
-      }
-    }
-    if (closeAll) close();
+    walkPath(data, ctm, filled || CLOSES.has(op), (x1, y1, x2, y2, curve) => {
+      if (!clips.length) return push(x1, y1, x2, y2, curve);
+      for (const [t0, t1] of clipIntervals(clips, x1, y1, x2, y2))
+        t0 === 0 && t1 === 1 ? push(x1, y1, x2, y2, curve) : push(x1 + (x2 - x1) * t0, y1 + (y2 - y1) * t0, x1 + (x2 - x1) * t1, y1 + (y2 - y1) * t1, curve);
+    });
+  };
+
+  /** The path after W / W* becomes a clip region, intersected with those in force. */
+  const addClip = (data: ArrayLike<number>, evenOdd: boolean) => {
+    const edges: ClipRegion["edges"] = [];
+    walkPath(data, ctm, true, (x1, y1, x2, y2) => void edges.push([x1, y1, x2, y2]));
+    if (!edges.length) return; // no geometry: clips nothing
+    const xs = edges.flatMap((e) => [e[0], e[2]]);
+    const ys = edges.flatMap((e) => [e[1], e[3]]);
+    clips = [...clips, { edges, evenOdd, box: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] }];
   };
 
   for (let i = 0; i < fnArray.length; i++) {
     const fn = fnArray[i];
     const args = argsArray[i];
-    if (fn === OPS.save) stack.push({ ctm: [...ctm], lineWidth });
-    else if (fn === OPS.restore) ({ ctm, lineWidth } = stack.pop() ?? { ctm, lineWidth });
+    if (fn === OPS.save) stack.push(state());
+    else if (fn === OPS.restore) ({ ctm, lineWidth, paperFill, dashed, clips } = stack.pop() ?? state());
     else if (fn === OPS.transform) ctm = mul(ctm, args);
     else if (fn === OPS.paintFormXObjectBegin) {
-      stack.push({ ctm: [...ctm], lineWidth });
+      stack.push(state());
       if (Array.isArray(args?.[0]) || ArrayBuffer.isView(args?.[0])) ctm = mul(ctm, Array.from(args[0] as ArrayLike<number>));
-    } else if (fn === OPS.paintFormXObjectEnd) ({ ctm, lineWidth } = stack.pop() ?? { ctm, lineWidth });
+    } else if (fn === OPS.paintFormXObjectEnd) ({ ctm, lineWidth, paperFill, dashed, clips } = stack.pop() ?? state());
     else if (fn === OPS.setLineWidth) lineWidth = args[0];
+    else if (fn === OPS.setFillRGBColor) paperFill = isPaper(args?.[0]);
+    else if (fn === OPS.setFillColorN || fn === OPS.setFillTransparent) paperFill = false;
+    else if (fn === OPS.setDash) dashed = Array.isArray(args?.[0]) && (args[0] as number[]).some((v) => v > 0);
     else if (fn === OPS.setGState) for (const [key, value] of args[0] as [string, unknown][]) key === "LW" && typeof value === "number" && (lineWidth = value);
+    else if (fn === OPS.clip || fn === OPS.eoClip) pendingClip = fn === OPS.eoClip;
     else if (fn === OPS.constructPath) {
       const data = args?.[1]?.[0] as ArrayLike<number> | null | undefined;
+      // The clip applies after this path is painted (PDF: W takes effect at the painting operator).
       if (data) addPath(data, args[0]);
+      if (pendingClip !== null) {
+        if (data) addClip(data, pendingClip);
+        pendingClip = null;
+      }
     } else if (IMAGE.has(fn)) {
       // An image fills the unit square of its CTM.
       const corners = [apply(ctm, 0, 0), apply(ctm, 1, 0), apply(ctm, 1, 1), apply(ctm, 0, 1)];

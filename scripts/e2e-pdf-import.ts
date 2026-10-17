@@ -87,6 +87,19 @@
  * their size and place; plan-bare-mm's reason names its unit note; plan-against-wall's known failure
  * (two windows hidden by a centre line) is asserted as it is. plan-chatgpt-flat.pdf (ChatGPT-generated,
  * not real CAD) has its own row with honest expectations, built and opened in the studio.
+ * Step Q.2 (more CAD conventions, scripts/test-pdf-poche.ts): the twelve new SYNTHETIC fixtures go
+ * through every fixture check above, with what differs from the plain house stated per file (Q2):
+ * plan-dims-one-wrong's one flagged row and "10 of 11" reason; plan-dims-chain's short string, whose
+ * far end lands on no wall; five rooms where a fixture divides a room or adds a shed; plan-poche-diagonal
+ * read from the PDF alone; plan-title-block's title block outlined on the overlay and listed as left
+ * out, plan-outbuilding's shed outlined and listed as kept; plan-stem-in-window's window named as not
+ * read and boxed; plan-free-end's merge tie (rule 8b does not apply). plan-chatgpt-poche.pdf
+ * (ChatGPT-generated, not real CAD) has its own row with honest expectations as CHROMIUM reads it
+ * (its tracing differs from Node's: here the merge stands with 5 traced walls), built and opened.
+ * The test-plans/ rows are compared with tests/fixtures/pdf/test-plans-baseline.json (numbers only,
+ * written from THIS Chromium run with E2E_WRITE_BASELINE=1): any number worse than its baseline fails
+ * the suite (fewer exact walls or openings, more traced or unclassified, fewer dimensions, more flagged,
+ * fewer rooms); a file with no baseline is reported, not failed.
  * Screenshots in /tmp/studio/: pdf-review-1440.png, pdf-dimension-check-1440.png,
  * pdf-fit-warning-1440.png, pdf-review-390.png, pdf-coverage-1440.png,
  * pdf-model-check-1440.png, pdf-clutter-1440.png, pdf-traced-1440.png, and (M.1c)
@@ -136,7 +149,22 @@ const DOOR_FILES = ["plan-doors.pdf", "plan-doors-rect.pdf"];
 const GAP_FILE = "plan-gaps.pdf";
 const GAPS = /(\d+) gaps? outside ([\d'".\- \/a-z]+) to ([\d'".\- \/a-z]+) (?:was|were) not read as openings \(sizes: ([^)]+)\)\./;
 /** Step Q.1: the fixtures whose tracing is worse than their PDF reading (rule 8). */
-const PDF_ONLY_FILES = ["plan-dims-close.pdf", "plan-window-board.pdf"];
+const PDF_ONLY_FILES = ["plan-dims-close.pdf", "plan-window-board.pdf", "plan-poche-diagonal.pdf"];
+/** Step Q.2: how each new synthetic fixture differs from the plain sample house (see the header). */
+const Q2: Record<string, { flagged?: string[]; offModel?: number; rooms?: number; conflict?: boolean; detached?: { kept: number; dropped: number }; outlier?: boolean }> = {
+  "plan-dims-one-wrong.pdf": { flagged: ["5200 mm"], outlier: true },
+  "plan-dims-chain.pdf": { offModel: 1 },
+  "plan-poche-diagonal.pdf": { rooms: 5 },
+  "plan-stem-in-window.pdf": { rooms: 5, conflict: true },
+  "plan-outbuilding.pdf": { rooms: 5, detached: { kept: 1, dropped: 0 } },
+  "plan-title-block.pdf": { detached: { kept: 0, dropped: 1 } },
+};
+/** Step Q.2 (rule 8b): the fixture whose merge ties with the PDF alone, so the merge stands. */
+const FREE_END_FILE = "plan-free-end.pdf";
+const BASELINE = join(process.cwd(), "tests/fixtures/pdf/test-plans-baseline.json");
+/** The test-plans/ numbers compared with the baseline; for each, whether more is better. */
+const BASELINE_KEYS = { wallsExact: true, wallsTraced: false, openingsExact: true, openingsTraced: false, unclassified: false, dimensions: true, flagged: false, flaggedModel: false, rooms: true } as const;
+type Row = Record<keyof typeof BASELINE_KEYS, number>;
 const OPENINGS = /^(\d+) of (\d+) openings read exactly \(doors (\d+), windows (\d+), unclassified (\d+)\); (\d+) traced approximately; (\d+) arcs? not used\.$/;
 
 const errors: string[] = [];
@@ -241,7 +269,12 @@ async function session(browser: Browser, width: number, height: number, touch: b
       assert.equal(vec.length + tracedOnes.length, t.planWalls.length, `${file}: ${vec.length} from the PDF + ${tracedOnes.length} traced`);
     } else assert.equal(vec.length, t.planWalls.length, `${file}: ${vec.length} walls from the PDF, want ${t.planWalls.length}`);
     const names = plan.rooms.map((r) => r.name).sort();
-    if (file !== "plan-outlined.pdf") assert.deepEqual(names, NAMES, `${file}: room names from the PDF`);
+    const rooms = Q2[file]?.rooms;
+    if (rooms) {
+      // Step Q.2: a room divided or a shed added; the extra room has no label of its own.
+      assert.equal(names.length, rooms, `${file}: ${rooms} rooms (${names})`);
+      assert.ok(names.every((n) => NAMES.includes(n) || /^Room \d+$/.test(n)) && names.filter((n) => NAMES.includes(n)).length >= NAMES.length - 1, `${file}: the PDF's names, the rest numbered (${names})`);
+    } else if (file !== "plan-outlined.pdf") assert.deepEqual(names, NAMES, `${file}: room names from the PDF`);
     return `in the studio ${vec.length}/${plan.walls.length} walls from the PDF, worst end ${(worst * 1000).toFixed(3)} mm (1 mm allowed); rooms ${names.join(", ")}`;
   };
 
@@ -265,15 +298,17 @@ async function session(browser: Browser, width: number, height: number, touch: b
   /** The model table: one row per dimension, all OK, centre to centre on these fixtures. */
   const checkModel = async (file: string, t: Truth) => {
     const rows = tid(page, "model-row");
-    assert.equal(await rows.count(), t.dims.length, `${file}: every dimension lands on the model`);
+    const off = Q2[file]?.offModel ?? 0; // step Q.2: dimensions whose ends land on no wall
+    assert.equal(await rows.count(), t.dims.length - off, `${file}: every dimension lands on the model${off ? ` but ${off}` : ""}`);
     let approximate = 0;
-    for (let i = 0; i < t.dims.length; i++) {
-      // A row landing on a traced wall is approximate and may be flagged; every other row is OK.
+    for (let i = 0; i < t.dims.length - off; i++) {
+      // A row landing on a traced wall is approximate and may be flagged; every other row is OK (step
+      // Q.2: but a dimension printed wrong on purpose is flagged here too).
       const approx = (await rows.nth(i).getAttribute("data-approximate")) === "true";
       approximate += Number(approx);
-      if (!approx) assert.equal(await rows.nth(i).getAttribute("data-status"), "ok", `${file}: model row ${i} OK`);
-      // plan-doors (M.1c) also prints two opening widths, measured between the opening's jambs.
       const printed = await rows.nth(i).getAttribute("data-printed");
+      if (!approx) assert.equal(await rows.nth(i).getAttribute("data-status"), Q2[file]?.flagged?.includes(printed!) ? "flagged" : "ok", `${file}: model row ${i} as expected`);
+      // plan-doors (M.1c) also prints two opening widths, measured between the opening's jambs.
       const spans = t.dims.find((x) => x.text === printed)?.spans ?? "centre to centre";
       assert.equal((await rows.nth(i).locator("[data-testid=model-spans]").innerText()).trim(), spans, `${file}: model row ${i} ${spans}`);
     }
@@ -533,6 +568,36 @@ async function session(browser: Browser, width: number, height: number, touch: b
     return out.length ? `; ${out.join("; ")}` : "";
   };
 
+  /** Step Q.2 on the review screen: detached groups outlined and listed, an opening a wall ends
+   *  inside named and boxed, the one-outlier reason. */
+  const checkQ2Review = async (file: string) => {
+    const q = Q2[file];
+    const out: string[] = [];
+    const items = tid(page, "coverage-detached").locator("li");
+    if (q?.detached) {
+      const dropped = await items.evaluateAll((els) => els.filter((e) => e.getAttribute("data-dropped") === "true").length);
+      assert.deepEqual([(await items.count()) - dropped, dropped], [q.detached.kept, q.detached.dropped], `${file}: detached groups kept and left out`);
+      const outlines = page.locator("[data-testid=plan-viewer] [data-layer=detached] [data-detached]");
+      assert.equal(await outlines.count(), q.detached.kept + q.detached.dropped, `${file}: each one outlined on the overlay`);
+      const label = (await outlines.first().locator("text").textContent())!.trim();
+      assert.match(label, q.detached.kept ? /^Kept: separate building, .+ × .+$/ : /^Left out: title block, .+ × .+$/, `${file}: labelled with its size`);
+      out.push(`detached: "${(await items.first().innerText()).trim()}", outlined "${label}"`);
+    } else assert.equal(await items.count(), 0, `${file}: no detached group`);
+    const conflicts = tid(page, "coverage-conflicts").locator("li");
+    if (q?.conflict) {
+      const text = (await conflicts.first().innerText()).trim();
+      assert.match(text, /^Window 1 \(.+\) conflicts with a wall ending inside it; not read\./, `${file}: the window named`);
+      assert.equal(await page.locator("[data-testid=plan-viewer] [data-layer=gaps-not-read] [data-id=conflict1]").count(), 1, `${file}: and boxed on the overlay`);
+      out.push(`"${text.split(".")[0]}." boxed`);
+    } else assert.equal(await conflicts.count(), 0, `${file}: no opening a wall ends inside`);
+    if (q?.outlier) {
+      const reason = await tid(page, "pdf-scale-reason").innerText();
+      assert.ok(reason.includes("10 of 11 printed dimensions agree within 5%"), `${file}: the outlier reason (${reason})`);
+      out.push("scale good from 10 of 11, the wrong one flagged");
+    }
+    return out.length ? `; ${out.join("; ")}` : "";
+  };
+
   /** Step X.1: the extra line per file, read from the review screen before anything is built. */
   const summaryLine = async (file: string, ms: number) => {
     const pdf = await page.evaluate(() => (window as Win).__importPdf);
@@ -549,7 +614,7 @@ async function session(browser: Browser, width: number, height: number, touch: b
       const printed = (await row.getAttribute("data-printed"))!;
       const d = t.dims.find((x) => x.text === printed);
       assert.ok(d, `${file}: row "${printed}" is a printed dimension`);
-      assert.equal(await row.getAttribute("data-status"), "ok", `${file}: "${printed}" OK`);
+      assert.equal(await row.getAttribute("data-status"), Q2[file]?.flagged?.includes(printed) ? "flagged" : "ok", `${file}: "${printed}" ${Q2[file]?.flagged?.includes(printed) ? "flagged" : "OK"}`);
       const measured = await row.locator("[data-testid=dim-measured]").textContent();
       const mm = Number(measured!.replace(/[^\d.]/g, ""));
       assert.ok(Math.abs(mm - d.metres * 1000) <= 0.1, `${file}: "${printed}" measured ${measured}`);
@@ -609,7 +674,7 @@ async function session(browser: Browser, width: number, height: number, touch: b
       if (t.dims.length) {
         await checkTable(file, t);
         const hows = [...new Set(await page.locator("[data-testid=dim-how]").allInnerTexts())].join(" / ");
-        line += `; ${t.dims.length} dimensions, all OK within 0.1 mm of the truth (${hows})`;
+        line += `; ${t.dims.length} dimensions within 0.1 mm of the truth, ${Q2[file]?.flagged ? `${Q2[file].flagged!.join(", ")} flagged, the rest OK` : "all OK"} (${hows})`;
         if (file === "plan-outlined.pdf") assert.ok(hows.split(" / ").every((h) => h.endsWith("read by OCR")), `${file}: every row read by OCR`);
         if (file === "plan-broken-dims.pdf") assert.ok(hows.includes("between ticks") && hows.includes("line length"), `${file}: ticks and a line length`);
       } else assert.equal(await tid(page, "dimension-check").count(), 0, `${file}: no table without dimensions`);
@@ -623,9 +688,23 @@ async function session(browser: Browser, width: number, height: number, touch: b
         console.log(report.slice(extra ? -2 : -1).join("\n"));
         continue;
       }
+      // Step Q.2 (rule 8b): plan-free-end's tracing is as good as its PDF reading with the nib's real
+      // free end (one problem each), so the merge stands, as the rule says; built and opened as it is.
+      if (file === FREE_END_FILE) {
+        const cl = tid(page, "coverage-line");
+        const [walls, exact, traced] = [Number(await cl.getAttribute("data-walls")), Number(await cl.getAttribute("data-exact")), Number(await cl.getAttribute("data-traced"))];
+        assert.equal(await tid(page, "coverage-pdf-only").count(), 0, `${file}: a tie keeps the merge (no PDF-only line)`);
+        assert.ok(exact >= t.planWalls.length - 1 && exact + traced === walls, `${file}: every wall but at most the nib exact (${exact} of ${walls}, ${traced} traced)`);
+        const plan = await buildAndOpen();
+        line += `; rule 8b not applied (the merge ties): ${exact} of ${walls} exact, ${traced} traced; in the studio ${plan.walls.length} walls, rooms ${plan.rooms.map((r) => r.name).sort().join(", ")}`;
+        report.push(`${line}; ${(ms / 1000).toFixed(1)} s`, ...(extra ? [extra] : []));
+        console.log(report.slice(extra ? -2 : -1).join("\n"));
+        continue;
+      }
       const cov = await checkCoverage(file, t);
       line += `; "${cov.text}" ${cov.openings}`;
       line += await checkQ1Review(file);
+      line += await checkQ2Review(file);
       if (DOOR_FILES.includes(file)) line += `; ${await checkDoorsReview(file, t)}`;
       if (t.dims.length) {
         const approx = await checkModel(file, t);
@@ -751,9 +830,45 @@ async function session(browser: Browser, width: number, height: number, touch: b
     console.log(report.slice(-2).join("\n"));
   }
 
+  // ---------------------------------------------------------------- step Q.2: plan-chatgpt-poche (ChatGPT-generated, not real CAD)
+  // HONEST expectations (scripts/test-pdf-chatgpt-poche.ts has the same, against its truth). This file
+  // was used to FIND the Q.2 classes; the synthetic fixtures above prove them.
+  if (!touch) {
+    step("1440 plan-chatgpt-poche");
+    const file = "plan-chatgpt-poche.pdf";
+    const t0 = Date.now();
+    await upload(join(DIR, file));
+    const ms = Date.now() - t0;
+    const extra = await summaryLine(file, ms);
+    assert.equal(await tid(page, "pdf-scale-status").getAttribute("data-confidence"), "good", `${file}: scale good`);
+    assert.equal(await tid(page, "dim-row").count(), 12, `${file}: the twelve bare-mm dimensions are rows`);
+    assert.equal(await page.locator("[data-testid=dim-row][data-status=ok]").count(), 12, `${file}: all OK (the 2000 on the 5975's line measured on its own)`);
+    const cl = tid(page, "coverage-line");
+    // Chromium's tracing of this page is good enough that the merge keeps 5 traced walls (33–123 mm
+    // from the PDF's lines, round the corridor and bathrooms) and is no worse by the validator than the
+    // PDF alone, so rule 8b does not apply here (in Node, whose tracing is poorer, it does: 33 of 33).
+    assert.deepEqual([await cl.getAttribute("data-walls"), await cl.getAttribute("data-exact"), await cl.getAttribute("data-traced")], ["32", "27", "5"], `${file}: 27 of 32 walls exact, 5 traced`);
+    assert.equal(await tid(page, "coverage-pdf-only").count(), 0, `${file}: the merge stands (rule 8b not applied in Chromium)`);
+    const ol = (await tid(page, "coverage-openings-line").innerText()).trim();
+    assert.equal(ol, "13 of 13 openings read exactly (doors 6, windows 5, unclassified 2); 0 traced approximately; 2 arcs not used.", `${file}: openings line`);
+    const conflict = (await tid(page, "coverage-conflicts").locator("li").first().innerText()).trim();
+    assert.match(conflict, /^Window 1 \(.+\) conflicts with a wall ending inside it; not read\./, `${file}: W4 named as not read`);
+    assert.ok((await tid(page, "coverage-detached").locator("li[data-dropped=true]").count()) >= 1, `${file}: the title block left out and listed`);
+    const plan = await buildAndOpen();
+    assert.ok(plan.walls.length === 32 && plan.walls.filter((w) => w.provenance === "vector").length === 27, `${file}: 32 walls in the studio, 27 read from the PDF`);
+    const names = plan.rooms.map((r) => r.name).sort();
+    assert.deepEqual(names, ["Bathroom 1", "Bathroom 2", "Bedroom 2", "Bedroom 3", "Corridor / Living / Ffl +0.150", "Dining / Kitchen", "Master Bedroom", "Utility"], `${file}: the eight rooms the drawing closes`);
+    report.push(
+      `1440 ${file} (ChatGPT-generated, not real CAD): walls 27 exact, 5 traced (the merge stands; rule 8b not applied); "${ol}"; "${conflict.split(".")[0]}."; 12 dimensions read, 0 flagged; title block left out; rooms ${names.join(", ")}. Still wrong: 5 walls traced round the corridor and bathrooms, W4 (a partition ends inside it), D7 and OP1 unclassified, Dining + Kitchen and Living + Corridor one room each (the drawing); ${(ms / 1000).toFixed(1)} s`,
+      extra,
+    );
+    console.log(report.slice(-2).join("\n"));
+  }
+
   // ---------------------------------------------------------------- local real PDFs (never committed)
   if (!touch) {
     const local = existsSync("test-plans") ? readdirSync("test-plans").filter((f) => f.toLowerCase().endsWith(".pdf")) : [];
+    const planRows: Record<string, Row> = {};
     if (!local.length) report.push("test-plans/: no .pdf files, nothing extra to read");
     for (const f of local) {
       const t0 = Date.now();
@@ -783,9 +898,22 @@ async function session(browser: Browser, width: number, height: number, touch: b
       // Build it (the same path as the fixtures) and count how the doors are hinged. A real CAD
       // plan may well refuse to build; the row then says so instead of failing the whole run.
       let hinges = "not built";
+      const attr = async (id: string, name: string) => ((await tid(page, id).count()) ? Number(await tid(page, id).getAttribute(name)) : 0);
+      const row: Row = {
+        wallsExact: await attr("coverage-line", "data-exact"),
+        wallsTraced: await attr("coverage-line", "data-traced"),
+        openingsExact: await attr("coverage-openings-line", "data-exact"),
+        openingsTraced: await attr("coverage-openings-line", "data-traced"),
+        unclassified: await attr("coverage-openings-line", "data-unclassified"),
+        dimensions: rows,
+        flagged,
+        flaggedModel: flagged2,
+        rooms: 0,
+      };
       if (!err && (await tid(page, "scale-found").count())) {
         try {
           const built = await buildAndOpen();
+          row.rooms = built.rooms.length;
           writeFileSync(join(TMP, `${f}.plan.json`), JSON.stringify({ plan: built, pdf }, null, 1)); // for a by-hand truth comparison (step X.1)
           const doors = built.openings.filter((o) => o.kind === "door");
           hinges = `hinge a ${doors.filter((o) => (o.hinge ?? "a") === "a").length}, hinge b ${doors.filter((o) => o.hinge === "b").length}`;
@@ -793,9 +921,26 @@ async function session(browser: Browser, width: number, height: number, touch: b
           hinges = `not built (${String(e).slice(0, 80)})`;
         }
       }
-      report.push(`test-plans/${f}: ${err ? `error "${err}"` : `${pdf?.kind}, ${walls}, ${openings}, ${hinges}, ${gaps}, ${rows} dimensions read, ${flagged} flagged in the first table, ${flagged2} in the second`}, ${((Date.now() - t0) / 1000).toFixed(1)} s`, extra);
+      report.push(`test-plans/${f}: ${err ? `error "${err}"` : `${pdf?.kind}, ${walls}, ${openings}, ${hinges}, ${gaps}, ${rows} dimensions read, ${flagged} flagged in the first table, ${flagged2} in the second, ${row.rooms} rooms`}, ${((Date.now() - t0) / 1000).toFixed(1)} s`, extra);
       console.log(report.slice(-2).join("\n"));
+      planRows[f] = row;
     }
+    // Step Q.2: the rows against the committed baseline (numbers only, from this Chromium run).
+    const base: Record<string, Row> = existsSync(BASELINE) ? JSON.parse(readFileSync(BASELINE, "utf8")) : {};
+    if (process.env.E2E_WRITE_BASELINE) {
+      writeFileSync(BASELINE, JSON.stringify({ ...base, ...planRows }, null, 1) + "\n");
+      report.push(`test-plans baseline written for ${Object.keys(planRows).join(", ")} (E2E_WRITE_BASELINE)`);
+    } else
+      for (const [f, row] of Object.entries(planRows)) {
+        const b = base[f];
+        if (!b) {
+          report.push(`test-plans/${f}: no baseline yet (run with E2E_WRITE_BASELINE=1 to record one)`);
+          continue;
+        }
+        const worse = (Object.keys(BASELINE_KEYS) as (keyof Row)[]).filter((k) => (BASELINE_KEYS[k] ? row[k] < b[k] : row[k] > b[k]));
+        assert.deepEqual(worse.map((k) => `${k} ${b[k]} -> ${row[k]}`), [], `test-plans/${f}: worse than its baseline`);
+        report.push(`test-plans/${f}: no number worse than its baseline`);
+      }
   }
   // ------------------------------------------------- step F.1: Build model's plan wins over a restore
   // The failure logged in docs/HANDOFF.md: on the SECOND PDF in one browser, a wall's panel said

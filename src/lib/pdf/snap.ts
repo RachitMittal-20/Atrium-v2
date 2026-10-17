@@ -53,6 +53,17 @@
  * misses a wall (drawn as one line, diagonal, curved) leaves free ends, so it merges as before.
  * A merge that already used every PDF wall is kept as it is (with its snapping record).
  *
+ * Detached groups (step Q.2, walls.ts rule 7b) are carried to the coverage report in plan metres the
+ * same way, whatever the merge decides: each dropped title block and each kept separate building.
+ *
+ * Rule 8b (step Q.2): a drawing may leave a wall end free for real (a nib or wing wall, a wall that
+ * stops short), and then rule 8 fails and the merge's validator rounds drop wall after wall around it.
+ * So when rule 8 fails, the PDF's walls are merged once more with no rounds and no fallback (`keepAll`),
+ * and that plan is used when it keeps EVERY PDF wall, has strictly FEWER validator problems than the
+ * merged plan and closes no fewer rooms. `pdfOnly` is set, and Coverage.freeEnds (every coverage has
+ * it) lists the free ends left, which the review counts. plan-single-line, whose merge is clean, is
+ * never beaten: no plan has fewer than zero problems.
+ *
  * Out-of-range gaps (step M.1d): walls.ts reports every collinear gap outside 0.45–4 m
  * that it did not read as an opening; they are carried to the coverage report in plan
  * metres whatever the merge decides, so nothing is dropped silently.
@@ -111,6 +122,7 @@ import { validatePlan } from "@/lib/plan/validate";
 import { BlueprintError, type BuildReport, type PlanScale } from "@/types/blueprint";
 import type { Opening, OpeningKind, Plan, SwingSide, Vec2, Wall } from "@/types/plan";
 import type { OpeningClass, PdfInfo, UnusedArc, VectorWalls } from "@/types/pdf";
+import { formatLength, STUDIO_DP, type LengthUnit } from "@/lib/units/format";
 import { OPENING_WIDTH } from "./openings";
 
 export const SNAP_PX = { near: 2, move: 3 };
@@ -164,6 +176,13 @@ export interface Coverage {
   /** Step Q.1: line work left out as furniture (walls.ts `furniture`), in PLAN metres: each group's
    *  kind, piece count, footprint size (w along x, d along y) and centre, for the review screen. */
   furniture: { kind: "loop" | "island" | "small"; walls: number; size: { w: number; d: number }; centre: Vec2 }[];
+  /** Step Q.2 (walls.ts rule 7b): groups joined to nothing in the building and lying outside it, in
+   *  PLAN metres: the footprint's corners as read, its size, whether it was dropped (title-block or
+   *  border evidence) or kept, and why. The review outlines each one. */
+  detached: { walls: number; min: Vec2; max: Vec2; size: { w: number; d: number }; dropped: boolean; why: string }[];
+  /** Step Q.2 (walls.ts): openings not read because a wall ends inside them or crosses them, in PLAN
+   *  metres (jambs on the centre line). The review names each one (conflictText) and boxes it. */
+  conflicts: { kind: OpeningKind; a: Vec2; b: Vec2; width: number; thickness: number; why: string }[];
   /** Fallbacks and refused snaps, in plain words. */
   notes: string[];
   /** Plan (0, 0) in page metres at the scale in use. */
@@ -174,6 +193,9 @@ export interface Coverage {
   fellBack: boolean;
   /** Step Q.1 (rule 8): true when the walls were read entirely from the PDF and the tracing was not used. */
   pdfOnly: boolean;
+  /** Step Q.2: the plan's free wall ends (plan metres), shared with no other wall. Rule 8b's PDF-only
+   *  plan may keep some; the review says how many. */
+  freeEnds: Vec2[];
 }
 
 type Seg = { a: Vec2; b: Vec2 };
@@ -271,6 +293,13 @@ export function buildPdfPlan(analysis: Analysis, pdf: PdfInfo, scale: PlanScale,
     const alone = mergeVector({ plan: { ...traced.plan, walls: [], openings: [] }, report: { ...traced.report, problems: [] } }, vector, { ...merge, forceTraced: [] });
     const complete = !alone.coverage.fellBack && alone.plan.walls.length === vector.walls.length && validatePlan(alone.plan).length === 0 && alone.report.freeEnds.length === 0 && deriveRooms(alone.plan).length >= 1;
     if (complete) out = { ...alone, coverage: { ...alone.coverage, pdfOnly: true } };
+    else {
+      // Rule 8b (step Q.2, header): every PDF wall kept, free ends and all, wins only when it is better
+      // by the validator than what the merge produced and closes no fewer rooms.
+      const all = mergeVector({ plan: { ...traced.plan, walls: [], openings: [] }, report: { ...traced.report, problems: [] } }, vector, { ...merge, forceTraced: [], keepAll: true });
+      const better = validatePlan(all.plan).length < validatePlan(out.plan).length && deriveRooms(all.plan).length >= deriveRooms(out.plan).length;
+      if (all.plan.walls.filter((w) => w.provenance === "vector").length >= vector.walls.length && all.coverage.traced === 0 && better) out = { ...all, coverage: { ...all.coverage, pdfOnly: true } };
+    }
   }
   const now = new Date().toISOString(); // real creation times, as buildFromAnalysis stamps them
   return { ...out, plan: { ...out.plan, meta: { ...out.plan.meta, createdAt: now, updatedAt: now } } };
@@ -280,7 +309,7 @@ export function buildPdfPlan(analysis: Analysis, pdf: PdfInfo, scale: PlanScale,
 export function mergeVector(
   traced: { plan: Plan; report: BuildReport },
   vector: VectorWalls,
-  o: { pxPerM: number; pxPerPt: number; rasterOrigin?: Vec2; labels: Analysis["labels"]; forceTraced: string[]; round?: number },
+  o: { pxPerM: number; pxPerPt: number; rasterOrigin?: Vec2; labels: Analysis["labels"]; forceTraced: string[]; round?: number; keepAll?: boolean },
 ): PdfBuild {
   const px = 1 / o.pxPerM; // one raster pixel in metres
   const mPerPt = o.pxPerPt / o.pxPerM;
@@ -610,14 +639,15 @@ export function mergeVector(
   const fresh = validatePlan(plan).filter((p) => !before.includes(shape(p)));
   const named = (p: string) => planWalls.filter((w) => w.provenance === "vector" && new RegExp(`\\b${w.id.replace(/\./g, "\\.")}\\b`).test(p)).map((w) => w.id.split(".s")[0]);
   const culprits = [...new Set(fresh.flatMap(named))].filter((id) => !o.forceTraced.includes(id));
-  if (fresh.length && culprits.length && (o.round ?? 0) < 3) {
+  // `keepAll` (rule 8b, step Q.2): no rounds and no fallback; the plan is returned with its problems.
+  if (!o.keepAll && fresh.length && culprits.length && (o.round ?? 0) < 3) {
     const next = mergeVector(traced, vector, { ...o, forceTraced: [...o.forceTraced, ...culprits], round: (o.round ?? 0) + 1 });
     next.coverage.notes.unshift(...culprits.map((id) => `Wall ${id} from the PDF was not used (its traced version is kept, if any): with it the plan had the problem "${fresh.find((p) => named(p).includes(id))}"`));
     return next;
   }
   const tracedRooms = deriveRooms(traced.plan).length;
   const rooms = deriveRooms(plan).length;
-  if (fresh.length || rooms < tracedRooms) {
+  if (!o.keepAll && (fresh.length || rooms < tracedRooms)) {
     const reason = fresh.length ? `reading the PDF's lines gave a problem the tracing didn't ("${fresh[0]}")` : `reading the PDF's lines closed ${rooms} rooms, fewer than the tracing's ${tracedRooms}`;
     return fallback(traced, o, vector, `The traced plan was used because ${reason}.`);
   }
@@ -654,6 +684,7 @@ export function mergeVector(
       mPerPt,
       fellBack: false,
       pdfOnly: false,
+      freeEnds: report.freeEnds,
     },
   };
 }
@@ -669,7 +700,7 @@ function openingCoverage(
   vector: VectorWalls,
   f: number,
   counts: { snapped: number; traced: number; added: number; replaced: number },
-): Pick<Coverage, "openings" | "tracedOpenings" | "unclassifiedOpenings" | "unusedArcs" | "outOfRangeGaps" | "furniture"> {
+): Pick<Coverage, "openings" | "tracedOpenings" | "unclassifiedOpenings" | "unusedArcs" | "outOfRangeGaps" | "furniture" | "detached" | "conflicts"> {
   const wall = new Map(plan.walls.map((w) => [w.id, w]));
   const mark = (o: Opening) => {
     const w = wall.get(o.wallId)!;
@@ -695,7 +726,24 @@ function openingCoverage(
     outOfRangeGaps: (vector.gaps ?? []).map((g) => ({ a: pageToPlan({ x: g.a.x * f, y: g.a.y * f }), b: pageToPlan({ x: g.b.x * f, y: g.b.y * f }), thickness: g.thickness * f, size: g.size * f })),
     // Step Q.1: what was left out as furniture, at the scale in use.
     furniture: (vector.furniture ?? []).map((x) => ({ kind: x.kind, walls: x.walls, size: { w: (x.box.x1 - x.box.x0) * f, d: (x.box.y1 - x.box.y0) * f }, centre: pageToPlan({ x: ((x.box.x0 + x.box.x1) / 2) * f, y: ((x.box.y0 + x.box.y1) / 2) * f }) })),
+    // Step Q.2: openings a wall ends inside (or crosses), not read, at the scale in use.
+    conflicts: (vector.conflicts ?? []).map((x) => ({ kind: x.kind, a: pageToPlan({ x: x.a.x * f, y: x.a.y * f }), b: pageToPlan({ x: x.b.x * f, y: x.b.y * f }), width: x.width * f, thickness: thicknessAt(vector, x) * f, why: x.why })),
+    // Step Q.2: detached groups, dropped or kept, at the scale in use.
+    detached: (vector.detached ?? []).map((x) => ({ walls: x.walls, min: pageToPlan({ x: x.box.x0 * f, y: x.box.y0 * f }), max: pageToPlan({ x: x.box.x1 * f, y: x.box.y1 * f }), size: { w: (x.box.x1 - x.box.x0) * f, d: (x.box.y1 - x.box.y0) * f }, dropped: x.dropped, why: x.why })),
   };
+}
+
+/** The thickness of the PDF wall an opening's jambs lie on (for its box on the review overlay), 0.1 m if none. */
+function thicknessAt(vector: VectorWalls, o: { a: Vec2; b: Vec2 }): number {
+  const mid = { x: (o.a.x + o.b.x) / 2, y: (o.a.y + o.b.y) / 2 };
+  const on = vector.walls.find((w) => Math.abs((w.b.x - w.a.x) * (mid.y - w.a.y) - (w.b.y - w.a.y) * (mid.x - w.a.x)) <= 1e-6 * Math.max(1, Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y)));
+  return on?.thickness ?? 0.1;
+}
+
+/** Step Q.2: one opening a wall ends inside, in plain words, as the review says it:
+ *  "Window 1 (1.20 m) conflicts with a wall ending inside it; not read." (`i` from 0). */
+export function conflictText(c: Coverage["conflicts"][number], i: number, unit: LengthUnit = "mm"): string {
+  return `${c.kind === "window" ? "Window" : "Door"} ${i + 1} (${formatLength(c.width, unit, STUDIO_DP.length)}) conflicts with ${c.why}; not read.`;
 }
 
 /** Dot product of two directions. */
@@ -753,6 +801,7 @@ function fallback(traced: { plan: Plan; report: BuildReport }, o: { pxPerM: numb
       mPerPt: o.pxPerPt / o.pxPerM,
       fellBack: true,
       pdfOnly: false,
+      freeEnds: freeEnds(namedPlan.walls),
     },
   };
 }

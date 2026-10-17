@@ -68,7 +68,7 @@ import type { PdfInfo } from "@/types/pdf";
 import type { Vec2 } from "@/types/plan";
 import { DimensionCheck } from "./DimensionCheck";
 import { Cancelled, checkFile, decodeImage, isPdf, runAnalysis, runPdf, STAGE_LABELS, type PdfPageSize } from "./importFile";
-import { CoveragePanel, PagePicker, PdfPanel } from "./PdfPanels";
+import { CoveragePanel, detachedLabel, PagePicker, PdfPanel } from "./PdfPanels";
 import { PlanViewer } from "./PlanViewer";
 import { primaryBtn, ScalePanel, secondaryBtn } from "./ScalePanel";
 
@@ -127,6 +127,7 @@ export default function ImportPage() {
   const router = useRouter();
   usePersistenceReady(); // start autosave here too, so the imported plan is saved and not replaced by an older save in /studio
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  const units = useUnitsStore((st) => st.length); // the overlay's detached-group labels (step Q.2)
   const [dragging, setDragging] = useState(false);
   const [chosen, setChosen] = useState<PlanScale | null>(null);
   const [picking, setPicking] = useState(false);
@@ -398,8 +399,18 @@ export default function ImportPage() {
                       const px = planToPixels(review.coverage, scaleInUse.pxPerM, phase.pdf?.rasterOrigin);
                       const toPx = (m: { id: string; a: Vec2; b: Vec2; thickness: number }) => ({ id: m.id, a: px(m.a), b: px(m.b), thickness: m.thickness * scaleInUse.pxPerM });
                       // Step M.1d: the gaps outside 0.45–4 m are highlighted too; `size` is dropped, the box is the gap.
-                      return { traced: review.coverage.tracedOpenings.map(toPx), unclassified: review.coverage.unclassifiedOpenings.map(toPx), gaps: review.coverage.outOfRangeGaps.map((g, i) => toPx({ id: `gap${i + 1}`, ...g })) };
+                      // Step Q.2: so are the openings a wall ends inside, which are not read either.
+                      return { traced: review.coverage.tracedOpenings.map(toPx), unclassified: review.coverage.unclassifiedOpenings.map(toPx), gaps: [...review.coverage.outOfRangeGaps.map((g, i) => toPx({ id: `gap${i + 1}`, ...g })), ...review.coverage.conflicts.map((x, i) => toPx({ id: `conflict${i + 1}`, ...x }))] };
                     })()
+                  : undefined
+              }
+              detached={
+                review && scaleInUse
+                  ? review.coverage.detached.map((d, i) => {
+                      // Step Q.2: each detached group's footprint, outlined with its size.
+                      const px = planToPixels(review.coverage, scaleInUse.pxPerM, phase.pdf?.rasterOrigin);
+                      return { id: `detached${i + 1}`, min: px(d.min), max: px(d.max), label: detachedLabel(d, units), dropped: d.dropped };
+                    })
                   : undefined
               }
             />

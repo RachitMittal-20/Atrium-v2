@@ -948,6 +948,20 @@ After the last fix every suite was rerun on the final tree, the whole sweep, one
 - **Fix (in the product, no assertion changed):** `snapIndex.ts` drops any point lying strictly inside (by more than 0.05 pt) a NARROW filled path (one whose box is at most 5 mm across), as a hidden 3D face is never a target (4.7c). Narrow only: a full-page white background fill must bury nothing. `test-snap-index.ts` (new in P.1) then checks every VISIBLE wall polygon vertex, and that every buried vertex is not indexed on the filled pages.
 - **Rerun:** after the fix, the cold build, and `npm run dev` restarted (pid 73843), the whole sweep ran again from its first suite, and all eleven passed first time, `e2e-background` included (3000.000 mm, the wall-end snap read as "endpoint").
 
+### Logged during Q.2 (2026-10-16): `e2e-pdf-import` failed on plan-dims-one-wrong's flagged row (a test bug in the new Q.2 expectation, not a flake)
+
+- **Failure.** `scripts/e2e-pdf-import.ts`, the 1440 fixture loop, `checkTable` (`e2e-pdf-import.ts:616`): `plan-dims-one-wrong.pdf: "5000 mm" flagged` — `'ok' !== 'flagged'`. Every earlier fixture in the loop had passed (plan-dims-chain just before it). First run of the suite with E2E_WRITE_BASELINE=1, so it never reached the test-plans rows.
+- **Server state.** `npm run dev` pid 64183, cwd `/Users/rachitmittal20/Atrium-v2`, started right after the cold build (`.next` deleted, build exit 0 in 12.6 s); `/studio` probed 200; `pgrep -fl "flake-hunt|scripts/e2e-"` empty; no source edited while it ran; the first suite on that server.
+- **Cause (deterministic, so not rerun before the fix).** A Playwright probe of the review screen showed the reader right: the reason "10 of 11 printed dimensions agree within 5%; the other one does not and is flagged", and the row printed "5000 mm" on the 4 m line flagged at 4.0000 m. But the fixture printed "5000 mm" TWICE: the deliberately wrong label and the house's own 5 m dimension (x 11, y 0–5), which is OK. The new expectation picked rows by their printed text, so it found the genuine one first.
+- **Fix (in the fixture, no product change, no older assertion changed):** the wrong label is now "5200 mm", a text no other dimension prints; `test-pdf-poche.ts` section 3b and the e2e's Q2 table name it.
+
+### Logged during Q.2 (2026-10-16): `e2e-pdf-import` failed on plan-chatgpt-poche's wall count (an expectation taken from Node, not a flake)
+
+- **Failure.** Second run (after the fix above), step "1440 plan-chatgpt-poche" (`e2e-pdf-import.ts:846`): `33 of 33 walls exact` — Chromium read `["32", "27", "5"]` (walls, exact, traced). Every fixture before it had passed, the twelve new synthetic ones included.
+- **Server state.** The same `npm run dev` (pid 64183), its second suite; nothing else on port 3000; no source edited while it ran (the fixture fix above was made between the runs, with no suite running).
+- **Cause (deterministic, so not rerun before the fix).** The row's numbers had been copied from the Node test. Node renders the page with @napi-rs/canvas, Chromium with its own rasteriser, so the TRACING differs, and so does the merge: in Node the merge falls back to a poor tracing and rule 8b uses the PDF alone (33 of 33, one free end); in Chromium the tracing is good enough that the merge keeps 27 PDF walls and 5 traced ones (33–123 mm from the PDF's lines, round the corridor and bathrooms), its validator is no worse than the PDF-only plan's, and rule 8b rightly does not replace it. A Playwright probe showed the rest of the review the same as Node's (13 of 13 openings, 12 dimensions OK, W4 named, the title block left out, the same eight rooms).
+- **Fix (in the test, no product change):** the e2e row now asserts what Chromium reads; the test-plans baseline is taken from Chromium for the same reason (as asked). The Node test keeps Node's honest numbers.
+
 ## 24. O.1 — self-hosted OCR: DONE (2026-10-14)
 
 - OCR makes no third-party request. Before: `worker.min.js` (124 kB) and `tesseract-core-simd-lstm.wasm.js` (3.9 MB) from jsdelivr, `eng.traineddata.gz` (2.95 MB, `@tesseract.js-data/eng` `4.0.0_best_int`) from jsdelivr, for both the image import and the PDF OCR fallback; tesseract.js and tesseract.js-core 5.1.1. Now served from `public/tesseract/` (about 11 MB with the non-SIMD core as fallback; under the 15 MB limit, so no LFS), config in `src/lib/blueprint/ocrAssets.ts`.
@@ -1147,3 +1161,120 @@ Still wrong, and why:
 - `npm test`: 36 suites, exit 0 (the two new ones included). `npx tsc --noEmit`: clean.
 - Cold build: dev server (pid 97906) stopped, `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`: exit 0 in 13 s. Both greps after the build: `clean`. (A first attempt raced the dev server's shutdown and left part of `.next`; it was deleted again and the build repeated cold.)
 - `npm run dev` restarted (pid 56965, `/studio` 200, nothing else on port 3000). One at a time, no source edited meanwhile: e2e-pdf-import (85 s), e2e-background (25 s), e2e-snap (22 s), e2e-takeoff (18 s), e2e-calibrate (43 s), e2e-studio (152 s), all exit 0 **first time**. No suite failed, so there is nothing new for the flake-hunt findings.
+
+## 27. Q.2 — poche walls, masks, centre lines and the title block (2026-10-16; not committed)
+
+**No real CAD PDF has been tested.** `test-plans/plan-test-2.pdf` is ChatGPT-generated, not a real CAD export.
+
+### 0. Prediction, written before the first fix (to be checked in §5)
+
+For plan-test-2.pdf once every planned rule is in, read in Node (the Chromium row may differ in the traced numbers only):
+
+- **Walls:** all 18 truth walls (the diagonal included) built exactly along the truth's centre lines at their thicknesses, 0 traced, read entirely from the PDF by rule 8b with **1 free end** left (the west end of INT_CORRIDOR_SOUTH, where the drawing leaves a 25 mm slot).
+- **Windows:** 5 of 6 exact (W1, W2, W3, W5, W6). W4 is not read and is reported by name, because INT_BEDROOM_2_3 ends inside it.
+- **Doors:** D1–D5 exact, each with the truth's hinge jamb and side; D6 exact as a double door; D7 (sliding) read at its exact jambs but unclassified, as a door (wrong type); OP1 (open passage) unclassified, as a door (wrong type).
+- **Rooms:** 8 closed: Master Bedroom, Bedroom 2, Bedroom 3, Bathroom 1, Bathroom 2, Utility, one Dining + Kitchen room (no wall is drawn between them) and one Living + Corridor room (the 25 mm slot), whose name also picks up "FFL +0.150".
+- **Dimensions:** 12 read, 0 flagged; scale "good" (the dimensions and the title block's 1:50 agree).
+
+### 1. The truth file against the drawing
+
+All 1798 segments, 38 texts, 32 black poche fills, 6 white fills and 746 clipped hatch strokes were extracted. The page maps as x_pt = 310 + 0.0566929·x_mm, y_pt = 875.551 − 0.0566929·y_mm (A2 landscape, 1:50); every poche rectangle, jamb, glazing line, arc and dimension end matches the truth to the 0.1 mm printed, and the 12 dimension values match their measured lengths to under 0.005 mm. The disagreements, which are not Atrium faults (all recorded in `tests/fixtures/pdf/plan-chatgpt-poche.truth.json`):
+
+- DIM09 "2000" (0–2000) and DIM03 "5975" (300–6275) are drawn on ONE dimension line (y −1000), overlapping.
+- No wall is drawn between Dining and Kitchen, though the truth gives two rooms and DIM04 / DIM05 measure to x 10450 / 10550.
+- INT_CORRIDOR_SOUTH stops 25 mm short of the bathroom block (a slot at y 3675–3700, x 4225–4300): Corridor and Living are one space, and its west end is a real free end.
+- INT_BEDROOM_2_3 ends inside window W4 (a partition meeting glass).
+- Wall ends mix conventions (faces for INT_BEDROOM_FRONT, INT_BATH_*, the corridor's west end; centre lines for INT_BEDROOM_2_3, INT_CORRIDOR_UTILITY); INT_LIVING_DINING's truth end is 50 mm past the corridor wall's centre line.
+- The diagonal ends 1.47 mm short of the north wall's centre line; INT_KITCHEN_UTILITY and INT_CORRIDOR_SOUTH meet 50 mm out of line.
+- Bedroom 2 / Bedroom 3's bounds assume a 100 mm partition; INT_BEDROOM_2_3 is 150 mm in the truth's own wall list and in the poche (Bedroom 3 is 2525 × 2500 mm as drawn).
+- Living's box stops at y 3525 though its area runs to 3700 under the bathrooms; "FFL +0.150" is printed inside Living.
+
+### 2. Diagnosis (before any fix, measured in Node; the plan's own numbers were 0 of 48 walls and 0 of 15 openings in Chromium)
+
+| Truth wall | What the PDF reader produced | First rule that broke it | |
+| --- | --- | --- | --- |
+| EXT_SOUTH, EXT_WEST, EXT_NORTH, EXT_EAST_LOWER, EXT_NOTCH_VERT | exact pieces cut up by 330 mm "walls": the six WHITE filled rectangles over the windows, which rule 2 read as walls; 6 mm stubs at their ends; every window gap blocked | rule 2 reads a paper-coloured mask as ink | certain |
+| the same, INT_LIVING_DINING, INT_CORRIDOR_UTILITY | stretched past the building to y −1000 / −1225 by extension lines paired into walls; the dimension lines 450 mm apart paired into a wall | rule 2 (annotation) off: the "2000" mismatch made the dimension band "none" | certain |
+| INT_BEDROOM_FRONT | nothing: the dash-dot centre line (y 6650) paired with the finish line (6730) into an 80 mm wall beside it; sliver loops; rule 6 dropped both | dashed lines taken as faces | certain |
+| INT_MASTER_SIDE | dropped as an island (its host gone, the diagonal not read) | rule 7, after the above | certain |
+| INT_MASTER_DIAGONAL | not read (rule 2 was axis-only); counted among "368 diagonal walls" | diagonals only counted | certain |
+| INT_BEDROOM_2_3 | exact, south end free, split at 9272 by W4's sill/glazing pair (213 mm) | the above, and the W4 defect | certain |
+| INT_CORRIDOR_SOUTH | exact; a 525 mm phantom paired the finish line (3495) with lines across the wall; west end free | rule 3 ignored filled walls' edges; the slot is the drawing's | certain |
+| INT_BATH_* (4), INT_KITCHEN_UTILITY | exact | — | certain |
+| everything | 0 exact: 85 PDF walls, with 8 title-block "walls" and 13 annotation walls with free ends; the merge dropped culprits for 3 rounds, then fell back to the whole tracing; rule 8 failed (free ends) | merge fallback, rule 8 | certain |
+
+- (a) Each wall piece between openings is its own filled rectangle (even-odd fill), exterior pieces overlapping a full thickness at the corners; rule 2 read them right. The 746 hatch lines are 0.1 pt grey strokes clipped per wall piece; the extractor ignored clips, so they arrived as 45° lines up to 10.2 m long: never axis faces, but the false "368 diagonal walls skipped". The dash-dot centre lines did break pairing (above). There is no insulation line; the finish lines are harmless beside poche except where one pairs ACROSS a wall. (certain)
+- (b) above. (certain, by experiment: with masks, dashes, hatching and the "2000" removed, the reading was 32 right walls + 12 junk; with the title block removed too, the PDF-only merge kept 24 of 36, losing the rest to free ends: W4, the diagonal, the slot.)
+- (c) D1–D3's arcs "not at a jamb" (their wall dropped); D4/D5 and the double door were right; D7 read as a window because the centre line through its gap counted as glazing; the windows lost to the masks; W4 blocked by the partition crossing its gap; every traced door hinge a because the image pipeline never reads hinges (by design) and everything ended traced. (certain)
+- (d) The three out-of-range gaps were annotation: 75 mm between INT_LIVING_DINING's poche end and an extension-line "wall" collinear with it; 150 and 100 mm between chained dimension lines in the 450 mm dimension-line "wall". (certain)
+- (e) The diagonal was not read and miscounted (368); both re-entrant corners and the utility T joined exactly. (certain)
+- (f) One row flagged: "2000", measured 5975 on DIM03's line (equal distance, first drawn wins); that one outlier made the spread 67%, the band "none", the scale the title block's "check", and switched annotation off. (certain)
+
+### 3. The fixes, one class at a time, each failing first on its own SYNTHETIC fixture
+
+Every fixture is a variant of plan-filled or plan-lines (`make-pdf-fixtures.ts`, new options default off; regenerating left every older PDF byte-identical, checked by md5 at every step, and every older truth entry identical). After every step the whole PDF suite ran and a snapshot of every older fixture's full reading and build (scale, rows, vector walls and openings, built walls, openings, rooms, coverage) was diffed against the step before. The holdout rule held: plan-test-2 was used to find each class, never to prove it.
+
+| # | Rule (drawing convention) | Fixture | Failing first |
+| --- | --- | --- | --- |
+| 1 | A fill in the paper's colour is a mask, not ink (extract.ts tracks the fill colour) | plan-poche-mask | 112 filled segments for 92; 35 wrong pieces read |
+| 2 | Dashed lines are never wall faces or opening lines (extract.ts marks `dashed`) | plan-centre-lines | w-HI and the west walls lost, 5 windows not read, the sliding door unclassified |
+| 3 | A dimension's text sits at the middle of its line (tie-break between equally near lines) | plan-dims-chain | "1500 mm" measured 4.000 m |
+| 3b | One wrong dimension is an outlier (as agreed: ≥ 5 agree within 5%, exactly one does not and is < 20% of all; never "good" with fewer than 5) | plan-dims-one-wrong | scale "check" from the title block |
+| 4 | A clip path hides what lies outside it (extract.ts clips every segment to the clip regions in force) | plan-poche-hatch | 608 hatch lines unclipped, 259 counted as diagonal walls |
+| 4b | Hatching is not a diagonal wall at a corner either (each line of a pair inside a wall) | synthetic hatched L, 0.3 m poche | 1 counted |
+| 5 | Rule 3 also sees a filled wall's edges | plan-finish-line | a 0.28 m phantom across the partition, w-HI moved 6 cm onto it |
+| 6 | A sheet holds more than the building (rule 7b): a group joined to nothing and outside the building is dropped only on EVIDENCE (title-block words inside it, or against the sheet's border / page edge), kept otherwise; reported either way, outlined on the overlay with its size; the building is the biggest box among groups WITHOUT evidence | plan-title-block, plan-outbuilding | 13 title-block "walls", the build 0 of 14 exact; the 4 × 3 m shed kept but not reported |
+| 7 | A window's own lines are never a wall (a pair within a bridged opening's span with a line inside the wall's band) | plan-window-sill | 5 window "islands" reported as furniture |
+| 8 | A wall closes a gap only by passing through it; an opening a wall then ends inside is not read and is REPORTED by name ("Window 1 (1.20 m) conflicts with a wall ending inside it; not read.") and boxed | plan-stem-in-window | the west wall broken at the window with free ends, the partition on the sill/glass pair, the window lost silently |
+| 9 | A filled rectangle is a wall at any angle, joined to the walls it meets | plan-poche-diagonal | the 45° wall not read, its partition ending free, two rooms one |
+| 10 | Rule 8b (done last, as agreed): when rule 8 fails, the PDF's walls alone, every one kept, are used only with STRICTLY fewer validator problems than the merged plan and no fewer rooms; the review says how many free ends remain | plan-free-end (a 1 m nib) | with a poor tracing (three traced walls 6 px off and 30 px short), the merge kept traced walls; the PDF alone was not tried |
+
+Notes on the way:
+- Step 6 first picked the building as the LONGEST group; the ruled title block (13 rows of 8 m) is longer than the house, so the house came out "detached". The building is now the biggest box among groups with no title-block or border evidence.
+- Step 6's footprint of plan-title-block's title block is 8.65 m, not its frame's 8.11 m: its right edge pairs with the sheet border 15.3 pt away, and that pair is part of the group as read.
+- Step 7 changed one older fixture's REPORT, not its reading: plan-window-board's window board (one line 0.1 m in front of its window) paired with a glazing line and was listed as a 1.20 × 0.27 m furniture "island"; it is now part of the window. No wall, opening or room changed.
+- Step 8 first counted a stem's span grown by half its thickness, which reaches the far face exactly (−0.05 − 0.05 = −0.1); only the drawn span counts.
+- Step 10: on plan-free-end as traced the merge TIES the PDF alone (one problem each: the nib's free end, traced), so the merge stands, as the rule says. Several variants (stroked walls, close dimensions, a second nib) all tied or came out "clean" by dropping walls (one merge kept 4 of 16 walls with 0 problems and 1 room), so the strict rule cannot fire on them; it was proven with a deliberately poor tracing. **This is the rule as agreed, and it has a gap: a merge that is clean only because its rounds dropped walls beats a complete PDF reading with one real free end.** A rule comparing walls kept or rooms first would catch it; not done.
+- Every other older-fixture snapshot change was a new empty field (`detached`, `conflicts`, `freeEnds`), checked by diff each time.
+
+### 4. plan-chatgpt-poche.pdf (plan-test-2) now
+
+Committed as `tests/fixtures/pdf/plan-chatgpt-poche.pdf` (43 KB), labelled ChatGPT-generated, not real CAD, with its trimmed truth and discrepancies, and `scripts/test-pdf-chatgpt-poche.ts` (in `npm test`).
+
+- **Node** (`test-pdf-chatgpt-poche.ts`): walls 33 exact of 33, 0 traced, read entirely from the PDF by rule 8b, 1 free end (the corridor wall's west end, at the drawing's 25 mm slot); every truth wall's centre line and thickness built end to end, the 45° wall included, but for the truth's own end convention (INT_LIVING_DINING 50 mm, the diagonal 1.5 mm); openings 13 exact of 13 (doors 6, windows 5, unclassified 2), D1–D5 with hinge jamb and side right, D6 double right; W4 not read, reported "Window 1 (1.40 m) conflicts with a wall ending inside it; not read."; 12 dimensions read, 0 flagged, scale good; title block left out and reported; 8 rooms: Master Bedroom, Bedroom 2, Bedroom 3 (6.31 m², 2525 × 2500 mm as drawn), Bathroom 1, Bathroom 2, Utility (7.875 m², the truth's), Dining / Kitchen, Corridor / Living / Ffl +0.150.
+- **Chromium** (the e2e row and the committed baseline): walls 27 exact of 32, 5 traced (33–123 mm from the PDF's lines, round the corridor and bathrooms: Chromium's tracing is good enough that the merge is no worse by the validator than the PDF alone, so rule 8b rightly does not replace it); openings 13 of 13 exact, 2 unclassified (wrong type); W4 named as not read; 12 dimensions read, 0 flagged in either table; 8 rooms, the same names. Before Q.2: 0 of 48 walls and 0 of 15 openings.
+
+**The prediction (§0) against the result.** Node: walls 18 of 18 truth walls, 0 traced, 1 free end — right. Windows 5 of 6 with W4 reported — right. D1–D5 with hinge and side, D6 double, D7 and OP1 unclassified — right. 8 rooms with Dining + Kitchen and Living + Corridor (+ "Ffl +0.150") merged — right, names exactly. 12 dimensions, 0 flagged, scale good — right. Chromium: the prediction said only the traced numbers might differ; in fact the WHOLE wall route differs (the merge stands with 5 traced walls, no PDF-only line, no free-end line). Openings, dimensions and rooms are the same in both.
+
+**Still wrong, and why:**
+- Chromium: 5 walls traced round the corridor and bathrooms (the merge keeps a tracing 33–123 mm off where it is clean, and rule 8b needs strictly fewer problems).
+- W4 is not read: a partition ends inside it (the drawing's defect); reported by name.
+- D7 (sliding) is drawn as two concentric lines covering 94% and 77% of the gap, not CAD's staggered panels; OP1 is an open passage, and the Plan has no passage kind. Both are unclassified doors.
+- Dining + Kitchen are one room (no wall drawn), Living + Corridor one room (the 25 mm slot): right by the drawing.
+- "FFL +0.150" is picked up as a room name (a level mark is not a name; not fixed).
+- Heights and sills are defaults (a PDF has none).
+
+### 5. Known failures and limits, asserted or recorded
+
+- Rule 8b's gap (above): a merge made clean by dropping walls beats a complete PDF reading with a real free end.
+- In Chromium, plan-stem-in-window's tracing still reads the window the partition ends in, and keeps it as a TRACED window clamped onto one side of the joint (the conflict is still named). A traced opening where the PDF reports a conflict could be dropped as M.2b drops phantoms; not done.
+- A detached outbuilding with title-block words inside its box (a shed labelled "SHED — SEE DRAWING 3") or drawn against the sheet border is dropped as a title block (reported and outlined, not silent). A building box holding title-block words could lose "the building" to a smaller group.
+- Diagonal walls: only FILLED rectangles are read; stroked diagonal pairs are still only counted. A diagonal is never split by an axis wall's end landing on its middle, and openings in diagonal walls are not read.
+- The one-outlier rule leaves a dimension band of fewer than 6 readings, or with two outliers, as before.
+- Q.1's known failures stand for SOLID lines (an off-centre line along a whole wall; a centre line collinear with a window's middle glazing line); a DASHED centre line no longer causes either.
+- Clipping is O(edges) per segment per clip region (`ponytail:` in extract.ts).
+
+### 6. Tests and checks
+
+- New in `npm test`: `scripts/test-pdf-poche.ts` (sections 1–10, 3b and 4b, each failing first; it imports test-pdf-conventions' helpers, which now export them, guarded by `require.main`, no assertion changed) and `scripts/test-pdf-chatgpt-poche.ts` (honest, Node).
+- `e2e-pdf-import.ts`: the 12 new fixtures go through every fixture check at 1440 with their differences stated per file (`Q2`); `checkQ2Review` checks the detached outlines and list, the conflict sentence and box, the outlier reason; plan-chatgpt-poche has its own honest Chromium row, built and opened; the test-plans rows are compared with `tests/fixtures/pdf/test-plans-baseline.json` (numbers only, written from the Chromium run with `E2E_WRITE_BASELINE=1`) and **fail** when any number is worse. Proven: with plan-test-2's baseline raised to 28 exact walls, the suite failed "worse than its baseline: wallsExact 28 -> 27"; the baseline was then restored.
+- **No existing assertion was changed.** test-pdf-conventions.ts only exports its helpers.
+
+**No real CAD PDF has been tested.** Both ChatGPT plans are generated stand-ins, and every rule is proven on synthetic fixtures only.
+
+### 7. Verification
+
+- `npm test`: 38 suites, exit 0 (the two new ones included). `npx tsc --noEmit`: clean.
+- Cold build: no dev server running (`lsof -i :3000` empty), `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`: exit 0 in 12.6 s. Both greps after the build (dev hooks incl. `__background`, and CDN): `clean`.
+- `npm run dev` started (pid 64183, `/studio` 200, nothing else on port 3000). `e2e-pdf-import` failed twice on the way, both logged in §23 before rerunning (a fixture text printed twice; an expectation copied from Node), then passed while writing the Chromium baseline, then failed ON PURPOSE against a doctored baseline (the harness check, restored after). No source under `src/` changed after the cold build (only scripts, fixtures and docs).
+- The final sweep, one suite at a time, no source edited meanwhile: e2e-pdf-import (110 s), e2e-background (22 s), e2e-snap (22 s), e2e-takeoff (17 s), e2e-calibrate (75 s), e2e-studio (147 s), all exit 0 first time.

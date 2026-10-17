@@ -30,7 +30,7 @@
 import { DOOR_SIZE, WINDOW_SIZE } from "@/data/samplePlan";
 import { paperName } from "@/lib/pdf/extract";
 import { OPENING_WIDTH } from "@/lib/pdf/openings";
-import { PDF_ONLY_LINE, type Coverage } from "@/lib/pdf/snap";
+import { conflictText, PDF_ONLY_LINE, type Coverage } from "@/lib/pdf/snap";
 import { formatLength, STUDIO_DP, type LengthUnit } from "@/lib/units/format";
 import { useUnitsStore } from "@/store/unitsStore";
 import type { PdfInfo } from "@/types/pdf";
@@ -161,6 +161,28 @@ export function furnitureLine(c: Pick<Coverage, "furniture">): string {
 }
 const FURNITURE_KIND = { loop: "Small closed loop", island: "Free-standing group", small: "Short piece joined to nothing" } as const;
 
+/** Step Q.2 (rule 8b): how many free wall ends the PDF-only plan keeps, and where, or "" when none. */
+export function freeEndsLine(c: Pick<Coverage, "freeEnds">, unit: LengthUnit = "mm"): string {
+  const n = c.freeEnds.length;
+  if (!n) return "";
+  const len = (m: number) => formatLength(m, unit, STUDIO_DP.length);
+  const where = c.freeEnds.slice(0, 3).map((p) => `x ${len(p.x)}, y ${len(p.y)}`).join("; ");
+  return `${count(n, "free wall end remains", "free wall ends remain")}, as the PDF draws ${n === 1 ? "it" : "them"} (${where}${n > 3 ? "; …" : ""} from the plan's top-left): a wall stopping short, or one the PDF does not draw. Check ${n === 1 ? "it" : "them"} on the plan.`;
+}
+
+/** Step Q.2: one detached group as the overlay labels it and the report lists it ("Left out: title
+ *  block, 8.65 × 3.53 m" or "Kept: separate building, 4.20 × 3.20 m"). */
+export function detachedLabel(d: Coverage["detached"][number], unit: LengthUnit = "mm"): string {
+  const len = (m: number) => formatLength(m, unit, STUDIO_DP.length);
+  return `${d.dropped ? "Left out: title block" : "Kept: separate building"}, ${len(d.size.w)} × ${len(d.size.d)}`;
+}
+
+/** Step Q.2: the detached-groups sentence (walls.ts rule 7b), or "" when there are none. */
+export function detachedLine(c: Pick<Coverage, "detached">): string {
+  const n = c.detached.length;
+  return n ? `${count(n, "group of walls lies", "groups of walls lie")} outside the building, joined to nothing in it, outlined on the plan:` : "";
+}
+
 /** The dropped-phantom sentence (step M.2b), or "" when nothing was dropped. */
 export function droppedLine(c: Coverage, unit: LengthUnit = "mm"): string {
   const d = c.droppedOpenings;
@@ -186,6 +208,11 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
           {PDF_ONLY_LINE}
         </p>
       )}
+      {c.pdfOnly && c.freeEnds.length > 0 && (
+        <p data-testid="coverage-free-ends" data-count={c.freeEnds.length}>
+          {freeEndsLine(c, unit)}
+        </p>
+      )}
       <p data-testid="coverage-openings-line" data-exact={c.openings.exact} data-total={c.openings.total} data-traced={c.openings.traced} data-unclassified={c.openings.unclassified} data-arcs={c.openings.arcsNotUsed}>
         {openingsLine(c)}
       </p>
@@ -199,6 +226,16 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
           <span aria-hidden className="mr-2 inline-block h-2.5 w-4 border-2 border-dashed border-overlay-door align-middle" />
           {gapsLine(c, unit)} A gap narrower than {len(OPENING_WIDTH[0])} is closed as wall; a wider one leaves the wall open. Draw or place them yourself.
         </p>
+      )}
+      {c.conflicts.length > 0 && (
+        <ul className="list-disc pl-5" data-testid="coverage-conflicts" data-count={c.conflicts.length}>
+          {c.conflicts.map((x, i) => (
+            <li key={i} data-kind={x.kind} data-width={x.width.toFixed(4)}>
+              <span aria-hidden className="mr-2 inline-block h-2.5 w-4 border-2 border-dashed border-overlay-door align-middle" />
+              {conflictText(x, i, unit)} Atrium never puts a wall&apos;s end inside an opening: place it again in the studio if it is real.
+            </li>
+          ))}
+        </ul>
       )}
       {c.openings.total > 0 && (
         <p className="text-sm text-smoke" data-testid="coverage-heights">
@@ -217,6 +254,21 @@ export function CoveragePanel({ coverage: c }: { coverage: Coverage }) {
                   {FURNITURE_KIND[f.kind]}, {len(f.size.w)} × {len(f.size.d)}
                 </span>
                 , centred at x {len(f.centre.x)}, y {len(f.centre.y)} from the plan&apos;s top-left ({count(f.walls, "piece", "pieces")})
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {c.detached.length > 0 && (
+        <details className="text-sm" open>
+          <summary className="cursor-pointer" data-testid="coverage-detached-line" data-count={c.detached.length} data-dropped={c.detached.filter((d) => d.dropped).length}>
+            <span aria-hidden className="mr-2 inline-block h-2.5 w-4 border-2 border-dashed border-overlay-end align-middle" />
+            {detachedLine(c)}
+          </summary>
+          <ul className="mt-1 list-disc pl-5 text-smoke" data-testid="coverage-detached">
+            {c.detached.map((d, i) => (
+              <li key={i} data-dropped={d.dropped} data-w={d.size.w.toFixed(4)} data-d={d.size.d.toFixed(4)}>
+                <span className="text-iron">{detachedLabel(d, unit)}</span> ({count(d.walls, "piece", "pieces")}): {d.why}
               </li>
             ))}
           </ul>

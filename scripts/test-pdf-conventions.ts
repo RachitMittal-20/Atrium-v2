@@ -67,21 +67,21 @@ import type { VectorPage } from "../src/types/pdf";
 import type { Truth } from "./make-pdf-fixtures";
 import { openNode, pdfjs, renderNode } from "./pdf-node";
 
-const DIR = join(__dirname, "../tests/fixtures/pdf");
+export const DIR = join(__dirname, "../tests/fixtures/pdf");
 const truths: Truth[] = JSON.parse(readFileSync(join(DIR, "truth.json"), "utf8"));
-const truth = (file: string) => truths.find((t) => t.file === file)!;
+export const truth = (file: string) => truths.find((t) => t.file === file)!;
 
-async function page(file: string): Promise<VectorPage> {
+export async function page(file: string): Promise<VectorPage> {
   const doc = await openNode(new Uint8Array(readFileSync(join(DIR, file))));
   const v = await extractVectorPage(pdfjs, await doc.getPage(truth(file).planPage));
   await doc.loadingTask.destroy();
   return v;
 }
 
-const HALF_MM = 0.0005;
-const d = (p: Vec2, q: Vec2) => Math.hypot(p.x - q.x, p.y - q.y);
+export const HALF_MM = 0.0005;
+export const d = (p: Vec2, q: Vec2) => Math.hypot(p.x - q.x, p.y - q.y);
 /** The truth wall a plan wall matches (both ends within tol, either way round), or undefined. */
-const sameWall = (w: { a: Vec2; b: Vec2; thickness: number }, walls: Truth["planWalls"], tol = HALF_MM) =>
+export const sameWall = (w: { a: Vec2; b: Vec2; thickness: number }, walls: Truth["planWalls"], tol = HALF_MM) =>
   walls.find((t) => ((d(w.a, t.a) <= tol && d(w.b, t.b) <= tol) || (d(w.a, t.b) <= tol && d(w.b, t.a) <= tol)) && Math.abs(w.thickness - t.thickness) <= tol);
 
 /** Distance from p to the segment ab. */
@@ -92,7 +92,7 @@ function toSegment(p: Vec2, s: { a: Vec2; b: Vec2 }): number {
 }
 
 /** True when walls on tw's centre line, at its thickness, cover it end to end (they may be split). */
-function covered(tw: Truth["planWalls"][number], walls: { a: Vec2; b: Vec2; thickness: number }[]): boolean {
+export function covered(tw: Truth["planWalls"][number], walls: { a: Vec2; b: Vec2; thickness: number }[]): boolean {
   const h = Math.abs(tw.a.y - tw.b.y) < 1e-9;
   const along = (p: Vec2) => (h ? p.x : p.y);
   const across = (p: Vec2) => (h ? p.y : p.x);
@@ -107,14 +107,14 @@ function covered(tw: Truth["planWalls"][number], walls: { a: Vec2; b: Vec2; thic
 }
 
 /** A VectorWalls reading moved to the truth's frame: walls and openings by the walls' origin. */
-function vectorFrame(vw: { walls: { a: Vec2; b: Vec2; thickness: number }[]; openings: { a: Vec2; b: Vec2; kind: string; class?: string; hingeEnd?: "a" | "b"; swingNormal?: Vec2; wallId: string }[] }) {
+export function vectorFrame(vw: { walls: { a: Vec2; b: Vec2; thickness: number }[]; openings: { a: Vec2; b: Vec2; kind: string; class?: string; hingeEnd?: "a" | "b"; swingNormal?: Vec2; wallId: string }[] }) {
   const o = { x: Math.min(...vw.walls.flatMap((w) => [w.a.x, w.b.x])), y: Math.min(...vw.walls.flatMap((w) => [w.a.y, w.b.y])) };
   const sh = (p: Vec2) => ({ x: p.x - o.x, y: p.y - o.y });
   return { walls: vw.walls.map((w) => ({ ...w, a: sh(w.a), b: sh(w.b) })), openings: vw.openings.map((op) => ({ ...op, a: sh(op.a), b: sh(op.b) })) };
 }
 
 /** Every true opening read from the PDF: kind, class, both jambs within 0.5 mm, and a door's hinge jamb and side. */
-function exactOpenings(file: string, ops: ReturnType<typeof vectorFrame>["openings"]): string[] {
+export function exactOpenings(file: string, ops: ReturnType<typeof vectorFrame>["openings"]): string[] {
   const t = truth(file);
   const wrong: string[] = [];
   for (const to of t.planOpenings) {
@@ -128,13 +128,13 @@ function exactOpenings(file: string, ops: ReturnType<typeof vectorFrame>["openin
 }
 
 /** Walls in page metres moved to the truth's frame (origin at their centre lines' top-left). */
-function toTruthFrame<W extends { a: Vec2; b: Vec2 }>(walls: W[]): W[] {
+export function toTruthFrame<W extends { a: Vec2; b: Vec2 }>(walls: W[]): W[] {
   const o = { x: Math.min(...walls.flatMap((w) => [w.a.x, w.b.x])), y: Math.min(...walls.flatMap((w) => [w.a.y, w.b.y])) };
   return walls.map((w) => ({ ...w, a: { x: w.a.x - o.x, y: w.a.y - o.y }, b: { x: w.b.x - o.x, y: w.b.y - o.y } }));
 }
 
 /** Analyse and build a fixture as the import page does (no OCR: the PDF's own text). */
-async function build(file: string) {
+export async function build(file: string) {
   const doc = await openNode(new Uint8Array(readFileSync(join(DIR, file))));
   const out = await analysePdfPage(pdfjs, await doc.getPage(truth(file).planPage), { pageCount: doc.numPages, render: renderNode, ocr: async () => ({ labels: [], words: [], error: null, rereads: [] }) });
   await doc.loadingTask.destroy();
@@ -142,7 +142,7 @@ async function build(file: string) {
 }
 
 /** Every wall built is a true wall, every true wall is built, all read from the PDF. */
-function exactWalls(file: string, b: Awaited<ReturnType<typeof build>>["b"]) {
+export function exactWalls(file: string, b: Awaited<ReturnType<typeof build>>["b"]) {
   const t = truth(file);
   const wrong = b.plan.walls.filter((w) => !sameWall(w, t.planWalls));
   assert.deepEqual(wrong.map((w) => `${w.id} ${w.provenance} (${w.a.x.toFixed(3)}, ${w.a.y.toFixed(3)})-(${w.b.x.toFixed(3)}, ${w.b.y.toFixed(3)}) t ${w.thickness}`), [], `${file}: every wall built is a true wall`);
@@ -383,7 +383,9 @@ async function main() {
   console.log("OK");
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+// The helpers above are shared with scripts/test-pdf-poche.ts (step Q.2), which imports this file.
+if (require.main === module)
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });

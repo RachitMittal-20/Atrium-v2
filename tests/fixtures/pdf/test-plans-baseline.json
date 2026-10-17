@@ -1,0 +1,24 @@
+{
+ "plan-test-2.pdf": {
+  "wallsExact": 27,
+  "wallsTraced": 5,
+  "openingsExact": 13,
+  "openingsTraced": 0,
+  "unclassified": 2,
+  "dimensions": 12,
+  "flagged": 0,
+  "flaggedModel": 0,
+  "rooms": 8
+ },
+ "plan-test.pdf": {
+  "wallsExact": 16,
+  "wallsTraced": 0,
+  "openingsExact": 10,
+  "openingsTraced": 0,
+  "unclassified": 1,
+  "dimensions": 9,
+  "flagged": 0,
+  "flaggedModel": 0,
+  "rooms": 5
+ }
+}
