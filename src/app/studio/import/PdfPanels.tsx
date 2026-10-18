@@ -181,10 +181,17 @@ export function VerdictBanner({ verdict }: { verdict: Verdict }) {
   );
 }
 
-/** The openings line (step M.1c), as the review screen and the tests read it. */
+/** The openings line (step M.1c), as the review screen and the tests read it. Step S.1: like the walls
+ *  line, it says how many openings MATCH features in the PDF, never "read exactly", and `openingsCaveat`
+ *  goes beside it when the plan is not Good. */
 export function openingsLine(c: Coverage): string {
   const o = c.openings;
-  return `${o.exact} of ${o.total} openings read exactly (doors ${o.doors}, windows ${o.windows}, unclassified ${o.unclassified}); ${o.traced} traced approximately; ${count(o.arcsNotUsed, "arc", "arcs")} not used.`;
+  return `${count(o.exact, "opening matches a feature", "openings match features")} in the PDF (doors ${o.doors}, windows ${o.windows}, unclassified ${o.unclassified}); ${o.traced} traced approximately; ${count(o.arcsNotUsed, "arc", "arcs")} not used.`;
+}
+
+/** Step S.1: the sentence that rides with the openings line when the plan is not Good, or "". */
+export function openingsCaveat(v: Verdict): string {
+  return v.level === "good" ? "" : `That counts matching features only, not whether the openings sit in a usable plan: the plan is "${VERDICT_LABEL[v.level]}".`;
 }
 
 /** The out-of-range gap sentence (step M.1d), or "" when there are none. */
@@ -201,7 +208,7 @@ export function furnitureLine(c: Pick<Coverage, "furniture">): string {
   const n = c.furniture.length;
   return n ? `${count(n, "group of lines was", "groups of lines were")} read as furniture or fixtures, not walls, and left out:` : "";
 }
-const FURNITURE_KIND = { loop: "Small closed loop", island: "Free-standing group", small: "Short piece joined to nothing" } as const;
+const FURNITURE_KIND = { loop: "Small closed loop", island: "Free-standing group", treads: "Stair treads or hatching", small: "Short piece joined to nothing" } as const;
 
 /** Step Q.2 (rule 8b): how many free wall ends the PDF-only plan keeps, and where, or "" when none. */
 export function freeEndsLine(c: Pick<Coverage, "freeEnds">, unit: LengthUnit = "mm"): string {
@@ -261,8 +268,14 @@ export function CoveragePanel({ coverage: c, verdict }: { coverage: Coverage; ve
           {freeEndsLine(c, unit)}
         </p>
       )}
-      <p data-testid="coverage-openings-line" data-exact={c.openings.exact} data-total={c.openings.total} data-traced={c.openings.traced} data-unclassified={c.openings.unclassified} data-arcs={c.openings.arcsNotUsed}>
-        {openingsLine(c)}
+      <p data-testid="coverage-openings-line" data-exact={c.openings.exact} data-total={c.openings.total} data-traced={c.openings.traced} data-unclassified={c.openings.unclassified} data-arcs={c.openings.arcsNotUsed} data-verdict={verdict.level}>
+        <span data-testid="coverage-openings-text">{openingsLine(c)}</span>
+        {verdict.level !== "good" && (
+          <>
+            {" "}
+            <strong data-testid="coverage-openings-caveat">{openingsCaveat(verdict)}</strong>
+          </>
+        )}
       </p>
       {c.droppedOpenings.length > 0 && (
         <p className="text-sm text-smoke" data-testid="coverage-dropped-line" data-dropped={c.droppedOpenings.length} data-sizes={c.droppedOpenings.map((o) => o.size.toFixed(4)).join(" ")}>

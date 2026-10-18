@@ -16,7 +16,8 @@
  *   plan-scanned.pdf   only a raster image of plan-filled (150 dpi, grey PNG)
  *   plan-single-line.pdf plan-filled with the bathroom's top wall (w-KM) drawn as ONE stroked
  *                      line as thick as the wall, as CAD often draws thin walls: no pair of
- *                      faces, so that wall can only be traced (step M.1b)
+ *                      faces, so in step M.1b that wall could only be traced; since step S.1 a
+ *                      stroke 50–600 mm wide is a wall, and it is read from the PDF
  *   plan-small-on-big.pdf (step X.1) plan-filled at 1:100 on an A0 landscape sheet, the
  *                      drawing and its title block in the middle and the rest of the sheet
  *                      empty: the page reader must render only the drawing's content box,
@@ -42,6 +43,17 @@
  *                      quarter-round sink (r 0.35 m, with a radius line), a chair back
  *                      (r 0.25 m, 120°), a stair's walking line (r 1.8 m, with a radius
  *                      line) and a quarter circle with NO leaf hinged at the bare gap's jamb
+ *   plan-single-stroke.pdf (step S.1, SYNTHETIC) every wall drawn as ONE stroked line on its centre
+ *                      line, as wide as the wall (230 mm exterior, 115 mm interior at 1:100),
+ *                      node to node with butt caps (so a half-thickness notch at each corner),
+ *                      broken at openings: line-leaf doors in all four hinge / side combinations,
+ *                      three-line windows, twelve thin stair treads against a partition, the
+ *                      plan-furniture set and ticked mm dimensions. -round and -square: the same
+ *                      with round or square caps; -mixed: the exterior walls as paired outlines
+ *                      drawn with a heavy 1.5 pt pen (53 mm at 1:100), the interior single strokes
+ *   plan-traced-wall.pdf (step S.1, SYNTHETIC) plan-filled with the bathroom's top wall (w-KM) drawn
+ *                      as an embedded PICTURE of a black bar, no vector line: the one wall only the
+ *                      tracing can see (plan-single-line's single stroke is read from the PDF since S.1)
  *   plan-outlined.pdf  plan-filled with NO text items: room names and the title block
  *                      "converted to outlines" (each string drawn by @napi-rs/canvas in
  *                      Arial and its ink turned into filled rectangles, row runs merged
@@ -79,6 +91,7 @@ import {
   degrees,
   endPath,
   fill,
+  LineCapStyle,
   lineTo,
   moveTo,
   PDFDocument,
@@ -89,6 +102,7 @@ import {
   pushGraphicsState,
   setDashPattern,
   setFillingGrayscaleColor,
+  setLineCap,
   setLineWidth,
   StandardFonts,
   stroke,
@@ -415,6 +429,17 @@ interface Options {
   /** Step H.1 (plan-strips): draw THESE walls instead of the sample's, with no openings: parallel
    *  strips that touch nothing, so the PDF has plenty of wall-like line work but no building. */
   strips?: typeof samplePlan.walls;
+  /** Step S.1 (plan-traced-wall): these walls drawn as an embedded picture of a black bar (their
+   *  footprint, half the thickness past each end), no vector line: only the tracing can see them. */
+  pictureWalls?: string[];
+  /** Step S.1 (plan-single-stroke): every wall as ONE stroked line on its centre line, node to node,
+   *  as wide as the wall (sample 0.2 m walls drawn 0.23 m, 0.1 m ones 0.115 m), broken at its
+   *  openings, with this line cap on every line of the page. `mixed`: the exterior walls drawn as
+   *  paired outlines (`walls` mode) with a heavy pen instead, the interior ones as single strokes. */
+  stroke?: { cap: "butt" | "round" | "square"; mixed?: boolean };
+  /** Step S.1: twelve thin stair treads, 1 m long and 0.22 m apart, standing on the south wall's
+   *  inside face (w-LF, 0.23 m: y 7.885) in the living room, x 4.3 to 6.72. */
+  stairs?: boolean;
   /** Step X.1 (plan-small-on-big): the sheet's size in points and where the drawing sits on it
    *  (added to every user-space position), so a small plan can sit on a big, mostly empty sheet. */
   sheet?: { name: string; size: [number, number]; shift: [number, number] };
@@ -506,6 +531,19 @@ const STRIKE_FIXTURE: FixtureOpening[] = [
   { id: "win-living-e", wallId: "w-CM", offset: 2.5, width: 1.2, style: "window3" },
   { id: "win-bath", wallId: "w-EL", offset: 1.5, width: 0.6, style: "window3" },
 ];
+/** plan-single-stroke (step S.1): doors with line leaves in all four hinge / side combinations (two
+ *  swings as Béziers, two as polylines) and every window as three thin lines across its gap. */
+const STROKE_FIXTURE: FixtureOpening[] = [
+  { id: "d-front", wallId: "w-BC", offset: 3, width: 1, style: "door", hinge: "a", side: 1, arc: "bezier" },
+  { id: "d-bed1", wallId: "w-BI", offset: 2.9, width: 0.9, style: "door", hinge: "b", side: 1 },
+  { id: "d-bed2", wallId: "w-IF", offset: 2, width: 0.9, style: "door", hinge: "a", side: -1, arc: "bezier" },
+  { id: "d-bath", wallId: "w-KL", offset: 1.5, width: 0.8, style: "door", hinge: "b", side: -1 },
+  { id: "win-bed1", wallId: "w-HA", offset: 2, width: 1.2, style: "window3" },
+  { id: "win-bed2", wallId: "w-GH", offset: 2, width: 1.2, style: "window3" },
+  { id: "win-living-n", wallId: "w-BC", offset: 5, width: 1.2, style: "window3" },
+  { id: "win-living-e", wallId: "w-CM", offset: 2.5, width: 1.2, style: "window3" },
+  { id: "win-bath", wallId: "w-EL", offset: 1.5, width: 0.6, style: "window3" },
+];
 /** plan-centre-lines (step Q.2): the sample's openings, with a sliding door on the living room's
  *  east wall (w-CM) and that wall's window moved along to make room, as plan-doors has them. */
 const CENTRE_FIXTURE: FixtureOpening[] = [
@@ -559,11 +597,14 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
   const pen = new Pen(page, font, view, k);
   pen.outlined = Boolean(o.outlined);
   if (k !== 1) pen.ops.push(pushGraphicsState(), concatTransformationMatrix(k, 0, 0, k, 0, 0));
+  if (o.stroke) pen.ops.push(setLineCap({ butt: LineCapStyle.Butt, round: LineCapStyle.Round, square: LineCapStyle.Projecting }[o.stroke.cap]));
 
   // Walls: one rectangle per piece between openings, extended by half its own
   // thickness at both ends so corners and T-junctions close.
-  const sourceWalls = o.strips ?? samplePlan.walls;
+  // Step S.1: a single-stroke plan's walls are 0.23 m and 0.115 m thick, as UK brick and block walls are.
+  const sourceWalls = (o.strips ?? samplePlan.walls).map((w) => (o.stroke ? { ...w, thickness: w.thickness > 0.15 ? 0.23 : 0.115 } : w));
   const sourceOpenings = o.strips ? [] : samplePlan.openings;
+  const pictures: [number, number, number, number][] = []; // step S.1: walls drawn as pictures, x y w h in user space
   for (const w of sourceWalls) {
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
     const d = { x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L };
@@ -573,6 +614,11 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
     // The sample's openings drawn as before, or plan-doors' (step M.1c) in their own styles.
     const styleOf = (op: Opening | FixtureOpening): FixtureOpening["style"] => ("style" in op ? op.style : op.kind === "window" ? "window3" : "door");
     const gaps = (o.doors ?? sourceOpenings).filter((op) => op.wallId === w.id).map((op) => [op.offset - op.width / 2, op.offset + op.width / 2, op] as const).sort((p, q) => p[0] - q[0]);
+    if (o.pictureWalls?.includes(w.id) && !gaps.length) {
+      const [p, q] = [at(-t / 2, -t / 2), at(L + t / 2, t / 2)];
+      pictures.push([Math.min(p[0], q[0]), Math.min(p[1], q[1]), Math.abs(q[0] - p[0]), Math.abs(q[1] - p[1])]);
+      continue;
+    }
     if (o.singleLine?.includes(w.id) && !gaps.length) {
       pen.line(at(-t / 2, 0), at(L + t / 2, 0), t * s); // one line as thick as the wall (butt caps)
       continue;
@@ -603,9 +649,15 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
       if (fo?.arc === "bezier") pen.bezArc(c, r * s, a0, sweep, 0.35);
       else pen.polyArc(c, r * s, a0, sweep, 16, 0.35);
     };
-    let from = -t / 2;
+    // Step S.1: a wall as one stroke on its centre line, from node to node (no half-thickness overrun),
+    // broken at its openings; in the mixed plan only the interior walls, the exterior ones outlined
+    // with a heavy pen.
+    const single = o.stroke && !(o.stroke.mixed && t > 0.15);
+    const pen0 = o.stroke ? 1.5 : 0.5;
+    let from = single ? 0 : -t / 2;
     for (const [g0, g1, op] of gaps) {
-      pen.poly([at(from, -t / 2), at(g0, -t / 2), at(g0, t / 2), at(from, t / 2)], o.walls, 0.5);
+      if (single) pen.line(at(from, 0), at(g0, 0), t * s);
+      else pen.poly([at(from, -t / 2), at(g0, -t / 2), at(g0, t / 2), at(from, t / 2)], o.walls, pen0);
       from = g1;
       const style = styleOf(op);
       const fo = "style" in op ? op : null;
@@ -634,7 +686,8 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
         pen.arc(at(g0, 0), at(g0, r), at(g1, 0), r * s, 0.35);
       }
     }
-    pen.poly([at(from, -t / 2), at(L + t / 2, -t / 2), at(L + t / 2, t / 2), at(from, t / 2)], o.walls, 0.5);
+    if (single) pen.line(at(from, 0), at(L, 0), t * s);
+    else pen.poly([at(from, -t / 2), at(L + t / 2, -t / 2), at(L + t / 2, t / 2), at(from, t / 2)], o.walls, pen0);
     if (o.centreLines) pen.dashed(at(0, 0), at(L, 0), 0.15);
     if (o.clipHatch && t > 0.15) {
       let u0 = -t / 2;
@@ -687,6 +740,7 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
     rect(5.5, 1.5, 6.0, 2.0, "fill");
   }
   if (o.centreLines) pen.line(P(0.1, 4.08), P(3.95, 4.08), 0.18); // a finish line 30 mm off w-HI's face
+  if (o.stairs) for (let i = 0; i < 12; i++) pen.line(P(4.3 + 0.22 * i, 6.885), P(4.3 + 0.22 * i, 7.885), 0.25); // treads on w-LF's face
   if (o.nib) pen.poly([P(7.95, 0.1), P(8.05, 0.1), P(8.05, 1.1), P(7.95, 1.1)], o.walls, 0.5);
   if (o.diagonal) {
     pen.poly([P(1.95, 3.95), P(2.05, 3.95), P(2.05, 6.55), P(1.95, 6.55)], "fill");
@@ -875,6 +929,11 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
 
   if (k !== 1) pen.ops.push(popGraphicsState());
   pen.flush();
+  // plan-traced-wall's walls: a 4 px black PNG stretched over each footprint.
+  if (pictures.length) {
+    const black = await doc.embedPng(await sharp({ create: { width: 4, height: 4, channels: 3, background: { r: 0, g: 0, b: 0 } } }).png().toBuffer());
+    for (const [x, y, width, height] of pictures) page.drawImage(black, { x, y, width, height });
+  }
   // plan-outlined's dimension texts: pictures, the text's bottom 0.3 size under the baseline.
   for (const im of pen.images) {
     const { png, wPt, hPt } = await textPng(im.str, im.size);
@@ -989,7 +1048,8 @@ export async function writePdfFixtures(): Promise<Truth[]> {
   truths.push(await make("plan-clutter.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", clutter: true })) })));
   truths.push(await make("plan-broken-dims.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", broken: true })) })));
   truths.push(await make("plan-outlined.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", outlined: true })), texts: [] })));
-  truths.push(await make("plan-single-line.pdf", async (d, f) => ({ ...plain, expectedScale: "good", tracedWalls: ["w-KM"], ...(await drawPlan(d, f, { walls: "fill", dims: "mm", singleLine: ["w-KM"] })) })));
+  truths.push(await make("plan-single-line.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", singleLine: ["w-KM"] })) })));
+  truths.push(await make("plan-traced-wall.pdf", async (d, f) => ({ ...plain, expectedScale: "good", tracedWalls: ["w-KM"], ...(await drawPlan(d, f, { walls: "fill", dims: "mm", pictureWalls: ["w-KM"] })) })));
   truths.push(await make("plan-doors.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", doors: DOOR_FIXTURE })) })));
   truths.push(await make("plan-doors-rect.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", doors: RECT_FIXTURE })) })));
   truths.push(await make("plan-gaps.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", doors: GAP_FIXTURE, decoys: false })) })));
@@ -1071,6 +1131,15 @@ export async function writePdfFixtures(): Promise<Truth[]> {
   // Written but NOT in truth.json: it has no building, so the generic "every fixture reads its walls exactly"
   // loops (which would need vector walls kept in the plan) do not apply; scripts/test-pdf-verdict.ts reads the file itself.
   await make("plan-strips.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", strips: STRIPS })) }));
+  // Step S.1: walls as single centre-line strokes (stroke), with butt, round and square caps, and mixed
+  // with heavy-pen paired outlines; stairs and furniture on every one.
+  for (const [file, stroke] of [
+    ["plan-single-stroke.pdf", { cap: "butt" }],
+    ["plan-single-stroke-round.pdf", { cap: "round" }],
+    ["plan-single-stroke-square.pdf", { cap: "square" }],
+    ["plan-single-stroke-mixed.pdf", { cap: "butt", mixed: true }],
+  ] as const)
+    truths.push(await make(file, async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", doors: STROKE_FIXTURE, decoys: false, stroke, stairs: true, furniture: true })) })));
   truths.push(await make("plan-no-dims.pdf", async (d, f) => ({ ...plain, expectedScale: "check", ...await drawPlan(d, f, { walls: "fill", dims: null }), dims: [] })));
   // The scan: plan-filled rendered at 150 dpi, embedded as one grey PNG filling the page.
   const { file: _file, pages: _pages, ...filled } = truths[0];

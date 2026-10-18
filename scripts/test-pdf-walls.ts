@@ -18,7 +18,8 @@
  *     the two tag boxes dropped as clutter; and with Chromium's noisy trace of the same
  *     page (tests/fixtures/pdf/clutter-chromium-trace.json, from the browser test) still
  *     exactly the 14, the four rooms and nine openings, the noise left out and reported;
- *   - plan-single-line: the wall drawn as one line is traced (within 4 px), the rest exact,
+ *   - plan-traced-wall (step S.1; plan-single-line until then): the wall drawn as a picture is traced
+ *     (within 4 px), the rest exact; plan-single-line's one-line wall is read from the PDF since S.1,
  *     rooms and validator intact;
  *   - pairing rules on synthetic segments: gap 0.05 and 0.60 pair, 0.04 and 0.61 don't;
  *     60% overlap pairs, 59% doesn't; a filled rectangle is a pair; the widest pair wins
@@ -209,10 +210,11 @@ async function main() {
     );
   }
 
-  // ------------------------------------------------------------ plan-single-line: a wall only the tracing can see
+  // ------------------------------------------------------------ plan-traced-wall: a wall only the tracing can see
+  // (step S.1: these were plan-single-line's assertions; its one stroke is a wall read from the PDF now, below)
   {
-    const { analysis, pdf, t, scale } = await read("plan-single-line.pdf");
-    assert.equal(pdf.vectorWalls!.walls.length, 12, "single line: the PDF's faces give 12 walls (w-KM is one line, so the east wall is not split at M)");
+    const { analysis, pdf, t, scale } = await read("plan-traced-wall.pdf");
+    assert.equal(pdf.vectorWalls!.walls.length, 12, "single line: the PDF's faces give 12 walls (w-KM is a picture, so the east wall is not split at M)");
     const b = buildPdfPlan(analysis, pdf, scale);
     const c = b.coverage;
     const px = 1 / scale.pxPerM;
@@ -232,7 +234,18 @@ async function main() {
     assert.ok(b.plan.walls.filter((w) => w.provenance === "traced").every((w) => sameWall(w, t.planWalls, 4 * px)), "single line: the traced walls within 4 px");
     assert.deepEqual(validatePlan(b.plan), [], "single line: validator clean");
     assert.deepEqual(b.plan.rooms.map((r) => r.name).sort(), ["Bathroom", "Bedroom 1", "Bedroom 2", "Living Room"], "single line: the four rooms");
-    console.log(`plan-single-line.pdf: ${c.exact} exact, ${c.traced} traced (${c.tracedWalls.map((w) => `${w.id}: ${w.reason}`).join("; ")}); notes: ${c.notes.join(" | ")}`);
+    console.log(`plan-traced-wall.pdf: ${c.exact} exact, ${c.traced} traced (${c.tracedWalls.map((w) => `${w.id}: ${w.reason}`).join("; ")}); notes: ${c.notes.join(" | ")}`);
+  }
+
+  // ------------------------------------------------------------ plan-single-line: its one-line wall is read (step S.1)
+  {
+    const { analysis, pdf, t, scale } = await read("plan-single-line.pdf");
+    assert.equal(pdf.vectorWalls!.walls.length, 14, "single line: 14 walls, w-KM from its one stroke (the east wall split at M)");
+    const b = buildPdfPlan(analysis, pdf, scale);
+    assert.ok(b.coverage.exact === t.planWalls.length && b.coverage.traced === 0, `single line: ${b.coverage.exact} exact, ${b.coverage.traced} traced`);
+    const match = (w: { a: Vec2; b: Vec2; thickness: number }, ts: Truth["planWalls"]) => ts.find((tw) => sameWall(w, [tw], HALF_MM) && Math.abs(w.thickness - tw.thickness) <= HALF_MM);
+    assert.ok(b.plan.walls.every((w) => match(w, t.planWalls)) && t.planWalls.every((tw) => b.plan.walls.some((w) => match(w, [tw]))), "single line: every wall within 0.5 mm, thickness too");
+    console.log(`plan-single-line.pdf: ${b.coverage.exact} of ${b.plan.walls.length} exact (w-KM read from its one 0.1 m stroke)`);
   }
 
   // ------------------------------------------------------------ pairing rules

@@ -44,7 +44,8 @@
  *      free ends and at least one room, that plan is used, and the review says "Walls read entirely
  *      from the PDF; the picture tracing was not used." The tracing of plan-dims-close and
  *      plan-window-board fuses the annotation near the walls into walls 37–262 mm off, which kept
- *      their groups traced. plan-single-line (a wall the PDF draws as one line) still merges.
+ *      their groups traced. plan-traced-wall (a wall the PDF draws as a picture; plan-single-line until
+ *      step S.1 read its one-line wall) still merges.
  *   9. A face bounds a wall on one side only (walls.ts; added in Q.1 beyond the agreed list): where
  *      two pairs use one line as a face from opposite sides over the same stretch, the longer is the
  *      wall and the shorter something standing against it (plan-against-wall: the bath's edges
@@ -363,9 +364,9 @@ async function main() {
       assert.equal(r.b.coverage.openings.exact, t.planOpenings.length, `${file}: every opening from the PDF (${r.b.coverage.openings.exact} of ${t.planOpenings.length})`);
       rows.push(`${file} ${r.b.coverage.exact}/${r.b.coverage.walls} walls exact, ${r.b.coverage.openings.exact}/${t.planOpenings.length} openings, rooms ${r.b.plan.rooms.map((x) => x.name).join(", ")}`);
     }
-    const single = await build("plan-single-line.pdf");
-    assert.ok(!single.b.coverage.pdfOnly && single.b.coverage.traced >= 1, "plan-single-line: the wall the PDF draws as one line is traced, merged as before");
-    console.log(`8. PDF reading on its own: ${rows.join("; ")}; plan-single-line merged as before (${single.b.coverage.exact} exact, ${single.b.coverage.traced} traced)`);
+    const single = await build("plan-traced-wall.pdf");
+    assert.ok(!single.b.coverage.pdfOnly && single.b.coverage.traced >= 1, "plan-traced-wall: the wall the PDF draws as a picture is traced, merged as before");
+    console.log(`8. PDF reading on its own: ${rows.join("; ")}; plan-traced-wall merged as before (${single.b.coverage.exact} exact, ${single.b.coverage.traced} traced)`);
   }
 
   // ------------------------------------------------------------ 9. a face bounds a wall on one side only

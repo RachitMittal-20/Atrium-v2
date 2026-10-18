@@ -7,7 +7,7 @@
  *     reference = the printed value with the printed text as its note, and every status OK —
  *     the rows measure the built model and the model agrees with the drawing;
  *   - the basis says where each row stands: "PDF exact" on walls read from the PDF, and
- *     "Traced approximate" (so the panel says "approximate") on plan-single-line's traced wall;
+ *     "Traced approximate" (so the panel says "approximate") on plan-traced-wall's traced wall;
  *   - a misprinted dimension (4100 mm on a 4 m line) arrives Flagged, and an override typed on
  *     the review screen is carried with its note and kept BESIDE the measured value;
  *   - a calibration of 1.01 turns every row Flagged (the printed numbers no longer match the
@@ -75,10 +75,10 @@ async function main() {
 
   // ---------------------------------------------------------------- a traced wall makes its row approximate
   {
-    const single = await build("plan-single-line.pdf");
+    const single = await build("plan-traced-wall.pdf");
     const kinds = new Set(rowsOf(single.plan).map((r) => r.basis));
     assert.ok(kinds.has("Traced approximate"), `a row across the traced wall says approximate (bases: ${[...kinds].join(", ")})`);
-    console.log(`plan-single-line: bases ${[...kinds].join(", ")} — the rows on the traced wall are approximate`);
+    console.log(`plan-traced-wall: bases ${[...kinds].join(", ")} — the rows on the traced wall are approximate`);
   }
 
   // ---------------------------------------------------------------- a misprint, and an override beside the measured value

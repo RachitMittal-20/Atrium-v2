@@ -33,9 +33,12 @@
  *     outlined page's names come from OCR and are printed, not asserted); a wall's
  *     panel says "Read from PDF", a traced one "Traced, approximate", and after an edit
  *     "Edited";
- *   - plan-single-line: the wall drawn as one line is traced, dashed on the overlay and
- *     listed; its panel says "Traced, approximate"; traced walls within 4 raster px;
- *   - at 390 the new fixtures (plan-clutter, plan-broken-dims, plan-outlined, plan-single-line) and
+ *   - plan-traced-wall (step S.1; plan-single-line until then): the wall drawn as a picture is traced,
+ *     dashed on the overlay and listed; its panel says "Traced, approximate"; traced walls within 4
+ *     raster px. plan-single-line and the four plan-single-stroke fixtures (walls drawn as one thick
+ *     stroke, step S.1) read every wall from the PDF and are Good, like the others;
+ *   - at 390 the new fixtures (plan-clutter, plan-broken-dims, plan-outlined, plan-traced-wall,
+ *     plan-single-stroke) and
  *     plan-filled go through the same checks by touch, and the PDF and scale panels sit
  *     above the dimension tables;
  *   - plan-outlined's text is read by OCR; its files are served from /tesseract/, so no request
@@ -44,7 +47,7 @@
  *     overridden, and the CSV holds both tables.
  * Step M.1c (doors, windows and swings from the PDF's lines), plan-doors.pdf at 1440 and
  * 390 (real touch), through the real file input:
- *   - the openings line ("11 of 11 openings read exactly (doors 6, windows 4, unclassified
+ *   - the openings line ("11 openings match features in the PDF (doors 6, windows 4, unclassified
  *     1); 0 traced approximately; 4 arcs not used"), the default-height line, no traced
  *     opening boxed and one unclassified one boxed on the overlay, as wide as the bare gap;
  *     the model table's two printed opening widths say "opening width" and are OK;
@@ -145,14 +148,18 @@ const COVERAGE = /^(\d+) (?:wall matches a line|walls match lines) in the PDF \(
 /** Step H.1: worst to best, for the verdict compared with the baseline. */
 const VERDICT_RANK = { good: 0, check: 1, unusable: 2 } as const;
 /** Fixtures checked at 390 by touch (besides the two-page picker). */
-const PHONE = ["plan-filled.pdf", "plan-clutter.pdf", "plan-broken-dims.pdf", "plan-outlined.pdf", "plan-single-line.pdf", "plan-doors.pdf", "plan-doors-rect.pdf", "plan-gaps.pdf"];
+// Step S.1: plan-traced-wall is the traced-wall fixture now (plan-single-line's stroke is read), and plan-single-stroke joins.
+const PHONE = ["plan-filled.pdf", "plan-clutter.pdf", "plan-broken-dims.pdf", "plan-outlined.pdf", "plan-traced-wall.pdf", "plan-single-stroke.pdf", "plan-doors.pdf", "plan-doors-rect.pdf", "plan-gaps.pdf"];
 /** Fixtures whose openings and door hinges are checked in full (step M.1c, M.1d). */
 const DOOR_FILES = ["plan-doors.pdf", "plan-doors-rect.pdf"];
 /** The out-of-range-gap fixture (step M.1d): checked for its gap report, not for exact walls. */
 const GAP_FILE = "plan-gaps.pdf";
 const GAPS = /(\d+) gaps? outside ([\d'".\- \/a-z]+) to ([\d'".\- \/a-z]+) (?:was|were) not read as openings \(sizes: ([^)]+)\)\./;
 /** Step Q.1: the fixtures whose tracing is worse than their PDF reading (rule 8). */
-const PDF_ONLY_FILES = ["plan-dims-close.pdf", "plan-window-board.pdf", "plan-poche-diagonal.pdf"];
+// Step S.1: butt caps leave a notch at every corner, so the tracing breaks there and the PDF's strokes stand
+// alone (plan-single-stroke, and the mixed page's butt-capped partitions); round and square caps fill the
+// notches and the merge stands.
+const PDF_ONLY_FILES = ["plan-dims-close.pdf", "plan-window-board.pdf", "plan-poche-diagonal.pdf", "plan-single-stroke.pdf", "plan-single-stroke-mixed.pdf"];
 /** Step Q.2: how each new synthetic fixture differs from the plain sample house (see the header). */
 const Q2: Record<string, { flagged?: string[]; offModel?: number; rooms?: number; conflict?: boolean; detached?: { kept: number; dropped: number }; outlier?: boolean }> = {
   "plan-dims-one-wrong.pdf": { flagged: ["5200 mm"], outlier: true },
@@ -170,7 +177,8 @@ const BASELINE_KEYS = { wallsExact: true, wallsTraced: false, openingsExact: tru
 type Counts = Record<keyof typeof BASELINE_KEYS, number>;
 /** Step H.1: the baseline also records the plan check's verdict; it may only get better. */
 type Row = Counts & { verdict?: keyof typeof VERDICT_RANK };
-const OPENINGS = /^(\d+) of (\d+) openings read exactly \(doors (\d+), windows (\d+), unclassified (\d+)\); (\d+) traced approximately; (\d+) arcs? not used\.$/;
+// Step S.1: "N openings match features in the PDF", not "N of M read exactly"; M is the line's data-total.
+const OPENINGS = /^(\d+) (?:opening matches a feature|openings match features) in the PDF \(doors (\d+), windows (\d+), unclassified (\d+)\); (\d+) traced approximately; (\d+) arcs? not used\.$/;
 
 const errors: string[] = [];
 const tid = (page: Page, id: string) => page.locator(`[data-testid="${id}"]`);
@@ -355,11 +363,12 @@ async function session(browser: Browser, width: number, height: number, touch: b
   /** Step M.1c, plan-doors on the review screen: the openings line, the default heights, the boxes on the overlay. */
   const checkDoorsReview = async (file: string, t: Truth) => {
     const name = file.replace(".pdf", "");
-    const text = (await tid(page, "coverage-openings-line").innerText()).trim();
+    const text = (await tid(page, "coverage-openings-text").innerText()).trim();
     const m = text.match(OPENINGS);
     assert.ok(m, `${name}: openings line "${text}"`);
+    assert.equal(await tid(page, "coverage-openings-line").getAttribute("data-total"), String(t.planOpenings.length), `${name}: openings total`);
     const unclassified = t.planOpenings.filter((o) => o.class === "unclassified");
-    const want = [t.planOpenings.length, t.planOpenings.length, t.planOpenings.filter((o) => o.kind === "door").length - unclassified.length, t.planOpenings.filter((o) => o.kind === "window").length, unclassified.length, 0, t.decoyArcs];
+    const want = [t.planOpenings.length, t.planOpenings.filter((o) => o.kind === "door").length - unclassified.length, t.planOpenings.filter((o) => o.kind === "window").length, unclassified.length, 0, t.decoyArcs];
     assert.deepEqual(m.slice(1).map(Number), want, `${name}: openings line numbers (${text})`);
     assert.ok((await tid(page, "coverage-heights").innerText()).includes("default height"), `${name}: the default heights are said`);
     assert.equal(await page.locator("[data-opening-mark=traced]").count(), 0, `${name}: no traced opening boxed`);
@@ -732,7 +741,8 @@ async function session(browser: Browser, width: number, height: number, touch: b
         await tid(page, "model-check").screenshot({ path: `${OUT}/pdf-model-check-1440.png` });
       }
       if (!touch && file === "plan-clutter.pdf") await page.screenshot({ path: `${OUT}/pdf-clutter-1440.png`, fullPage: true });
-      if (!touch && file === "plan-single-line.pdf") await page.screenshot({ path: `${OUT}/pdf-traced-1440.png`, fullPage: true });
+      if (!touch && file === "plan-traced-wall.pdf") await page.screenshot({ path: `${OUT}/pdf-traced-1440.png`, fullPage: true });
+      if (!touch && file === "plan-single-stroke.pdf") await page.screenshot({ path: `${OUT}/pdf-single-stroke-1440.png`, fullPage: true });
       if (touch) {
         // Phone order: the PDF and scale panels above the dimension tables.
         const y = async (id: string) => (await tid(page, id).boundingBox())!.y;
@@ -832,8 +842,10 @@ async function session(browser: Browser, width: number, height: number, touch: b
     assert.deepEqual([await cl.getAttribute("data-walls"), await cl.getAttribute("data-exact"), await cl.getAttribute("data-traced")], ["16", "16", "0"], `${file}: 16 of 16 walls exact`);
     assert.equal(await tid(page, "plan-verdict").getAttribute("data-level"), "good", `${file}: the plan check is Good`);
     assert.equal((await tid(page, "coverage-pdf-only").innerText()).trim(), PDF_ONLY_LINE, `${file}: the tracing was not used`);
-    const ol = (await tid(page, "coverage-openings-line").innerText()).trim();
-    assert.equal(ol, "10 of 10 openings read exactly (doors 5, windows 4, unclassified 1); 0 traced approximately; 0 arcs not used.", `${file}: openings line`);
+    const ol = (await tid(page, "coverage-openings-text").innerText()).trim();
+    assert.equal(ol, "10 openings match features in the PDF (doors 5, windows 4, unclassified 1); 0 traced approximately; 0 arcs not used.", `${file}: openings line`);
+    assert.equal(await tid(page, "coverage-openings-line").getAttribute("data-total"), "10", `${file}: of 10`);
+    assert.equal(await tid(page, "coverage-openings-caveat").count(), 0, `${file}: no caveat on a Good plan`);
     const furniture = await tid(page, "coverage-furniture").locator("li").count();
     assert.equal(furniture, 9, `${file}: nine groups of furniture listed`);
     const plan = await buildAndOpen();
@@ -868,8 +880,10 @@ async function session(browser: Browser, width: number, height: number, touch: b
     assert.deepEqual([await cl.getAttribute("data-walls"), await cl.getAttribute("data-exact"), await cl.getAttribute("data-traced")], ["33", "33", "0"], `${file}: 33 of 33 walls exact, 0 traced`);
     assert.equal(await tid(page, "plan-verdict").getAttribute("data-level"), "check", `${file}: the plan check is Check (a free end, an opening not read)`);
     assert.equal((await tid(page, "coverage-pdf-only").innerText()).trim(), PDF_ONLY_LINE, `${file}: the PDF's walls alone (rule 8b, step Q.2b's merge choice)`);
-    const ol = (await tid(page, "coverage-openings-line").innerText()).trim();
-    assert.equal(ol, "13 of 13 openings read exactly (doors 6, windows 5, unclassified 2); 0 traced approximately; 2 arcs not used.", `${file}: openings line`);
+    const ol = (await tid(page, "coverage-openings-text").innerText()).trim();
+    assert.equal(ol, "13 openings match features in the PDF (doors 6, windows 5, unclassified 2); 0 traced approximately; 2 arcs not used.", `${file}: openings line`);
+    assert.equal(await tid(page, "coverage-openings-line").getAttribute("data-total"), "13", `${file}: of 13`);
+    assert.match(await tid(page, "coverage-openings-caveat").innerText(), /the plan is "Check"/, `${file}: the caveat rides with the openings line`);
     const conflict = (await tid(page, "coverage-conflicts").locator("li").first().innerText()).trim();
     assert.match(conflict, /^Window 1 \(.+\) conflicts with a wall ending inside it; not read\./, `${file}: W4 named as not read`);
     assert.ok((await tid(page, "coverage-detached").locator("li[data-dropped=true]").count()) >= 1, `${file}: the title block left out and listed`);

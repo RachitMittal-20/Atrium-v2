@@ -28,7 +28,8 @@
  * At 1440 with millimetres saved as the unit, plan-gaps.pdf: the plan holds the PDF's 7 openings and not the tracing's phantom
  * 0.30 m door, and the review screen says so ("1 traced opening dropped because the PDF draws
  * solid wall there (sizes: 300 mm)").
- * Any .pdf in test-plans/ (local only, never committed) is also read, one row printed per file.
+ * Any .pdf in test-plans/ (local only, never committed) is also read, one row printed per file; since
+ * step S.1 a row that fails makes the suite exit non-zero (it used to be printed and passed).
  * Screenshots in /tmp/studio/: takeoff-from-pdf-1440.png, calibrate-dialog-1440.png,
  * takeoff-from-pdf-flagged-1440.png, calibrate-390.png, calibrate-gaps-1440.png.
  * Run: npx tsx scripts/e2e-calibrate.ts
@@ -55,6 +56,8 @@ type Win = Window & {
 
 const errors: string[] = [];
 const report: string[] = [];
+/** test-plans/ rows that failed: the suite exits non-zero if any did (step S.1). */
+const failed: string[] = [];
 const tid = (page: Page, id: string) => page.locator(`[data-testid="${id}"]`);
 const plan = (page: Page) => page.evaluate(() => (window as Win).__planStore!.getState().plan);
 const history = (page: Page) => page.evaluate(() => (window as Win).__planStore!.getState().past.length);
@@ -94,7 +97,10 @@ async function session(browser: Browser, width: number, height: number, touch: b
   };
   /** Use the found scale, build, and go into the studio. */
   const buildAndOpen = async () => {
-    await press(tid(page, "scale-found").getByRole("button", { name: /^(Use this scale|Confirm this scale)$/ }));
+    // Use the scale unless the caller already did (localPlans does, to read the review first): the
+    // button is gone once used, and clicking it again waited 30 s and failed.
+    const use = tid(page, "scale-found").getByRole("button", { name: /^(Use this scale|Confirm this scale)$/ });
+    if (await use.count()) await press(use);
     await press(page.getByRole("button", { name: "Build model" }));
     await tid(page, "summary").waitFor();
     const carried = (await tid(page, "summary-takeoffs").innerText()).trim();
@@ -280,8 +286,9 @@ async function gaps(browser: Browser) {
   const { page, tag, press } = s;
   await s.upload(join(DIR, "plan-gaps.pdf"));
   await press(tid(page, "scale-found").getByRole("button", { name: /^(Use this scale|Confirm this scale)$/ }));
-  const line = (await tid(page, "coverage-openings-line").innerText()).trim();
-  assert.match(line, /^7 of 7 openings read exactly/, `${tag}: the review screen reads 7 of 7 ("${line}")`);
+  const line = (await tid(page, "coverage-openings-text").innerText()).trim();
+  assert.match(line, /^7 openings match features in the PDF/, `${tag}: the review screen reads 7 ("${line}")`);
+  assert.equal(await tid(page, "coverage-openings-line").getAttribute("data-total"), "7", `${tag}: of 7`);
   const dropped = (await tid(page, "coverage-dropped-line").innerText()).trim();
   assert.match(dropped, /^1 traced opening dropped because the PDF draws solid wall there \(sizes: 300 mm\)\./, `${tag}: and says what it dropped ("${dropped}")`);
   assert.equal(await tid(page, "coverage-dropped-line").getAttribute("data-dropped"), "1", `${tag}: one, in the data too`);
@@ -319,7 +326,7 @@ async function localPlans(browser: Browser) {
       }
       await use.click();
       const coverage = (await tid(s.page, "coverage-line").innerText()).trim();
-      const openings = (await tid(s.page, "coverage-openings-line").innerText()).trim();
+      const openings = (await tid(s.page, "coverage-openings-text").innerText()).trim();
       const droppedEl = tid(s.page, "coverage-dropped-line");
       const dropped = (await droppedEl.count()) ? await droppedEl.getAttribute("data-dropped") : "0";
       const carried = await s.buildAndOpen();
@@ -328,6 +335,7 @@ async function localPlans(browser: Browser) {
       const flagged = await pdfGroup(s.page).then((g) => g.flagged).catch(() => 0);
       report.push(`${f}: ${coverage} | ${openings} | dropped ${dropped} | ${carried} | ${rows.length} rows, ${flagged} flagged | ${((Date.now() - t0) / 1000).toFixed(1)} s`);
     } catch (e) {
+      failed.push(f);
       report.push(`${f}: FAILED after ${((Date.now() - t0) / 1000).toFixed(1)} s — ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`);
     }
   }
@@ -347,6 +355,7 @@ async function main() {
     await browser.close();
   }
   if (report.length) console.log(`\ntest-plans/:\n${report.join("\n")}`);
+  assert.deepEqual(failed, [], `test-plans/ rows failed: ${failed.join(", ")}`);
   assert.deepEqual(errors, [], `console errors:\n${errors.join("\n")}`);
   console.log("e2e-calibrate: OK");
 }

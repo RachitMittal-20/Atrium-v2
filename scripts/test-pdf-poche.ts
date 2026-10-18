@@ -65,7 +65,7 @@
  *      problem each) and stands, as the rule says; with its tracing made poor (three walls 6 px off their
  *      line and 30 px short, the class Q.1 met: a tracing fused and broken by annotation) the merge has
  *      more problems, and the
- *      PDF's walls alone are used with the nib's free end reported. plan-single-line, whose merge is
+ *      PDF's walls alone are used with the nib's free end reported. plan-traced-wall, whose merge is
  *      clean, still merges (test-pdf-conventions.ts section 8).
  *   10b. The merge choice (step Q.2b, snap.ts pdfAloneWins): between the merged plan and the PDF's walls
  *      alone, more PDF walls kept wins, then fewer validator problems, then more rooms; a full tie

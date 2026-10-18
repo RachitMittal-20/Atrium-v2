@@ -63,7 +63,7 @@
  * (step Q.2b): more PDF walls kept (read exactly or stood in for by their traced version), then fewer
  * validator problems, then more rooms; a full tie keeps the merge. `pdfOnly` is set, and
  * Coverage.freeEnds (every coverage has it) lists the free ends left, which the review counts.
- * plan-single-line, whose merge keeps every wall and is clean, is never beaten.
+ * plan-traced-wall (plan-single-line until step S.1), whose merge keeps every wall and is clean, is never beaten.
  *
  * Conflicts (step Q.2b): an opening walls.ts did not read because a wall ends inside it is not read
  * from the tracing either. A traced opening lying on one (within 3 px plus half the wall's
@@ -182,7 +182,7 @@ export interface Coverage {
   outOfRangeGaps: { a: Vec2; b: Vec2; thickness: number; size: number }[];
   /** Step Q.1: line work left out as furniture (walls.ts `furniture`), in PLAN metres: each group's
    *  kind, piece count, footprint size (w along x, d along y) and centre, for the review screen. */
-  furniture: { kind: "loop" | "island" | "small"; walls: number; size: { w: number; d: number }; centre: Vec2 }[];
+  furniture: { kind: "loop" | "island" | "treads" | "small"; walls: number; size: { w: number; d: number }; centre: Vec2 }[];
   /** Step Q.2 (walls.ts rule 7b): groups joined to nothing in the building and lying outside it, in
    *  PLAN metres: the footprint's corners as read, its size, whether it was dropped (title-block or
    *  border evidence) or kept, and why. The review outlines each one. */

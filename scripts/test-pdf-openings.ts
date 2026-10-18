@@ -25,7 +25,7 @@
  *     0.46 m ones are openings;
  *   - every vector fixture with a scale: every opening's jambs (so its width and
  *     offset) within 0.5 mm of the truth and of the right kind, read from the PDF
- *     (plan-single-line's bathroom door sits on the wall that stays traced there: its
+ *     (plan-traced-wall's bathroom door sits on the wall that stays traced there: its
  *     width is within 0.5 mm, its place within 4 px, the traced wall's accuracy),
  *     validatePlan clean, the four rooms named, their areas equal to the truth's
  *     (1e-6 m²) where every wall is read from the PDF;
@@ -323,14 +323,14 @@ async function main() {
   }
 
   // ------------------------------------------------------------ every vector fixture: exact openings
-  const files = ["plan-filled.pdf", "plan-lines.pdf", "plan-fit.pdf", "plan-rotated.pdf", "plan-imperial.pdf", "plan-two-pages.pdf", "plan-clutter.pdf", "plan-broken-dims.pdf", "plan-single-line.pdf", "plan-no-dims.pdf", "plan-doors.pdf", "plan-doors-rect.pdf"];
+  const files = ["plan-filled.pdf", "plan-lines.pdf", "plan-fit.pdf", "plan-rotated.pdf", "plan-imperial.pdf", "plan-two-pages.pdf", "plan-clutter.pdf", "plan-broken-dims.pdf", "plan-single-line.pdf", "plan-traced-wall.pdf", "plan-no-dims.pdf", "plan-doors.pdf", "plan-doors-rect.pdf"];
   for (const file of files) {
     const { analysis, pdf, t, scale } = await read(file);
     const b = buildPdfPlan(analysis, pdf, scale);
     const { plan, coverage: c } = b;
     const px = 1 / scale.pxPerM;
     for (const to of t.planOpenings) {
-      // On a wall that stays traced (plan-single-line's w-KL) the PDF's width is exact but its place is the traced wall's, within 4 px.
+      // On a wall that stays traced (plan-traced-wall's w-KL) the PDF's width is exact but its place is the traced wall's, within 4 px.
       const loose = atPlace(plan, to, 4 * px);
       const onTraced = loose && plan.walls.find((w) => w.id === loose.wallId)!.provenance === "traced";
       const o = onTraced ? loose : atPlace(plan, to);
@@ -369,7 +369,7 @@ async function main() {
     assert.deepEqual(validatePlan(plan), [], `${file}: validatePlan clean`);
     const areas = (p: Plan) => deriveRooms(p).map((r) => r.area).sort((x, y) => x - y);
     const [got, want] = [areas(plan), areas(truthPlan(t))];
-    // With a traced wall (plan-single-line) room areas are the tracing's, as in M.1b; every other fixture's are exact.
+    // With a traced wall (plan-traced-wall) room areas are the tracing's, as in M.1b; every other fixture's are exact.
     const exactWalls = plan.walls.every((w) => w.provenance === "vector");
     assert.ok(got.length === want.length && (!exactWalls || got.every((a, i) => Math.abs(a - want[i]) <= 1e-6)), `${file}: rooms unchanged (${got.join(", ")} vs ${want.join(", ")})`);
     assert.deepEqual(plan.rooms.map((r) => r.name).sort(), ["Bathroom", "Bedroom 1", "Bedroom 2", "Living Room"], `${file}: the four rooms, named`);

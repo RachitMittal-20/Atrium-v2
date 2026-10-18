@@ -121,6 +121,29 @@
  *    KEPT (an outbuilding, a garage). Either way it is reported in `detached`, with its footprint as
  *    read, so the review screen can outline it and say why.
  *
+ * Step S.1, a wall drawn as ONE stroke (proven on plan-single-stroke and its variants, scripts/test-pdf-stroke.ts):
+ *  - A common export draws each wall as one stroked line on its centre line, as wide as the wall. A straight,
+ *    axis-aligned, SOLID, stroked (not filled) segment whose width at the drawing's scale is 50–600 mm
+ *    (WALL_RULES.stroke) is such a wall: a piece as it stands, like a filled rectangle, with the stroke's
+ *    width as its thickness and its own ends as the wall's ends. A thinner stroke stays annotation or
+ *    furniture, and a stroke is never a face as well. Its cap is ignored: butt caps leave a half-thickness
+ *    notch at a corner and round or square ones paint past the end, but the geometry is the centre line,
+ *    so rule 7 joins ends to the centre lines' crossing either way. Gaps in a stroke are openings by rule 4.
+ *  - Heavy pens: the faces of a wall drawn in pairs can themselves be 50 mm wide or more (a 0.5 mm pen at
+ *    1:100). A thick stroke with a partner of the same width (within 1 mm) parallel to it, at least twice
+ *    its width and at most 0.6 m away and overlapping it by 60% of the shorter, is one FACE of a wall
+ *    drawn with that pen, never a wall itself. A stroke lying wholly inside another (paired) wall's
+ *    footprint is part of that wall's outline (the end of a heavy-pen outline), never a wall.
+ *  - Treads (rule 7c, in furnitureOf after the islands): two pairs of one axis with the same span and
+ *    thickness whose bodies overlap across are not walls. A wall's body is solid, so two can't overlap, and
+ *    that is what a run of evenly spaced parallel lines pairs into: stair treads (0.22 m apart pair into
+ *    overlapping 0.44 m slabs) or axis-aligned hatching. A free-standing run is already an island; one
+ *    standing on a wall, joined to it, is dropped here and reported as "treads", and the joints are made
+ *    again without it, so the wall it stood on is whole.
+ *  - Known limits: diagonal strokes are not read as walls; two parallel single-stroke walls of one width,
+ *    overlapping and at least twice that width but under 0.6 m apart, read as one wall's heavy-pen faces;
+ *    treads more than 0.3 m apart pair into adjacent, non-overlapping slabs and are not caught.
+ *
  * Output ids are "v1", "v2", ... ; a is the end with the smaller x (horizontal
  * walls) or y (vertical ones). Doors without an arc get LEGACY_SWING, as
  * buildPlan's do. Connects to: extract.ts (VectorPage, `path` and `curve` on
@@ -144,6 +167,8 @@ export const WALL_RULES = {
   meet: 0.15,
   opening: OPENING_WIDTH,
   maxLeaf: 1.5,
+  /** Step S.1: a solid stroke this wide at scale (m) is a wall drawn as one line. */
+  stroke: [0.05, 0.6] as const,
 };
 /** Two lines, ends or thicknesses this close (m) are the same. */
 const SAME = 0.001;
@@ -168,6 +193,8 @@ interface Piece extends Face {
   t: number;
   openings: Span[];
   rect?: boolean;
+  /** Step S.1: a wall drawn as one stroke (also `rect`: a piece as it stands). */
+  band?: boolean;
   /** joinWalls: the index of the piece it was split from (step Q.1, rules 6 and 7). */
   src?: number;
 }
@@ -273,6 +300,10 @@ function pairFaces(faces: Face[], edges: Face[] = []): Piece[] {
 /** True when `p` lies inside `q`'s band (within SAME) along at least half its own length. */
 const inside = (p: Piece, q: Piece) =>
   p.axis === q.axis && p.c - p.t / 2 >= q.c - q.t / 2 - SAME && p.c + p.t / 2 <= q.c + q.t / 2 + SAME && overlapOf(p, q) >= 0.5 * flen(p);
+
+/** Rule 7c (step S.1, header): two pairs of one axis, span and thickness whose bodies overlap across. */
+const treadClash = (p: Piece, q: Piece) =>
+  p !== q && !p.rect && !q.rect && p.axis === q.axis && Math.abs(p.t - q.t) <= SAME && Math.abs(p.s0 - q.s0) <= SAME && Math.abs(p.s1 - q.s1) <= SAME && Math.abs(p.c - q.c) < p.t - SAME;
 
 /** Rule 9 (step Q.1, header): drops the shorter of two pairs using one line from opposite sides.
  *  ponytail: O(n²) over the candidates of an axis; fine for floor plans, sort by offset if it shows. */
@@ -565,7 +596,7 @@ function furnitureOf(
   joined: Piece[],
   evidence: (box: Box) => string | null,
   extra: DiagWall[] = [],
-): { drop: Set<number>; groups: { kind: "loop" | "island"; members: number[] }[]; detached: { members: number[]; why: string | null }[] } {
+): { drop: Set<number>; groups: { kind: "loop" | "island" | "treads"; members: number[] }[]; detached: { members: number[]; why: string | null }[] } {
   // Step Q.2: the diagonal walls (`extra`, indexes from n) close rooms and join groups, but are never dropped.
   const n = joined.length;
   const ws: Wall[] = [
@@ -606,7 +637,7 @@ function furnitureOf(
     }
     return out;
   };
-  const groups: { kind: "loop" | "island"; members: number[] }[] = groupsOf([...loopDrop]).map((members) => ({ kind: "loop", members }));
+  const groups: { kind: "loop" | "island" | "treads"; members: number[] }[] = groupsOf([...loopDrop]).map((members) => ({ kind: "loop", members }));
   // Rule 7: islands inside the biggest group's box.
   const rest = groupsOf(ws.map((_, i) => i).filter((i) => !drop.has(i)));
   // The building (step Q.2): the biggest box among the groups with no title-block or border evidence
@@ -638,6 +669,16 @@ function furnitureOf(
         detached.push({ members: own, why: reason });
       }
     }
+  }
+  // Rule 7c (step S.1, header): of what is still kept, pairs whose bodies overlap are treads, one group
+  // per run (pieces linked by overlapping).
+  const tread = joined.map((_, i) => i).filter((i) => !drop.has(i) && joined.some((q, j) => !drop.has(j) && treadClash(joined[i], q)));
+  for (const i of tread) {
+    if (drop.has(i)) continue;
+    const run = [i];
+    drop.add(i);
+    for (let k = 0; k < run.length; k++) for (const j of tread) if (!drop.has(j) && treadClash(joined[run[k]], joined[j])) (drop.add(j), run.push(j));
+    groups.push({ kind: "treads", members: run });
   }
   return { drop, groups, detached };
 }
@@ -780,13 +821,33 @@ export function readVectorWalls(page: Pick<VectorPage, "segments"> & Partial<Pic
     ss.forEach((s) => used.add(s));
   }
 
+  // Step S.1 (header): a solid stroke 50–600 mm wide is a wall drawn as one line, unless it is one face
+  // of a pair drawn with a heavy pen (a partner of its width, two widths to 0.6 m away, overlapping).
+  const widthOf = (s: Seg & { src: PdfSegment }) => s.src.width * mPerPt;
+  const thick = straight.filter((s) => !used.has(s) && !s.src.filled && axisOf(s) && widthOf(s) >= WALL_RULES.stroke[0] - EPS && widthOf(s) <= WALL_RULES.stroke[1] + EPS);
+  const heavyFace = (s: (typeof thick)[number]) => {
+    const f = faceOf(s, axisOf(s)!);
+    return thick.some((o) => {
+      if (o === s || axisOf(o) !== f.axis || Math.abs(widthOf(o) - widthOf(s)) > SAME) return false;
+      const g = faceOf(o, f.axis);
+      const d = Math.abs(g.c - f.c);
+      return d >= Math.max(2 * widthOf(s), WALL_RULES.gap[0]) - EPS && d <= WALL_RULES.gap[1] + EPS && overlapOf(f, g) >= WALL_RULES.overlap * Math.min(flen(f), flen(g)) - EPS;
+    });
+  };
+  const bandSegs = new Set(thick.filter((s) => !heavyFace(s)));
+  const bands: Piece[] = [...bandSegs].map((s) => ({ ...faceOf(s, axisOf(s)!), t: widthOf(s), openings: [], rect: true, band: true }));
+
   // Rule 1: faces; rule 3: pairs and the widest-wins selection.
-  const rest = straight.filter((s) => !used.has(s) && len(s) >= WALL_RULES.minFace - EPS);
+  const rest = straight.filter((s) => !used.has(s) && !bandSegs.has(s) && len(s) >= WALL_RULES.minFace - EPS);
   const faces = joinFaces(rest.flatMap((s) => (axisOf(s) ? [faceOf(s, axisOf(s)!)] : [])));
   const diagonal = rest.filter((s) => !axisOf(s));
-  // Step Q.2: a filled rectangle's long edges are a poche wall's faces, so rule 3 sees them too.
-  const edges = joinFaces([...used].flatMap((s) => (axisOf(s) ? [faceOf(s, axisOf(s)!)] : [])));
-  let pieces = selectPieces(oneSided([...rects, ...pairFaces(faces, edges)]), dropped);
+  // Step Q.2: a filled rectangle's long edges are a poche wall's faces, so rule 3 sees them too; and
+  // (step S.1) so are a stroke wall's two edges.
+  const bandEdges = bands.flatMap((b) => [-1, 1].map((k) => ({ axis: b.axis, c: b.c + (k * b.t) / 2, s0: b.s0, s1: b.s1 })));
+  const edges = joinFaces([...[...used].flatMap((s) => (axisOf(s) ? [faceOf(s, axisOf(s)!)] : [])), ...bandEdges]);
+  let pieces = selectPieces(oneSided([...rects, ...bands, ...pairFaces(faces, edges)]), dropped);
+  // Step S.1: a stroke wholly inside a paired wall's footprint is that wall's outline, not a wall.
+  pieces = pieces.filter((p) => !p.band || !pieces.some((q) => !q.band && q !== p && [at(p.axis, p.s0, p.c), at(p.axis, p.s1, p.c)].every((e) => toFootprint(e, q) <= SAME)));
 
   // Rule 4: one line, doors and windows.
   pieces = mergeLines(pieces, gaps);
