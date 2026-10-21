@@ -18,6 +18,7 @@
  * M.2b); a plan written before either loads exactly as it did. The imported drawing shown under the
  * 2D plan (step M.2c, `plan.background`) is stored as its descriptor only — asset id, kind, page and
  * mapping — never its bytes, which stay in IndexedDB; a malformed descriptor is dropped, never the plan.
+ * `migrate` is also what a project file's plan goes through (step E.1, src/lib/persist/projectFile.ts).
  */
 import type { Affine, Background, Calibration, DrawingSnapKind, ImportFormat, ImportInfo, Item, NodeOverride, Opening, OpeningKind, PartTransform, Plan, Room, Takeoff, TakeoffValue, Vec2, Wall } from "@/types/plan";
 
@@ -72,7 +73,7 @@ export function parseStoredPlan(raw: string | null | undefined): Plan | null {
 }
 
 /** Upgrade a parsed envelope to the current Plan. Unknown (older or newer) schemas are refused, not guessed at. */
-function migrate(envelope: unknown): Plan | null {
+export function migrate(envelope: unknown): Plan | null {
   if (!isObject(envelope)) return null;
   switch (envelope.schema) {
     case 1:

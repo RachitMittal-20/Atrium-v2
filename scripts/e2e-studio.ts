@@ -2511,9 +2511,10 @@ async function run(width: number, height: number) {
   assert.equal(await num(page, "total-area"), m2);
 
   // ---- menus
+  // Step E.1: the five "Coming soon" export items are gone; every menu item does something.
   await tid(page, "export-menu").click();
-  const items = await page.getByRole("button", { name: /Coming soon/ }).evaluateAll((els) => els.map((e) => e.getAttribute("aria-disabled")));
-  assert.deepEqual(items, ["true", "true", "true", "true", "true"], `${tag}: five disabled export items`);
+  assert.deepEqual(await page.locator('[data-testid="export-menu"] ~ div button').allInnerTexts(), ["Save project…"], `${tag}: the Export menu holds only what exists`);
+  assert.equal(await page.getByText(/Coming soon/).count(), 0, `${tag}: no "Coming soon" anywhere in the top bar`);
   await page.screenshot({ path: `${OUT}/studio-${tag}-export.png` });
   await page.keyboard.press("Escape");
   await tid(page, "view-options").click();

@@ -5,9 +5,9 @@
  * undoable through planStore.renamePlan), Undo and Redo, the 3D | 2D | Split
  * switch, a view-options popover (ceilings), an Import menu ("Floor plan image…"
  * goes to /studio/import; "3D model…" opens a file picker whose files go to
- * src/store/importStore.ts, step I.1), an Export menu whose formats are all
- * "Coming soon" (so there is no project file yet to warn about imported models),
- * and a quiet autosave status (src/store/persistence.ts). Split is hidden below 640 px.
+ * src/store/importStore.ts, step I.1; "Open project…" opens a .atrium.json, step E.1),
+ * an Export menu with "Save project…" (the only export that exists; the GLB, OBJ, PDF, DXF
+ * and CSV items that said "Coming soon" were removed in step E.1), and a quiet autosave status (src/store/persistence.ts). Split is hidden below 640 px.
  * The Units menu (step U.1) holds the one display setting, a Length and an Area radio
  * group over src/store/unitsStore.ts: real radios, so the arrow keys move within a group.
  * Mounted by src/app/studio/page.tsx.
@@ -21,6 +21,7 @@ import { useCanRedo, useCanUndo, usePlanStore } from "@/store/planStore";
 import { useSaveStatus } from "@/store/persistence";
 import { useUnitsStore } from "@/store/unitsStore";
 import { EditableText } from "./EditableText";
+import { startOpen, startSave } from "./ProjectDialog";
 
 export type View = "3d" | "2d" | "split";
 
@@ -164,6 +165,19 @@ export function TopBar({ view, setView, showCeiling, setShowCeiling }: { view: V
                   3D model…
                 </button>
               </li>
+              <li>
+                <button
+                  type="button"
+                  data-testid="open-project"
+                  onClick={() => {
+                    close();
+                    startOpen();
+                  }}
+                  className="flex min-h-10 w-full items-center rounded px-2 text-left hover:bg-limestone"
+                >
+                  Open project…
+                </button>
+              </li>
             </ul>
           )}
         </Popover>
@@ -183,15 +197,23 @@ export function TopBar({ view, setView, showCeiling, setShowCeiling }: { view: V
         />
 
         <Popover label="Export" shortLabel="Export" testId="export-menu" glyph={icon(<path d="M12 4v11M7 10l5 5 5-5M5 20h14" />)}>
-          <ul>
-            {["GLB", "OBJ", "PDF", "DXF", "CSV"].map((f) => (
-              <li key={f}>
-                <button type="button" aria-disabled="true" onClick={(e) => e.preventDefault()} className="flex min-h-10 w-full cursor-not-allowed items-center justify-between rounded px-2 text-left text-smoke hover:bg-limestone">
-                  {f} <span className="text-xs">Coming soon</span>
+          {(close) => (
+            <ul>
+              <li>
+                <button
+                  type="button"
+                  data-testid="save-project"
+                  onClick={() => {
+                    close();
+                    startSave();
+                  }}
+                  className="flex min-h-10 w-full items-center rounded px-2 text-left hover:bg-limestone"
+                >
+                  Save project…
                 </button>
               </li>
-            ))}
-          </ul>
+            </ul>
+          )}
         </Popover>
       </div>
     </header>

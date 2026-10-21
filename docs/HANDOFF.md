@@ -1626,3 +1626,30 @@ The first CI run failed at `scripts/test-import.ts`: "the committed table.zip is
 - **Caveat on that one:** it was reproduced under Docker on an arm64 Mac, which emulates x86-64 (Rosetta/QEMU lack some CPU features Skia may pick at run time). A real GitHub runner could differ again; the CI run is the proof.
 
 **Verified.** On the Mac: `npm test`, `npx tsc --noEmit`. In a clean clone of HEAD plus the two changed files: `npm ci && npm test` exit 0 (one `SKIPPED` line, plan 06). In `node:24.14.0` `linux/amd64`: all of `npm test` exit 0 (it failed first at `test-import`, then, with only that fixed, at `test-pdf-snapshot`). **Not done:** nothing was committed or pushed, because the task said not to commit; `gh` is not installed, so the Actions result is not known. Branch for the run: `git switch -c ci-fix && git commit -am "…" && git push -u origin ci-fix`.
+
+
+## 34. E.1 — project save and open, no dead menu items (2026-10-21; not committed)
+
+No geometry, reading rule or existing assertion changed except the one stated below. CLAUDE.md has the rules (section "Project files").
+
+**Dead menu items found (step 1).** The Export menu's GLB, OBJ, PDF, DXF and CSV were `aria-disabled` buttons saying "Coming soon". The Import menu's two items work. The tool rail has no dead tool (its "coming soon" tooltip is an unreachable fallback string). **Removed:** all five export items (none of those exports exists; the takeoff panel has its own CSV button). **Implemented:** "Save project…" under Export and "Open project…" under Import.
+
+**What was added.** `src/lib/persist/projectFile.ts` (format, strict reader, size rule, base64, hash check), `planStorage.migrate` exported, `planStore.replacePlan` (one undo step, marks kept), `src/store/projectStore.ts` (unsaved baseline, save, open, sizes), `src/components/studio/ProjectDialog.tsx`, the TopBar items, a `key` on the studio panes so they refit after an open, `scripts/test-project-file.ts` (in `npm test`), `scripts/e2e-project-file.ts`.
+
+**Existing assertion changed:** `e2e-studio.ts`, "menus": it expected five disabled "Coming soon" export items; it now expects the Export menu to hold exactly "Save project…" and no "Coming soon" text in the top bar.
+
+**Decisions to know about.**
+- The project file reuses the autosave's schema number and reader, so a future `SCHEMA_VERSION` bump and its `migrate` case cover both.
+- A restored or freshly imported plan counts as unsaved (the baseline is the sample plan at app start), so Open asks. Chosen over silently replacing work that never reached a file; Undo takes it back either way.
+- An asset whose bytes don't hash to its id makes the whole file damaged (not skipped), so a tampered model can't be stored under a trusted id.
+- The takeoff in `e2e-project-file` is added through `__planStore` (test data); saving, opening, the file chooser and the download are real.
+
+**Verified (2026-10-21, macOS, Node 24.14.0).** `npm test` exit 0 (new `test-project-file` included; it failed first with "Cannot find module projectFile" before the code existed), `npx tsc --noEmit` exit 0, cold build (dev server stopped, `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`) exit 0 in 12 s, both greps clean, then `e2e-studio`, `e2e-import3d`, `e2e-background` and `e2e-project-file` (1440 and 390) all exit 0 against a fresh dev server.
+
+**One-off failures on the way, all in the new e2e's own setup (test bugs, not product), each fixed before the green run:**
+1. It assumed the built plan had exactly one takeoff; the PDF's printed dimensions are takeoffs too (11 of them), so it now looks for its own "North run".
+2. It waited for `data-ok="true"` and read "Opening …" (the busy state is also ok); it now waits for the dialog's `data-mode="result"`.
+3. The "Import it again" check ran in the 3D view, where the Drawing section is not rendered; it now switches to 2D first.
+The only product-side surprise was that the cameras do not refit when the plan is replaced under a mounted editor, which is why the panes are remounted on open (`projectStore.epoch`).
+
+**Not covered:** a real phone, Safari and Firefox; a project near 200 MB (the limit is tested from `file.size` only); the download's behaviour in a browser that blocks blob downloads.

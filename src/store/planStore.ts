@@ -23,6 +23,7 @@
  * the imported drawing's mapping in the same step (step M.2c). `setBackground` and
  * `clearBackground` set and remove that drawing (a view of the original file, never geometry),
  * one undo step each; clearing it leaves the file's bytes in the asset store, so Undo brings it back.
+ * `replacePlan` swaps in a whole plan from an opened project file (step E.1) as one undo step.
  * Connects to:
  * src/types/plan.ts, src/lib/plan/{validate,geometry,rooms,edit}.ts,
  * src/lib/keyboard.ts; the 3D scene, 2D plan and exports read `plan` from here.
@@ -58,6 +59,12 @@ interface PlanState {
   future: HistoryEntry[];
 
   loadPlan: (plan: Plan) => void;
+  /**
+   * Swap the whole plan for `plan` (a project file being opened, step E.1) as ONE undo step, unlike
+   * `loadPlan`, which starts a fresh history. Rooms are re-derived as in loadPlan; provenance marks
+   * are kept as they were saved (nothing becomes "Edited" because it was opened).
+   */
+  replacePlan: (plan: Plan) => void;
   addWall: (wall: Omit<Wall, "id">) => string;
   updateWall: (id: string, changes: Partial<Omit<Wall, "id">>) => void;
   deleteWall: (id: string) => void;
@@ -215,6 +222,19 @@ export const usePlanStore = create<PlanState>((set, get) => {
       tx = null;
       const rooms = deriveRooms(plan).map(toStoredRoom); // stored rooms keep names by matching loop
       set({ plan: { ...plan, rooms }, past: [], future: [] }); // a fresh plan starts a fresh history
+    },
+
+    replacePlan: (loaded) => {
+      const plan = { ...loaded, openings: withSwingSides(loaded.openings) };
+      const next: Plan = { ...plan, rooms: deriveRooms(plan).map(toStoredRoom) };
+      edit(
+        (d) => {
+          const draft = d as unknown as Record<string, unknown>;
+          for (const key of Object.keys(draft)) if (!(key in next)) delete draft[key]; // e.g. the old plan's background
+          Object.assign(draft, next);
+        },
+        { keepMarks: true },
+      );
     },
 
     addWall: (wall) => {

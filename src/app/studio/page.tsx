@@ -17,13 +17,14 @@
  * pane (2D only) ends the walk. The 3D tools (Push/Pull, Move) step back to
  * Select when the 3D pane goes away and when a walk starts. Tool keys come from
  * toolStore.TOOL_SHORTCUTS (P, V). Mounts the "Import a 3D model" dialog
- * (ImportModelDialog, step I.1) once.
+ * (ImportModelDialog, step I.1) once, and the Save or Open project dialog (ProjectDialog, step E.1).
  * Connects to src/components/studio/*, src/components/plan2d/* and
  * src/store/toolStore.ts.
  */
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { PlanCanvas } from "@/components/plan2d/PlanCanvas";
 import { ImportModelDialog } from "@/components/studio/ImportModelDialog";
+import { ProjectDialog } from "@/components/studio/ProjectDialog";
 import { PlanPanel } from "@/components/studio/PlanPanel";
 import { Scene3D } from "@/components/studio/Scene3D";
 import { ToolRail } from "@/components/studio/ToolRail";
@@ -33,6 +34,7 @@ import { installPlanShortcuts } from "@/store/planStore";
 import { usePersistenceReady } from "@/store/persistence";
 import { installSelectionShortcuts } from "@/store/selectionStore";
 import { useCalibrateStore } from "@/store/calibrateStore";
+import { useProjectStore } from "@/store/projectStore";
 import { installToolShortcuts, is3dTool, TOOL_SHORTCUTS, useToolStore, type Tool } from "@/store/toolStore";
 import { useViewStore } from "@/store/viewStore";
 
@@ -50,6 +52,7 @@ export default function Studio() {
   useEffect(() => installSelectionShortcuts(), []); // Escape clears the selection from anywhere
   useEffect(() => installToolShortcuts(), []); // Escape cancels a measurement first
   const ready = usePersistenceReady(); // the saved plan is in the store once this is true
+  const epoch = useProjectStore((s) => s.epoch); // a project was opened: remount both panes so each fits the new plan
 
   const wide = useSyncExternalStore(watchWide, () => window.matchMedia(SPLIT_QUERY).matches, () => true);
   const shown = view === "split" && !wide ? "3d" : view; // a phone that was split on a wider window shows 3D
@@ -124,12 +127,12 @@ export default function Studio() {
         <ToolRail view3d={shown !== "2d"} view2d={shown !== "3d"} />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
           {shown !== "2d" && (
-            <div className="relative min-h-0 min-w-0 flex-1" data-testid="pane-3d">
+            <div className="relative min-h-0 min-w-0 flex-1" data-testid="pane-3d" key={`3d-${epoch}`}>
               <Scene3D showCeiling={ceiling} />
             </div>
           )}
           {shown !== "3d" && (
-            <div className="relative min-h-0 min-w-0 flex-1 md:border-l md:border-stone max-md:border-t max-md:border-stone" data-testid="pane-2d">
+            <div className="relative min-h-0 min-w-0 flex-1 md:border-l md:border-stone max-md:border-t max-md:border-stone" data-testid="pane-2d" key={`2d-${epoch}`}>
               <PlanCanvas />
             </div>
           )}
@@ -137,6 +140,7 @@ export default function Studio() {
         <PlanPanel view2d={shown !== "3d"} />
       </div>
       <ImportModelDialog />
+      <ProjectDialog />
     </div>
   );
 }
