@@ -59,7 +59,7 @@ jobs:
 
       - name: No CDN URLs in the bundle
         run: |
-          if grep -rlE "cdn\.jsdelivr|unpkg\.com|cdnjs" .next/static; then
+          if grep -rlE "cdn\.jsdelivr|unpkg\.com|cdnjs|fonts\.googleapis|fonts\.gstatic" .next/static; then
             echo "a CDN URL reached the production bundle (files above)"; exit 1
           fi
           echo clean

@@ -1,1 +1,7 @@
-[]
+[
+  {
+    "file": "src/app/limits/page.tsx",
+    "match": "Walls are 2.7 m high",
+    "reason": "/limits is static prose written for everyone before they have chosen a unit; it states the importer's default heights (2.7, 2.1, 1.2, 0.9 m) as the fixed metric numbers they are in code."
+  }
+]

@@ -55,10 +55,16 @@
  * here (withOverrides), so typing one never waits. Images and scanned pages (buildFromAnalysis)
  * are built here as before.
  *
+ * Step D.1: the header links to /limits (what reads well and what does not) and, on the review or after
+ * a failed read, has "Report a problem" (ReportDialog: counts, verdict, scale status, browser; nothing from the
+ * file, nothing sent). The idle screen opens with a one-line hint beside the sample button.
+ *
  * Nothing else is kept except the plan loaded into the store, which autosaves to
  * the browser (src/store/persistence.ts). Editing walls
  * here is a later piece; this screen only reviews.
  */
+import { ReportProblem } from "@/components/feedback/ReportDialog";
+import { importFacts, type ReportFacts } from "@/lib/feedback/report";
 import { lenText } from "@/lib/units/current";
 import { useUnitsStore } from "@/store/unitsStore";
 import Link from "next/link";
@@ -335,13 +341,26 @@ export default function ImportPage() {
     router.push("/studio");
   }
 
+  /** What "Report a problem" may say: counts, the verdict, scale status. Nothing from the file (src/lib/feedback/report.ts). */
+  const collectReport = (): ReportFacts => (phase.kind === "results" ? importFacts({ analysis: phase.analysis, pdf: phase.pdf, chosenSource: chosen?.source, plan: (built ?? review?.build)?.plan, verdict }) : importFacts({}));
+
   return (
     <main className="min-h-svh bg-limestone px-4 py-6 text-iron sm:px-6 lg:px-8">
-      <header className="mb-6 flex flex-wrap items-baseline justify-between gap-2">
+      <header className="mb-6 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
         <h1 className="font-display text-xl sm:text-2xl">Import a floor plan</h1>
-        <Link href="/studio" className="text-sm text-smoke underline underline-offset-4 hover:text-iron">
-          Back to the studio
-        </Link>
+        <nav aria-label="Import help" className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-smoke">
+          <Link href="/limits" data-testid="limits-link" className="inline-flex min-h-11 items-center underline underline-offset-4 hover:text-iron">
+            What reads well, and what doesn&apos;t
+          </Link>
+          {(phase.kind === "results" || phase.kind === "error") && (
+            <ReportProblem testId="report-problem" collect={collectReport} className="min-h-11 rounded border border-stone px-3 text-sm text-iron hover:bg-vellum">
+              Report a problem
+            </ReportProblem>
+          )}
+          <Link href="/studio" className="inline-flex min-h-11 items-center underline underline-offset-4 hover:text-iron">
+            Back to the studio
+          </Link>
+        </nav>
       </header>
 
       <input
@@ -372,6 +391,9 @@ export default function ImportPage() {
           className={`mx-auto flex max-w-2xl flex-col items-center gap-4 rounded border-2 border-dashed px-4 py-12 text-center transition-colors sm:px-8 ${dragging ? "border-gilt bg-vellum" : "border-stone"}`}
         >
           <h2 className="font-display text-lg">Drop a floor plan PDF or image here</h2>
+          <p data-testid="first-run-hint" className="text-iron">
+            Try a sample plan, or drop a vector PDF or image.
+          </p>
           <p className="text-sm text-smoke">
             A PDF up to 50 MB, or a PNG, JPEG or WebP up to 25 MB. A PDF exported from a drawing program reads best; a straight-on scan or a phone photo works too.
           </p>

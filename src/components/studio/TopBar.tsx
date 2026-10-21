@@ -10,10 +10,13 @@
  * and CSV items that said "Coming soon" were removed in step E.1), and a quiet autosave status (src/store/persistence.ts). Split is hidden below 640 px.
  * The Units menu (step U.1) holds the one display setting, a Length and an Area radio
  * group over src/store/unitsStore.ts: real radios, so the arrow keys move within a group.
+ * "Report a problem" (step D.1) opens src/components/feedback/ReportDialog.tsx with the plan's counts and verdict only.
  * Mounted by src/app/studio/page.tsx.
  */
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ReportProblem } from "@/components/feedback/ReportDialog";
+import { studioFacts } from "@/lib/feedback/report";
 import { ACCEPT } from "@/lib/import/loadModel";
 import { AREA_LABEL, AREA_UNITS, LENGTH_LABEL, LENGTH_UNITS } from "@/lib/units/format";
 import { useImportStore } from "@/store/importStore";
@@ -215,6 +218,11 @@ export function TopBar({ view, setView, showCeiling, setShowCeiling }: { view: V
             </ul>
           )}
         </Popover>
+
+        <ReportProblem testId="report-problem" collect={() => studioFacts(usePlanStore.getState().plan)} className={BTN}>
+          {icon(<path d="M5 21V4M5 4h11l-2 4 2 4H5" />)}
+          <span className="max-sm:sr-only">Report a problem</span>
+        </ReportProblem>
       </div>
     </header>
   );

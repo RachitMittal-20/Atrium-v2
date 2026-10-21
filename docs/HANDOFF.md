@@ -1653,3 +1653,36 @@ No geometry, reading rule or existing assertion changed except the one stated be
 The only product-side surprise was that the cameras do not refit when the plan is replaced under a mounted editor, which is why the panes are remounted on open (`projectStore.epoch`).
 
 **Not covered:** a real phone, Safari and Firefox; a project near 200 MB (the limit is tested from `file.size` only); the download's behaviour in a browser that blocks blob downloads.
+
+
+## 35. D.1 — ready for a first public link (2026-10-21; not committed)
+
+No reading rule, geometry, detection or existing assertion changed. Nothing was deployed. CLAUDE.md has the rules (section "First public link").
+
+**What was found and done**
+- **Fonts.** `next build` DID fetch Marcellus and Figtree from Google (`next/font/google`; section 33 noted it). They are now `src/app/fonts/{marcellus,figtree}-latin.woff2`, the exact files that build produced, loaded with `next/font/local`; the build runs with no network need and the look is unchanged (checked in screenshots). **Latin-extended subsets were not copied** (the Google build had them): characters above U+00FF fall back to Arial/Times. CI's CDN grep gained `fonts.googleapis|fonts.gstatic`.
+- **Headers** (`next.config.ts`): `/tesseract/*` and `/pdfjs/*` immutable for a year. Checked with curl against `npm run start`: `.js` `application/javascript`, `.gz` `application/gzip` (no `Content-Encoding`), `.wasm` `application/wasm`, the PDF worker chunk under `/_next/static/chunks/` already `public, max-age=31536000, immutable` from Next. **Not checked on Vercel**; docs/DEPLOY.md lists the curl lines to run on the deployed link.
+- **Bundle** (`npx tsx scripts/bundle-report.ts`, from Turbopack's `route-bundle-stats.json`; gzip is computed here): `/` 10 chunks 602 kB raw / 192 kB gzip; `/limits` 589 / 186; `/studio` 17 chunks 1915 / 565; `/studio/import` 19 chunks 1227 / 384. The PDF reader is one on-demand chunk of 1.6 MB raw / 489 kB gzip. All five routes are static (`○`).
+- **docs/DEPLOY.md** has the exact Vercel steps and settings (Node 24.x must be set in the project; Vercel does not read `.nvmrc`), post-deploy curl checks, the cache table, sizes and rollback.
+- **/limits**, **Report a problem**, the **first-run hint**, **error and not-found screens**, **metadata** and the **share image**: as in CLAUDE.md.
+
+**Decisions to know about**
+- One `src/app/studio/error.tsx` covers the studio and the nested import page; the landing page has no boundary of its own and there is no `global-error`.
+- Report content: counts, verdict level and reasons, scale source and confidence, PDF page kind, warning codes, browser, screen, window, version, typed note. It deliberately leaves out scale VALUES, validator messages and PDF notes (free text can carry names). The studio's verdict judges the walls only (empty PDF coverage), so "Detached" and "refused openings" reasons never appear there.
+- The "tested on synthetic drawings and a few real plans" sentence is the one the task asked for; section 26 and 27 say no real CAD PDF had been read at those steps and Q.4a read one real file. Check it is still the wording you want before sharing.
+- The share image has no text (title and description are meta tags); `og:image` is absolute only on Vercel (`VERCEL_PROJECT_PRODUCTION_URL`), `http://localhost:3000` otherwise.
+- **An existing guard needed an entry:** `scripts/units-allowlist.json` was empty; `/limits` states the default heights in metres (a static page cannot follow the units setting), so it now holds one entry with its reason. No assertion changed.
+
+**Tests**
+- `scripts/test-feedback.ts` (in `npm test`): a plan and a reading stuffed with a plan name, file name, room and model names, 6-digit coordinates, free-text warnings, notes and scale reasons go through the real collectors; the text contains none, has no decimal of two or more places and no "(x, y)" point, and does hold the counts, verdict, scale line, PDF line, warning codes, browser, screen and note. Shown to fail when a collector is made to copy the plan name.
+- `scripts/test-error-screen.ts` (in `npm test`): a thrown Error gives the plain message and a Reload button, none of the error's text and no digest, and the 404 page. **It renders the boundary's component with react-dom/server; it does not mount a boundary** (no DOM library in the repo and none was added). The real boundary catching a real render error is only in `e2e-feedback`.
+- `scripts/e2e-feedback.ts` (not in `npm test`; needs `npm run dev`) at 1440 mouse and 390 touch: footer and import links to /limits, the page's statements and title, the hint and sample button, no Report button when idle, the import report (text checked, file name absent, note typed, Copy compared with the real clipboard, Download compared byte for byte), the studio report (plan and room names absent), a real render error (a wall with no ends set through `__planStore`) showing the screen and Reload restoring the studio, the 404 page with status 404, dialogs inside the viewport and no sideways scroll at 390. Screenshots `/tmp/studio/feedback-*.png`.
+
+**Failures on the way (all logged, none product-side except the first):**
+1. `npm test`: `test-units-everywhere` found "2.7 m" in `/limits` (hard-coded unit text). Fixed with an allow-list entry, as that test prescribes.
+2. `tsc` reported `.next/dev/types/validator.ts` errors after adding `layout.tsx` files: stale generated types from an earlier dev run; deleting `.next` and rebuilding cleared them.
+3. `e2e-feedback` first runs: `/studio/import` title lacked "| Atrium" (a layout that sets a title replaces the root template; `studio/layout.tsx` now carries its own); the test expected "chosen from" before any scale was chosen; `setState({ plan: null })` threw inside a store subscriber instead of a render (test bug; a malformed wall is used); Chromium's own "Failed to load resource 404" console line for the 404 visit (now asserted as the only line, then removed).
+
+**Verified (macOS, Node 24.14.0), on the final tree:** `npm test` exit 0 (`test-feedback` and `test-error-screen` included, after the allow-list entry); `npx tsc --noEmit` exit 0; cold build (dev server stopped, `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`) compiled in 5.1 s, 13 s in all, every route static; the dev-hook grep (including `__background`, `__runaway`) and the CDN/Google-fonts grep both printed `clean`; `npm run start` header and content-type checks as above; then `npm run dev` restarted from this checkout (pid 77452, `.next` deleted first) and, one at a time, `e2e-feedback` exit 0 (1440 and 390), `e2e-studio` exit 0 (158 s), `e2e-pdf-import` exit 0 (130 s, no baseline row worse). `e2e-feedback` failed four times earlier for the reasons in the list above before its green run.
+
+**Not covered / limits:** a real deployment; Vercel's own headers and content types; a real phone, Safari, Firefox (clipboard needs a secure context); a boundary around the landing page; no `global-error`.

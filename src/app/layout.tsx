@@ -1,25 +1,36 @@
 /*
  * src/app/layout.tsx — root layout for Atrium v2.
  *
- * Loads the two type families once via next/font and exposes them as CSS
- * variables that globals.css binds to --font-display / --font-sans.
- * Wraps every page in SmoothScrollProvider (imported from v1), the single
- * GSAP-ticker clock that drives Lenis scrolling and ScrollTrigger.
+ * Loads the two type families once via next/font/local and exposes them as CSS
+ * variables that globals.css binds to --font-display / --font-sans. The woff2 files
+ * in ./fonts are the latin subsets Google served for Marcellus and Figtree, kept in
+ * the repo so `next build` fetches nothing from Google and the browser asks no one
+ * but this site (step D.1). Wraps every page in SmoothScrollProvider (imported from
+ * v1), the single GSAP-ticker clock that drives Lenis scrolling and ScrollTrigger.
+ * Site-wide metadata (title template, description, Open Graph) is here; the image
+ * is ./opengraph-image.jpg, made from a landing photo by scripts/make-og-image.ts.
  */
 import type { Metadata } from "next";
-import { Marcellus, Figtree } from "next/font/google";
+import localFont from "next/font/local";
 import { SmoothScrollProvider } from "@/components/motion/SmoothScrollProvider";
 import "./globals.css";
 
 // Display face: Roman inscriptional letterforms, echoing carved stone. Headlines only.
-const marcellus = Marcellus({ variable: "--font-marcellus", subsets: ["latin"], weight: "400" });
+// adjustFontFallback matches what next/font/google generated, so text doesn't jump when the face loads.
+const marcellus = localFont({ src: "./fonts/marcellus-latin.woff2", variable: "--font-marcellus", weight: "400", display: "swap", adjustFontFallback: "Times New Roman" });
 
-// Interface face: clean, humanist sans for body copy and all editor UI.
-const figtree = Figtree({ variable: "--font-figtree", subsets: ["latin"], weight: ["400", "500", "600"] });
+// Interface face: clean, humanist sans for body copy and all editor UI. One variable file covers 400 to 600.
+const figtree = localFont({ src: "./fonts/figtree-latin.woff2", variable: "--font-figtree", weight: "400 600", display: "swap", adjustFontFallback: "Arial" });
+
+const DESCRIPTION = "Turn a floor plan into an editable 3D model you can walk through. Files stay in your browser.";
 
 export const metadata: Metadata = {
-  title: "Atrium",
-  description: "Turn a floor plan into an editable 3D model you can walk through.",
+  // Absolute URLs for the share image: Vercel's production host when there is one, else the local server.
+  metadataBase: new URL(process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "http://localhost:3000"),
+  title: { default: "Atrium: floor plan to 3D", template: "%s | Atrium" },
+  description: DESCRIPTION,
+  openGraph: { title: "Atrium: floor plan to 3D", description: DESCRIPTION, siteName: "Atrium", type: "website" },
+  twitter: { card: "summary_large_image", title: "Atrium: floor plan to 3D", description: DESCRIPTION },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
