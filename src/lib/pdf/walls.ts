@@ -144,6 +144,14 @@
  *    overlapping and at least twice that width but under 0.6 m apart, read as one wall's heavy-pen faces;
  *    treads more than 0.3 m apart pair into adjacent, non-overlapping slabs and are not caught.
  *
+ * Step Q.4a, a face broken at a T (proven on plan-t-breaks, scripts/test-pdf-q4.ts):
+ *  - CAD draws a room's outline as lines, so the face a wall meets at a T breaks for exactly that wall's
+ *    width. The break still closes as solid wall (rule 4), but it is not a gap the drawing failed to
+ *    explain: a break under 0.45 m is left out of `gaps` when a perpendicular piece as thick as the
+ *    break (within 1 mm) stands in it, its centre inside the break, and ends at this wall (an end
+ *    within half this wall's thickness plus the joint reach of its centre line). Breaks of any other
+ *    width, and breaks with no wall meeting them, are reported as before.
+ *
  * Output ids are "v1", "v2", ... ; a is the end with the smaller x (horizontal
  * walls) or y (vertical ones). Doors without an arc get LEGACY_SWING, as
  * buildPlan's do. Connects to: extract.ts (VectorPage, `path` and `curve` on
@@ -341,14 +349,24 @@ function mergeLines(pieces: Piece[], gaps: NonNullable<VectorWalls["gaps"]>): Pi
     if (g) g.push(p);
     else groups.push([p]);
   }
+  // Step Q.4a (header): the break a wall meeting this one at a T leaves in its face.
+  const tBreak = (cur: Piece, p: Piece) =>
+    pieces.some(
+      (w) =>
+        w.axis !== p.axis &&
+        Math.abs(w.t - (p.s0 - cur.s1)) <= SAME &&
+        w.c > cur.s1 &&
+        w.c < p.s0 &&
+        Math.min(Math.abs(w.s0 - p.c), Math.abs(w.s1 - p.c)) <= p.t / 2 + WALL_RULES.meet,
+    );
   const merged: Piece[] = [];
   for (const g of groups) {
     g.sort((p, q) => p.s0 - q.s0);
     let cur: Piece | null = null;
     for (const p of g) {
       if (cur && p.s0 < cur.s1 + WALL_RULES.opening[0] - EPS) {
-        // A real break under 0.45 m (not an overlap): closed as wall, and reported.
-        if (p.s0 - cur.s1 > SAME) gaps.push({ a: at(p.axis, cur.s1, p.c), b: at(p.axis, p.s0, p.c), thickness: p.t, size: p.s0 - cur.s1 });
+        // A real break under 0.45 m (not an overlap): closed as wall, and reported unless a wall meets it at a T.
+        if (p.s0 - cur.s1 > SAME && !tBreak(cur, p)) gaps.push({ a: at(p.axis, cur.s1, p.c), b: at(p.axis, p.s0, p.c), thickness: p.t, size: p.s0 - cur.s1 });
         cur.s1 = Math.max(cur.s1, p.s1);
         cur.openings.push(...p.openings);
       } else merged.push((cur = { ...p, openings: [...p.openings] }));

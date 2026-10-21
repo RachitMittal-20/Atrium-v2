@@ -94,6 +94,12 @@
  * overlaps a vector one is left out. Every opening gets `provenance` and
  * `defaultHeight` (a PDF has no heights: DOOR_SIZE and WINDOW_SIZE).
  *
+ * Flush jambs (step Q.4a). Offsets and widths are rounded to 0.1 mm, so a jamb drawn flush with
+ * the face of a wall meeting at a T (exactly on its wall's usable span's end) can land up to
+ * 0.075 mm outside it, and openingProblem would refuse the opening. A jamb outside the usable span
+ * by no more than 0.1 mm (ROUND_SLACK) is put on the span's end instead; every other opening keeps
+ * its rounded offset and width exactly.
+ *
  * Hinges (step M.1d). Walls keep the direction walls.ts read them in: a is always the
  * end with the smaller coordinate, and no wall is ever turned round to suit a door.
  * A door drawn hinged on the jamb nearer its wall's b end is stored with
@@ -121,7 +127,7 @@ import { DOOR_SIZE, LEGACY_SWING, WINDOW_SIZE } from "@/data/samplePlan";
 import type { Analysis } from "@/lib/blueprint/analyse";
 import { nameRooms, type NamingReport } from "@/lib/blueprint/nameRooms";
 import { buildPlan } from "@/lib/blueprint/toPlan";
-import { openingProblem } from "@/lib/plan/edit";
+import { openingProblem, usableSpan } from "@/lib/plan/edit";
 import { freeEnds } from "@/lib/pdf/verdict";
 import { clampOpening, wallLength, wallNormal } from "@/lib/plan/geometry";
 import { deriveRooms } from "@/lib/plan/rooms";
@@ -140,6 +146,8 @@ const CLUTTER = { length: 1.5, reach: 0.3 };
 const PARALLEL = Math.sin((2 * Math.PI) / 180);
 const r4 = (v: number) => Math.round(v * 1e4) / 1e4 || 0; // 0.1 mm
 const r5 = (v: number) => Math.round(v * 1e5) / 1e5 || 0; // 0.01 mm
+/** Flush jambs (header, step Q.4a): how far rounding may put a jamb outside its wall's usable span. */
+const ROUND_SLACK = 1e-4;
 
 export interface Coverage {
   walls: number;
@@ -626,7 +634,13 @@ export function mergeVector(
     const [s0, s1] = [lineCoords(a, host).along, lineCoords(b, host).along].sort((p, q) => p - q);
     const size = kind === "door" ? { ...DOOR_SIZE, swing: LEGACY_SWING as SwingSide } : WINDOW_SIZE;
     const placed = clampOpening({ id, wallId: pw.id, kind, ...size, offset: r4((s0 + s1) / 2), width: r4(s1 - s0), ...extra, defaultHeight: true } as Opening, pw);
-    return { ...placed, offset: r4(placed.offset), width: r4(placed.width) };
+    const o = { ...placed, offset: r4(placed.offset), width: r4(placed.width) };
+    // Flush jambs (header): a jamb rounding put just outside the usable span goes onto its end.
+    const span = usableSpan(planWalls, pw.id)!;
+    const [j0, j1] = [o.offset - o.width / 2, o.offset + o.width / 2];
+    const lo = j0 < span.start - 1e-9 && j0 >= span.start - ROUND_SLACK ? span.start : j0;
+    const hi = j1 > span.end + 1e-9 && j1 <= span.end + ROUND_SLACK ? span.end : j1;
+    return lo === j0 && hi === j1 ? o : { ...o, offset: (lo + hi) / 2, width: hi - lo };
   };
   // The PDF's openings first.
   for (const v of vOpen) {

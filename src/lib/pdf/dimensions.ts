@@ -14,8 +14,8 @@
  * it never replaces it, and the row says "Overridden". Overrides belong to the
  * import screen's state (keyed by row index) and go into the CSV.
  *
- * Each row says how the printed line was measured ("between ticks" or "line
- * length", and "read by OCR" when the text came from OCR). modelRows is the
+ * Each row says how the printed line was measured ("between arrow tips", "between
+ * ticks" or "line length", and "read by OCR" when the text came from OCR). modelRows is the
  * second check (step M.1b): the printed values against the BUILT model.
  *
  * Also the two unit formats of the table (millimetres, and feet and inches to
@@ -31,8 +31,9 @@ export const OK_PCT = 0.2;
 
 export type Overrides = Record<number, { valueM: number; note: string }>;
 
-/** "between ticks" or "line length", plus ", read by OCR" for an OCR reading. */
-export const howMeasured = (m: Pick<DimensionMatch, "measure" | "source">) => `${m.measure === "ticks" ? "between ticks" : "line length"}${m.source === "ocr" ? ", read by OCR" : ""}`;
+const HOW = { arrows: "between arrow tips", ticks: "between ticks", line: "line length" } as const;
+/** "between arrow tips", "between ticks" or "line length", plus ", read by OCR" for an OCR reading. */
+export const howMeasured = (m: Pick<DimensionMatch, "measure" | "source">) => `${HOW[m.measure]}${m.source === "ocr" ? ", read by OCR" : ""}`;
 
 /** One row: the printed value against a length, with the OK rule and any override. */
 function row(m: DimensionMatch, measuredM: number, override: DimensionRow["override"], extra: Partial<DimensionRow> = {}): DimensionRow {

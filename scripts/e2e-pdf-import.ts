@@ -103,6 +103,10 @@
  * written from THIS Chromium run with E2E_WRITE_BASELINE=1): any number worse than its baseline fails
  * the suite (fewer exact walls or openings, more traced or unclassified, fewer dimensions, more flagged,
  * fewer rooms); a file with no baseline is reported, not failed.
+ * Step Q.4a (SYNTHETIC fixtures, through every fixture check above): plan-arrows' rows say "between arrow
+ * tips"; plan-t-breaks reports only its two real narrow gaps, none at its six T-junctions; plan-flush-jamb
+ * places the window flush with a T's face (Good); plan-dims-disagree (not in truth.json) is "check" with
+ * "Two readings disagree by 6.2%: …".
  * Screenshots in /tmp/studio/: pdf-review-1440.png, pdf-dimension-check-1440.png,
  * pdf-fit-warning-1440.png, pdf-review-390.png, pdf-coverage-1440.png,
  * pdf-model-check-1440.png, pdf-clutter-1440.png, pdf-traced-1440.png, and (M.1c)
@@ -387,37 +391,37 @@ async function session(browser: Browser, width: number, height: number, touch: b
     return `"${text}", the unclassified gap boxed (${len.toFixed(1)} px), no traced boxes`;
   };
 
-  /** Step M.1d, plan-gaps on the review screen: the out-of-range sentence and the highlight. */
+  /** Step M.1d, plan-gaps on the review screen: the out-of-range sentence and the highlight (step Q.4a: plan-t-breaks too). */
   const checkGapsReview = async (t: Truth) => {
     const want = [...t.outOfRangeGaps!].sort((a, b) => a - b);
     const line = tid(page, "coverage-gaps-line");
     await line.waitFor();
     const text = (await line.innerText()).trim();
     const m = text.match(GAPS);
-    assert.ok(m, `plan-gaps: the out-of-range sentence "${text}"`);
-    assert.equal(Number(m[1]), want.length, `plan-gaps: ${want.length} gaps said (${text})`);
-    assert.deepEqual([m[2], m[3]], ["450 mm", "4000 mm"], `plan-gaps: the range as printed (${m[2]} to ${m[3]})`);
+    assert.ok(m, `${t.file}: the out-of-range sentence "${text}"`);
+    assert.equal(Number(m[1]), want.length, `${t.file}: ${want.length} gaps said (${text})`);
+    assert.deepEqual([m[2], m[3]], ["450 mm", "4000 mm"], `${t.file}: the range as printed (${m[2]} to ${m[3]})`);
     // The sizes, in the mm this browser is set to, and in the order the panel lists them.
     const said = m[4].split(", ").map((s) => Number(s.replace(/[^\d.]/g, "")) / 1000);
-    assert.deepEqual([...said].sort((a, b) => a - b).map((v) => +v.toFixed(3)), want.map((v) => +v.toFixed(3)), `plan-gaps: the sizes (${m[4]})`);
+    assert.deepEqual([...said].sort((a, b) => a - b).map((v) => +v.toFixed(3)), want.map((v) => +v.toFixed(3)), `${t.file}: the sizes (${m[4]})`);
     // data-sizes carries them unrounded, so the check does not depend on the displayed unit.
     const attr = (await line.getAttribute("data-sizes"))!.split(" ").map(Number);
-    assert.deepEqual([...attr].sort((a, b) => a - b).map((v) => +v.toFixed(3)), want.map((v) => +v.toFixed(3)), "plan-gaps: data-sizes agrees");
+    assert.deepEqual([...attr].sort((a, b) => a - b).map((v) => +v.toFixed(3)), want.map((v) => +v.toFixed(3)), `${t.file}: data-sizes agrees`);
     // Highlighted on the overlay: one box per gap, each as long as the gap is wide.
     const boxes = page.locator("[data-opening-mark=gap]");
-    assert.equal(await boxes.count(), want.length, "plan-gaps: every gap highlighted on the overlay");
+    assert.equal(await boxes.count(), want.length, `${t.file}: every gap highlighted on the overlay`);
     const pdf = (await page.evaluate(() => (window as Win).__importPdf))!;
     const pxPerM = pdf.pxPerPt / pdf.scale!.mPerPt!;
     const lens = await boxes.evaluateAll((ls) => ls.map((l) => Math.hypot(Number(l.getAttribute("x2")) - Number(l.getAttribute("x1")), Number(l.getAttribute("y2")) - Number(l.getAttribute("y1")))));
     assert.deepEqual(
       [...lens].sort((a, b) => a - b).map((v) => +(v / pxPerM).toFixed(2)),
       want.map((v) => +v.toFixed(2)),
-      `plan-gaps: each box is its gap (${lens.map((v) => (v / pxPerM).toFixed(2)).join(", ")} m)`,
+      `${t.file}: each box is its gap (${lens.map((v) => (v / pxPerM).toFixed(2)).join(", ")} m)`,
     );
     // And the layer's own toggle says how many.
-    assert.ok((await page.locator("label", { hasText: "Gaps not read" }).innerText()).includes(String(want.length)), "plan-gaps: the overlay layer is listed with its count");
+    assert.ok((await page.locator("label", { hasText: "Gaps not read" }).innerText()).includes(String(want.length)), `${t.file}: the overlay layer is listed with its count`);
     await tid(page, "coverage").scrollIntoViewIfNeeded();
-    if (!touch) await page.screenshot({ path: `${OUT}/pdf-gaps-1440.png`, fullPage: true });
+    if (!touch && t.file === GAP_FILE) await page.screenshot({ path: `${OUT}/pdf-gaps-1440.png`, fullPage: true });
     return `"${text}", ${want.length} boxed on the overlay`;
   };
 
@@ -702,6 +706,7 @@ async function session(browser: Browser, width: number, height: number, touch: b
         line += `; ${t.dims.length} dimensions within 0.1 mm of the truth, ${Q2[file]?.flagged ? `${Q2[file].flagged!.join(", ")} flagged, the rest OK` : "all OK"} (${hows})`;
         if (file === "plan-outlined.pdf") assert.ok(hows.split(" / ").every((h) => h.endsWith("read by OCR")), `${file}: every row read by OCR`);
         if (file === "plan-broken-dims.pdf") assert.ok(hows.includes("between ticks") && hows.includes("line length"), `${file}: ticks and a line length`);
+        if (file === "plan-arrows.pdf") assert.equal(hows, "between arrow tips", `${file}: both rows measured between the arrow tips (step Q.4a)`);
       } else assert.equal(await tid(page, "dimension-check").count(), 0, `${file}: no table without dimensions`);
       // plan-gaps (step M.1d) is the out-of-range-gap fixture: its 4.60 m gap is deliberately NOT
       // bridged, so that wall is two pieces with free ends, the living room does not close, and the
@@ -730,6 +735,8 @@ async function session(browser: Browser, width: number, height: number, touch: b
       line += `; "${cov.text}" ${cov.openings}`;
       line += await checkQ1Review(file);
       line += await checkQ2Review(file);
+      // Step Q.4a: the face breaks at the six T-junctions are not "gaps not read"; the two real ones are.
+      if (file === "plan-t-breaks.pdf") line += `; ${await checkGapsReview(t)}`;
       if (DOOR_FILES.includes(file)) line += `; ${await checkDoorsReview(file, t)}`;
       if (t.dims.length) {
         const approx = await checkModel(file, t);
@@ -819,6 +826,20 @@ async function session(browser: Browser, width: number, height: number, touch: b
     const line = `${touch ? "390" : "1440"} misprinted: 4100 mm Flagged, overridden to 4000 mm with measured ${measured} kept; model check flagged and overridden with the model's ${model} kept; CSV "${csvRow}" / "${modelRow}"`;
     report.push(line);
     console.log(line);
+  }
+
+  // ---------------------------------------------------------------- step Q.4a: two readings 6.2% apart are only "check"
+  // plan-dims-disagree (not in truth.json: its scale is the two readings' median, 0.09% off) prints two
+  // dimensions, one drawn 3% long and one 3% short.
+  if (!touch) {
+    step("1440 plan-dims-disagree");
+    await upload(join(DIR, "plan-dims-disagree.pdf"));
+    assert.equal(await tid(page, "pdf-scale-status").getAttribute("data-confidence"), "check", "plan-dims-disagree: scale check, not good");
+    const reason = (await tid(page, "pdf-scale-reason").innerText()).trim();
+    const want = "Two readings disagree by 6.2%: the drawing may not be to scale, or a dimension spans something else. Confirm the scale.";
+    assert.ok(reason.includes(want), `plan-dims-disagree: the reason (${reason})`);
+    report.push(`1440 plan-dims-disagree.pdf: scale check, "${want}"`);
+    console.log(report.slice(-1)[0]);
   }
 
   // ---------------------------------------------------------------- step Q.1: plan-chatgpt-flat (ChatGPT-generated, not real CAD)

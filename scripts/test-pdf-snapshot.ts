@@ -26,6 +26,7 @@ const FILE = join(DIR, "reading-snapshot.json");
 /** Fixtures whose reading is allowed to differ from the snapshot, and why (empty: none may). */
 const CHANGED: Record<string, string> = {
   "plan-single-line.pdf": "step S.1: w-KM, drawn as one 0.1 m stroke, is a wall read from the PDF (14 of 14 exact; it was traced)",
+  "plan-chatgpt-flat.pdf": "step Q.4a: its one out-of-range gap (115 mm at x 6428–6543, y 2384.5 mm) is the face break where the 115 mm wall at x 6485.5 meets the y 2384.5 wall at a T, so it is no longer reported (gaps [0.115] -> [], outOfRangeGaps 1 -> 0); nothing else changed",
 };
 
 const round = (v: unknown): unknown => (typeof v === "number" ? Math.round(v * 1e6) / 1e6 || 0 : v);

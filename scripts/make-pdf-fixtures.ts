@@ -54,6 +54,18 @@
  *   plan-traced-wall.pdf (step S.1, SYNTHETIC) plan-filled with the bathroom's top wall (w-KM) drawn
  *                      as an embedded PICTURE of a black bar, no vector line: the one wall only the
  *                      tracing can see (plan-single-line's single stroke is read from the PDF since S.1)
+ *   plan-arrows.pdf    (step Q.4a, SYNTHETIC) the imperial house with only two dimensions, each
+ *                      drawn as two line pieces stopping at separate FILLED arrowheads (2.5 and 3.5
+ *                      text heights long), the text in a gap in the line, extension lines shorter
+ *                      than the text height and set back from the line: "10668 mm" and 28'-0"
+ *   plan-dims-disagree.pdf (step Q.4a, SYNTHETIC) plan-filled with only two dimensions, the 10 m one
+ *                      drawn 3% long and the 8 m one 3% short. NOT in truth.json: its scale is the
+ *                      two readings' median, 0.09% off, so the "walls within 0.5 mm" loops don't apply
+ *   plan-t-breaks.pdf  (step Q.4a, SYNTHETIC) every wall drawn as its two face LINES, as CAD draws a
+ *                      room outline: a face breaks for exactly the width of a wall meeting it at a T,
+ *                      plus a real 0.30 m gap and a 0.10 m gap away from any T
+ *   plan-flush-jamb.pdf (step Q.4a, SYNTHETIC) the imperial house with A–C drawn as one wall and a
+ *                      window on it whose jamb is flush with partition B–I's east face
  *   plan-outlined.pdf  plan-filled with NO text items: room names and the title block
  *                      "converted to outlines" (each string drawn by @napi-rs/canvas in
  *                      Arial and its ink turned into filled rectangles, row runs merged
@@ -136,7 +148,7 @@ export interface Truth {
   /** Expected mismatch measured ratio (plan-fit), or null. */
   mismatchRatio: number | null;
   /** lengthPt: what should be measured (between the ticks, or the line); lineLengthPt: the drawn line (step M.1b). */
-  dims: { text: string; metres: number; lengthPt: number; measure?: "ticks" | "line"; lineLengthPt?: number; spans?: "opening width" | "inside faces" | "outside faces" }[];
+  dims: { text: string; metres: number; lengthPt: number; measure?: "arrows" | "ticks" | "line"; lineLengthPt?: number; spans?: "opening width" | "inside faces" | "outside faces" }[];
   segments: Seg[];
   arcs: { cx: number; cy: number; r: number }[];
   texts: { str: string; x: number; y: number; rotation: number; height: number; width: number }[];
@@ -443,6 +455,19 @@ interface Options {
   /** Step X.1 (plan-small-on-big): the sheet's size in points and where the drawing sits on it
    *  (added to every user-space position), so a small plan can sit on a big, mostly empty sheet. */
   sheet?: { name: string; size: [number, number]; shift: [number, number] };
+  /** Step Q.4a (plan-arrows): only the overall dimensions, printed "10668 mm" (top) and 28'-0" (left),
+   *  each as two line pieces stopping at filled arrowheads, text in the line's gap, short set-back
+   *  extension lines. Use with `imperial`. */
+  arrows?: boolean;
+  /** Step Q.4a (plan-dims-disagree): only the overall dimensions, the 10 m one drawn this many times
+   *  its length and the 8 m one the second factor (the printed values stay true). */
+  twoDims?: [number, number];
+  /** Step Q.4a (plan-t-breaks): each wall piece's outline drawn as LINES with every part lying inside
+   *  another wall's footprint cut away, collinear parts joined: a face breaks exactly where a wall
+   *  meets it at a T, as CAD draws a room's outline. */
+  faceLines?: boolean;
+  /** Step Q.4a (plan-flush-jamb): A–B and B–C drawn as one wall, w-AC (FLUSH_WALLS). */
+  flushJamb?: boolean;
 }
 
 /**
@@ -565,6 +590,24 @@ const SILL_FIXTURE: FixtureOpening[] = CENTRE_FIXTURE.filter((op) => op.style !=
 const BOARD_FIXTURE: FixtureOpening[] = STRIKE_FIXTURE.map((op) =>
   op.id === "win-living-n" ? { ...op, style: "glass3" as const } : op.strike ? { ...op, strike: undefined, arc: "bezier" as const, offset: op.id === "sj-bed1b" ? 2.9 : op.offset } : op,
 ).filter((op) => op.id !== "sj-bed1a");
+/** plan-t-breaks (step Q.4a): plan-single-stroke's openings, plus a 0.30 m gap on w-BI and a 0.10 m
+ *  gap on w-CM, away from every T: real narrow gaps, still reported. */
+const T_FIXTURE: FixtureOpening[] = [
+  ...STROKE_FIXTURE,
+  { id: "gap-narrow", wallId: "w-BI", offset: 1, width: 0.3, style: "oddgap" },
+  { id: "gap-slot", wallId: "w-CM", offset: 1, width: 0.1, style: "oddgap" },
+];
+/** plan-flush-jamb (step Q.4a): the sample's walls with A–B and B–C as one wall w-AC, so nothing
+ *  overlaps the gap beside the T at B; plan-single-stroke's openings with w-BC's moved onto w-AC,
+ *  and a 1.2 m window whose west jamb is flush with w-BI's east face (x 4.05 sample metres). */
+const FLUSH_WALLS = [
+  ...samplePlan.walls.filter((w) => w.id !== "w-AB" && w.id !== "w-BC"),
+  { id: "w-AC", a: { x: 0, y: 0 }, b: { x: 10, y: 0 }, thickness: 0.2, height: 2.7 },
+] as typeof samplePlan.walls;
+const FLUSH_FIXTURE: FixtureOpening[] = [
+  ...STROKE_FIXTURE.map((op) => (op.wallId === "w-BC" ? { ...op, wallId: "w-AC", offset: op.offset + 4 } : op)),
+  { id: "win-flush", wallId: "w-AC", offset: 4.65, width: 1.2, style: "window3" },
+];
 /** A rectangle leaf's thickness (m). Inside walls.ts's 0.05–0.6 m pairing range on purpose:
  *  it would pair into a thin 0.9 m "wall" if openings.ts did not keep all four sides out. */
 const LEAF_T = 0.06;
@@ -602,9 +645,10 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
   // Walls: one rectangle per piece between openings, extended by half its own
   // thickness at both ends so corners and T-junctions close.
   // Step S.1: a single-stroke plan's walls are 0.23 m and 0.115 m thick, as UK brick and block walls are.
-  const sourceWalls = (o.strips ?? samplePlan.walls).map((w) => (o.stroke ? { ...w, thickness: w.thickness > 0.15 ? 0.23 : 0.115 } : w));
+  const sourceWalls = (o.strips ?? (o.flushJamb ? FLUSH_WALLS : samplePlan.walls)).map((w) => (o.stroke ? { ...w, thickness: w.thickness > 0.15 ? 0.23 : 0.115 } : w));
   const sourceOpenings = o.strips ? [] : samplePlan.openings;
   const pictures: [number, number, number, number][] = []; // step S.1: walls drawn as pictures, x y w h in user space
+  const outlines: { id: string; pts: number[][] }[] = []; // step Q.4a (faceLines): each piece's outline, user space, drawn as lines after the loop
   for (const w of sourceWalls) {
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
     const d = { x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L };
@@ -657,6 +701,7 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
     let from = single ? 0 : -t / 2;
     for (const [g0, g1, op] of gaps) {
       if (single) pen.line(at(from, 0), at(g0, 0), t * s);
+      else if (o.faceLines) outlines.push({ id: w.id, pts: [at(from, -t / 2), at(g0, -t / 2), at(g0, t / 2), at(from, t / 2)] });
       else pen.poly([at(from, -t / 2), at(g0, -t / 2), at(g0, t / 2), at(from, t / 2)], o.walls, pen0);
       from = g1;
       const style = styleOf(op);
@@ -687,6 +732,7 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
       }
     }
     if (single) pen.line(at(from, 0), at(L, 0), t * s);
+    else if (o.faceLines) outlines.push({ id: w.id, pts: [at(from, -t / 2), at(L + t / 2, -t / 2), at(L + t / 2, t / 2), at(from, t / 2)] });
     else pen.poly([at(from, -t / 2), at(L + t / 2, -t / 2), at(L + t / 2, t / 2), at(from, t / 2)], o.walls, pen0);
     if (o.centreLines) pen.dashed(at(0, 0), at(L, 0), 0.15);
     if (o.clipHatch && t > 0.15) {
@@ -707,6 +753,42 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
       }
       pieces.push([u0, L + t / 2]);
       for (const [p0, p1] of pieces) for (let u = p0 + 0.05; u + t <= p1; u += 0.15) pen.line(at(u, -t / 2), at(u + t, t / 2), 0.18);
+    }
+  }
+  if (outlines.length) {
+    // Step Q.4a (faceLines): every outline edge minus the OPEN interiors of the other walls' footprints
+    // (each wall extended by half its thickness at both ends), then collinear parts joined and drawn.
+    // An edge on another footprint's boundary (an outer corner, a collinear neighbour) stays.
+    const boxes = sourceWalls.map((w) => {
+      const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+      const [d, t] = [{ x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L }, w.thickness];
+      const [p, q] = [P(w.a.x - d.x * t / 2 - d.y * t / 2, w.a.y - d.y * t / 2 + d.x * t / 2), P(w.b.x + d.x * t / 2 + d.y * t / 2, w.b.y + d.y * t / 2 - d.x * t / 2)];
+      return { id: w.id, x0: Math.min(p[0], q[0]), y0: Math.min(p[1], q[1]), x1: Math.max(p[0], q[0]), y1: Math.max(p[1], q[1]) };
+    });
+    const lines = new Map<string, [number, number][]>(); // "h:y" or "v:x" -> spans along
+    for (const { id: own, pts } of outlines) {
+      for (let e = 0; e < 4; e++) {
+        const [a, b] = [pts[e], pts[(e + 1) % 4]];
+        const h = Math.abs(a[1] - b[1]) < 1e-9;
+        const [c, s0, s1] = h ? [a[1], Math.min(a[0], b[0]), Math.max(a[0], b[0])] : [a[0], Math.min(a[1], b[1]), Math.max(a[1], b[1])];
+        let spans: [number, number][] = [[s0, s1]];
+        for (const bx of boxes) {
+          if (bx.id === own) continue;
+          const [lo, hi, a0, a1] = h ? [bx.y0, bx.y1, bx.x0, bx.x1] : [bx.x0, bx.x1, bx.y0, bx.y1];
+          if (!(c > lo + 1e-9 && c < hi - 1e-9)) continue;
+          spans = spans.flatMap(([u, v]) => [[u, Math.min(v, a0)], [Math.max(u, a1), v]] as [number, number][]).filter(([u, v]) => v - u > 1e-9);
+        }
+        const key = `${h ? "h" : "v"}:${c.toFixed(6)}`;
+        lines.set(key, [...(lines.get(key) ?? []), ...spans]);
+      }
+    }
+    for (const [key, spans] of lines) {
+      const [h, c] = [key[0] === "h", Number(key.slice(2))];
+      spans.sort((p, q) => p[0] - q[0]);
+      const joined: [number, number][] = [];
+      for (const sp of spans) if (joined.length && sp[0] <= joined[joined.length - 1][1] + 1e-9) joined[joined.length - 1][1] = Math.max(joined[joined.length - 1][1], sp[1]);
+        else joined.push([...sp]);
+      for (const [u, v] of joined) pen.line(h ? [u, c] : [c, u], h ? [v, c] : [c, v], 0.5);
     }
   }
   if (o.againstWall) {
@@ -844,9 +926,10 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
     else pen.dimText(text, mid - tw / 2, p[1] - 0.35 * TH, TH);
     dims.push({ text, metres, lengthPt: ((ticks ? 0 : 2 * over) + b - a) * k, measure: ticks ? "ticks" : "line", lineLengthPt: (b - a + 2 * over) * k });
   };
-  const dimH = (x1: number, x2: number, y: number, th = TH) => {
+  /** `f` (step Q.4a): the line is drawn f times its length from x1; the text keeps the true value. */
+  const dimH = (x1: number, x2: number, y: number, th = TH, f = 1) => {
     if (o.broken) return broken(P(x1, y), P(x2, y), false, (x2 - x1) * unit);
-    const [p, q] = [P(x1, y), P(x2, y)];
+    const [p, q] = [P(x1, y), P(x1 + (x2 - x1) * f, y)];
     pen.line(p, q, 0.5);
     for (const e of [p, q]) pen.line([e[0], e[1] - 4], [e[0], e[1] + 6], 0.25);
     tick(p);
@@ -855,9 +938,9 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
     pen.dimText(text, (p[0] + q[0]) / 2 - pen.width(text, th) / 2, p[1] + 2.5, th);
     dims.push({ text, metres: (x2 - x1) * unit, lengthPt: (q[0] - p[0]) * k, measure: "ticks", lineLengthPt: (q[0] - p[0]) * k });
   };
-  const dimV = (y1: number, y2: number, x: number) => {
+  const dimV = (y1: number, y2: number, x: number, f = 1) => {
     if (o.broken) return broken(P(x, y1), P(x, y2), true, (y2 - y1) * unit);
-    const [p, q] = [P(x, y1), P(x, y2)];
+    const [p, q] = [P(x, y1), P(x, y1 + (y2 - y1) * f)];
     pen.line(p, q, 0.5);
     for (const e of [p, q]) pen.line([e[0] - 6, e[1]], [e[0] + 4, e[1]], 0.25);
     tick(p);
@@ -885,7 +968,39 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
     const lengthPt = Math.hypot(q[0] - p[0], q[1] - p[1]) * k;
     dims.push({ text, metres, lengthPt, measure: ext >= TH ? "ticks" : "line", lineLengthPt: lengthPt, spans });
   };
-  if (o.closeDims) {
+  /** Step Q.4a: a dimension from a to b (sample metres) measured TIP TO TIP between two filled
+   *  arrowheads `la` points long (a third as wide), drawn as two line pieces from each arrowhead's
+   *  base to a gap round the text, which sits on the line; extension lines 5 pt long (under the
+   *  7 pt text height) set back 1.5 pt from the tips, towards the building (`toward`, user space). */
+  const arrowDim = (a: number[], b: number[], text: string, la: number, toward: number[]) => {
+    const [p, q] = [P(a[0], a[1]), P(b[0], b[1])];
+    const len = Math.hypot(q[0] - p[0], q[1] - p[1]);
+    const u = [(q[0] - p[0]) / len, (q[1] - p[1]) / len];
+    const n = [-u[1], u[0]];
+    const head = (tip: number[], dir: number) => {
+      const base = [tip[0] + u[0] * la * dir, tip[1] + u[1] * la * dir];
+      pen.poly([tip, [base[0] + (n[0] * la) / 6, base[1] + (n[1] * la) / 6], [base[0] - (n[0] * la) / 6, base[1] - (n[1] * la) / 6]], "fill");
+      return base;
+    };
+    const [b0, b1] = [head(p, 1), head(q, -1)];
+    const tw = pen.width(text, TH);
+    const mid = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+    const cut = tw / 2 + PAD;
+    pen.line(b0, [mid[0] - u[0] * cut, mid[1] - u[1] * cut], 0.5);
+    pen.line([mid[0] + u[0] * cut, mid[1] + u[1] * cut], b1, 0.5);
+    for (const e of [p, q]) pen.line([e[0] + toward[0] * 1.5, e[1] + toward[1] * 1.5], [e[0] + toward[0] * 6.5, e[1] + toward[1] * 6.5], 0.25);
+    const vertical = Math.abs(u[0]) < 0.5;
+    if (vertical) pen.dimText(text, mid[0] + 0.35 * TH, mid[1] - tw / 2, TH, 90);
+    else pen.dimText(text, mid[0] - tw / 2, mid[1] - 0.35 * TH, TH);
+    dims.push({ text, metres: Math.hypot(b[0] - a[0], b[1] - a[1]) * unit, lengthPt: len * k, measure: "arrows", lineLengthPt: (len - 2 * la) * k });
+  };
+  if (o.arrows) {
+    arrowDim([0, -1.8], [10, -1.8], `${Math.round(10 * unit * 1000)} mm`, 2.5 * TH, [0, -1]);
+    arrowDim([-1.8, 8], [-1.8, 0], fmtImperial(8 * FT_PER_SAMPLE_M, 0), 3.5 * TH, [1, 0]);
+  } else if (o.twoDims) {
+    dimH(0, 10, -1.8, TH, o.twoDims[0]);
+    dimV(0, 8, -1.8, o.twoDims[1]);
+  } else if (o.closeDims) {
     flushDim([-0.1, -0.45], [10.1, -0.45], [-0.1, -0.1], [10.1, -0.1], false, "outside faces"); // outer faces, 0.35 m off the north face
     flushDim([0.1, -0.7], [3.95, -0.7], [0.1, 0.1], [3.95, 0.1], false, "inside faces"); // bedroom 1's inside, stacked 0.25 m beyond
     flushDim([-0.45, -0.1], [-0.45, 8.1], [-0.1, -0.1], [-0.1, 8.1], true, "outside faces"); // outer faces, 0.35 m off the west face
@@ -908,7 +1023,7 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
       // The first two openings on the north wall (w-BC runs from B at x = 4), printed at their jambs.
       const onBC = o.doors.filter((op) => op.wallId === "w-BC" && op.style !== "oddgap").slice(0, 2);
       for (const op of onBC) dimH(4 + op.offset - op.width / 2, 4 + op.offset + op.width / 2, -0.75, 6);
-      for (const dm of dims.slice(-onBC.length)) dm.spans = "opening width"; // what the model check measures them between
+      if (onBC.length) for (const dm of dims.slice(-onBC.length)) dm.spans = "opening width"; // what the model check measures them between (slice(-0) would be every one)
     }
   }
 
@@ -1140,6 +1255,22 @@ export async function writePdfFixtures(): Promise<Truth[]> {
     ["plan-single-stroke-mixed.pdf", { cap: "butt", mixed: true }],
   ] as const)
     truths.push(await make(file, async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", doors: STROKE_FIXTURE, decoys: false, stroke, stairs: true, furniture: true })) })));
+  // Step Q.4a, all SYNTHETIC. plan-arrows: dimensions measured between filled arrowheads' tips (arrows).
+  truths.push(await make("plan-arrows.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "imperial", imperial: true, arrows: true })) })));
+  // plan-dims-disagree: two readings 3% long and 3% short (twoDims). Not in truth.json (see the header).
+  await make("plan-dims-disagree.pdf", async (d, f) => ({ ...plain, expectedScale: "check", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", twoDims: [1.03, 0.97] })) }));
+  // plan-t-breaks: walls as face lines broken at every T, plus two real narrow gaps (faceLines, T_FIXTURE).
+  truths.push(await make("plan-t-breaks.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", doors: T_FIXTURE, decoys: false, faceLines: true })) })));
+  // plan-flush-jamb: a window flush with a T stem's face (flushJamb). The truth splits w-AC at B, as the reader does.
+  truths.push(
+    await make("plan-flush-jamb.pdf", async (d, f) => {
+      const r = await drawPlan(d, f, { walls: "fill", dims: "imperial", imperial: true, doors: FLUSH_FIXTURE, decoys: false, flushJamb: true });
+      const ac = r.planWalls.find((w) => w.id === "w-AC")!;
+      const atB = { x: ac.a.x + (ac.b.x - ac.a.x) * 0.4, y: ac.a.y + (ac.b.y - ac.a.y) * 0.4 }; // B is 4 of A–C's 10 sample metres
+      const split = [{ ...ac, id: "w-AC.1", b: atB }, { ...ac, id: "w-AC.2", a: atB }];
+      return { ...plain, expectedScale: "good" as const, ...r, planWalls: [...r.planWalls.filter((w) => w.id !== "w-AC"), ...split] };
+    }),
+  );
   truths.push(await make("plan-no-dims.pdf", async (d, f) => ({ ...plain, expectedScale: "check", ...await drawPlan(d, f, { walls: "fill", dims: null }), dims: [] })));
   // The scan: plan-filled rendered at 150 dpi, embedded as one grey PNG filling the page.
   const { file: _file, pages: _pages, ...filled } = truths[0];

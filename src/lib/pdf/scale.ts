@@ -18,7 +18,14 @@
  * (the centre projects inside the segment); or (step M.1b) a line BROKEN around
  * its own text: two collinear parts with the text between them, each ending
  * within 2 text heights of the text, treated as one line from end to end.
- * What is measured (step M.1b): when ticks or extension lines cross the line
+ * What is measured, in this order of priority:
+ * ARROW TIPS (step Q.4a): when a FILLED TRIANGLE sits at each end of the line, pointing outward along
+ * it (its tip and its base's middle on the line's axis, within 0.1 text heights across; the tip or the
+ * base within 0.5 text heights of the line's end; the tip farther from the line's middle), the
+ * distance from tip to tip ("between arrow tips"). A dimension's line often stops at the arrowheads'
+ * bases, so its own length is short by both of them. Arrowhead sizes vary (2 to 4 text heights is
+ * usual, a hairline CAD arrow is under one), so the only size rule is 0.25 to 6 text heights long;
+ * then (step M.1b): when ticks or extension lines cross the line
  * near both ends (segments perpendicular to it, at least 1 text height long,
  * within 0.5 text heights of the end), the distance between those crossings
  * ("between ticks"), so a line that overshoots its ticks is not over-measured;
@@ -38,6 +45,10 @@
  * RESULT RULES (the image pipeline's bands, blueprint/scale.ts `band`):
  *   - dimensions: good = 2 or more samples within 5% of their median; check =
  *     one sample, or a spread over 5 up to 15%; none = no samples or over 15%.
+ *   - FEW READINGS (step Q.4a): with fewer than 3 readings, "good" also needs them to agree within
+ *     1% of each other (the largest over the smallest); otherwise "check" with "Two readings
+ *     disagree by X%: the drawing may not be to scale, or a dimension spans something else. Confirm
+ *     the scale." Two readings cannot outvote each other, so 5% is too loose to trust.
  *   - The result is the dimensions' when they give one (good or check).
  *   - THE TITLE BLOCK ALONE NEVER MAKES THE SCALE "good": with no usable
  *     dimensions it gives "check".
@@ -89,10 +100,14 @@ const BROKEN_H = 2; // × text height: a broken line's parts end this close to t
 const TICK_NEAR_H = 0.5; // × text height: a tick this close to a line end measures it
 const TICK_MIN_H = 1; // × text height: a tick or extension line at least this long
 const SAME_LINE_H = 0.05; // × text height: two candidate lines this close across are one line (centred text)
+const ARROW_LEN_H = [0.25, 6] as const; // × text height: an arrowhead's length, tip to base (header, step Q.4a)
+const ARROW_AXIS_H = 0.1; // × text height: its tip and base's middle this close to the line's axis
 const SAME_PCT = 2;
 /** The OUTLIER rule (header, step Q.2): at least `agree` readings agreeing, the one outlier under `share` of all. */
 const OUTLIER = { agree: 5, share: 0.2 };
 const TITLE_AGREE_PCT = 2;
+/** FEW READINGS (header, step Q.4a): under `n` readings they must agree within `pct`% to be good. */
+const FEW = { n: 3, pct: 1 };
 
 /** One joined line of text. `u` is the unit reading direction, `centre` the
  *  middle of the line at half its cap height. */
@@ -202,7 +217,7 @@ export interface DimensionLine {
   key: string;
   line: { x1: number; y1: number; x2: number; y2: number };
   ends: { x1: number; y1: number; x2: number; y2: number };
-  measure: "ticks" | "line";
+  measure: "arrows" | "ticks" | "line";
   lengthPt: number;
 }
 
@@ -242,9 +257,55 @@ export function dimensionLine(page: Pick<VectorPage, "segments">, l: TextLine): 
     }
   if (!best) return null;
   const { key, line } = best as { key: string; line: DimensionLine["line"] };
-  const ticks = tickEnds(page, line, h);
-  const ends = ticks ?? line;
-  return { key, line, ends, measure: ticks ? "ticks" : "line", lengthPt: Math.hypot(ends.x2 - ends.x1, ends.y2 - ends.y1) };
+  const arrows = arrowEnds(page, line, h);
+  const ticks = arrows ? null : tickEnds(page, line, h);
+  const ends = arrows ?? ticks ?? line;
+  return { key, line, ends, measure: arrows ? "arrows" : ticks ? "ticks" : "line", lengthPt: Math.hypot(ends.x2 - ends.x1, ends.y2 - ends.y1) };
+}
+
+type Triangle = [{ x: number; y: number }, { x: number; y: number }, { x: number; y: number }];
+/** The page's filled triangles (a filled path whose edges have exactly three corners), found once per page. */
+const trianglesOf = new WeakMap<object, Triangle[]>();
+function triangles(page: Pick<VectorPage, "segments">): Triangle[] {
+  const hit = trianglesOf.get(page.segments);
+  if (hit) return hit;
+  const byPath = new Map<number, { x: number; y: number }[]>();
+  for (const g of page.segments) {
+    if (!g.filled) continue;
+    const pts = byPath.get(g.path) ?? [];
+    for (const p of [{ x: g.x1, y: g.y1 }, { x: g.x2, y: g.y2 }]) if (!pts.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < 0.01)) pts.push(p);
+    byPath.set(g.path, pts);
+  }
+  const out = [...byPath.values()].filter((pts) => pts.length === 3) as Triangle[];
+  trianglesOf.set(page.segments, out);
+  return out;
+}
+
+/** Arrow tips at both ends of the line (header, ARROW TIPS), or null. */
+function arrowEnds(page: Pick<VectorPage, "segments">, line: DimensionLine["line"], h: number): DimensionLine["ends"] | null {
+  const len = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
+  const u = { x: (line.x2 - line.x1) / len, y: (line.y2 - line.y1) / len };
+  const along = (p: { x: number; y: number }) => (p.x - line.x1) * u.x + (p.y - line.y1) * u.y;
+  const across = (p: { x: number; y: number }) => Math.abs((p.x - line.x1) * -u.y + (p.y - line.y1) * u.x);
+  const tips: ({ x: number; y: number } | null)[] = [null, null];
+  const gap = [Infinity, Infinity];
+  for (const tri of triangles(page))
+    for (let i = 0; i < 3; i++) {
+      // Corner i as the tip, the middle of the other two as the base.
+      const tip = tri[i];
+      const [b1, b2] = [tri[(i + 1) % 3], tri[(i + 2) % 3]];
+      const base = { x: (b1.x + b2.x) / 2, y: (b1.y + b2.y) / 2 };
+      const la = Math.hypot(tip.x - base.x, tip.y - base.y);
+      if (la < ARROW_LEN_H[0] * h || la > ARROW_LEN_H[1] * h || across(tip) > ARROW_AXIS_H * h || across(base) > ARROW_AXIS_H * h) continue;
+      const [t, b] = [along(tip), along(base)];
+      [0, len].forEach((end, k) => {
+        const outward = k === 0 ? t < b : t > b; // pointing away from the line's middle
+        const d = Math.min(Math.abs(t - end), Math.abs(b - end));
+        if (outward && d <= TICK_NEAR_H * h && d < gap[k]) [tips[k], gap[k]] = [tip, d];
+      });
+    }
+  if (!tips[0] || !tips[1]) return null;
+  return { x1: tips[0].x, y1: tips[0].y, x2: tips[1].x, y2: tips[1].y };
 }
 
 /** Where ticks or extension lines cross the line near both its ends (header), or null. */
@@ -302,6 +363,10 @@ export function combineScale(samples: number[], title: TitleBlockScale | null, p
     const good = without.filter((x) => x?.confidence === "good");
     if (good.length === 1) [b, agreeing] = [good[0], samples.length - 1];
   }
+  // FEW READINGS (header): two readings within 5% of their median may still be 10% apart.
+  const apartPct = samples.length > 1 ? (Math.max(...samples) / Math.min(...samples) - 1) * 100 : 0;
+  const fewApart = b?.confidence === "good" && samples.length < FEW.n && apartPct > FEW.pct;
+  if (b && fewApart) b = { ...b, confidence: "check" };
   const dimensions = { mPerPt: b && b.confidence !== "none" ? b.median : null, n: samples.length, spreadPct: b?.spreadPct ?? 0, confidence: b?.confidence ?? ("none" as const) };
   const CLICK = "Click one wall and type its length to set the scale.";
   const CHECK = "Check it against a wall you know.";
@@ -322,6 +387,7 @@ export function combineScale(samples: number[], title: TitleBlockScale | null, p
       `The title block says ${title.text}, but the printed dimensions measure 1:${measured}, so the page was probably scaled to fit when printed. Using the dimensions.`,
     );
   }
+  if (fewApart) return out(b!.median, "check", `Two readings disagree by ${apartPct.toFixed(1)}%: the drawing may not be to scale, or a dimension spans something else. Confirm the scale.`);
   if (b && b.confidence === "check") {
     const why = n === 1 ? "Only one printed dimension could be measured." : `${n} printed dimensions differ by up to ${pct}%.`;
     const titleNote = title ? ` The title block says ${title.text}.` : "";

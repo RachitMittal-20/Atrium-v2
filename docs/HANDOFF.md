@@ -969,6 +969,15 @@ After the last fix every suite was rerun on the final tree, the whole sweep, one
 - **Cause (deterministic, so not rerun before the fix).** A temporary log of rule 8b's tallies, read from Chromium's console and then removed, gave merged `{ kept: 31, problems: 1, rooms: 8 }` (27 exact + 5 traced standing in for 4, two PDF walls left out with nothing in their place) against the PDF alone `{ kept: 33, problems: 1, rooms: 8 }`. Q.2's rule needed strictly fewer problems, so the tie kept the merge; Q.2b compares walls kept first, so the complete reading wins. Chromium now reads what Node reads.
 - **Fix (the expectation, as a consequence of fix 1):** the e2e row now asserts 33 of 33 exact, 0 traced, the PDF-only line and 33 walls in the studio. The test-plans baseline improves the same way (§28).
 
+### Logged during Q.4a (2026-10-21): `e2e-pdf-import` failed on plan-flush-jamb's model rows (a bug in the new fixture's truth, not a flake)
+
+- **Failure.** First run of the suite after the four Q.4a fixes, the 1440 fixture loop, `checkModel` (`e2e-pdf-import.ts:338`): `plan-flush-jamb.pdf: model row 0 opening width`, `'centre to centre' !== 'opening width'`. Every fixture before it had passed, including the new plan-arrows ("between arrow tips") and plan-t-breaks (2 gaps, 100 mm and 300 mm, none at a T).
+- **Server state.** `npm run dev` pid 310, cwd `/Users/rachitmittal20/Atrium-v2`, started right after the cold build (`.next` deleted, build exit 0 in 12 s); `/studio` probed 200; `pgrep -fl "flake-hunt|scripts/e2e-"` empty; no source edited while it ran; the first suite on that server.
+- **Cause (deterministic, so not rerun before the fix).** `make-pdf-fixtures.ts` marks the plan's two printed opening widths with `dims.slice(-onBC.length)`, where `onBC` is the openings on w-BC. plan-flush-jamb draws A–C as one wall (w-AC), so `onBC` is empty, `slice(-0)` is the whole list, and the truth said EVERY dimension was an opening width. The reader was right: the house's 11 dimensions run centre to centre.
+- **Fix (in the fixture generator, no product change, no assertion changed):** the marking runs only when there are openings on w-BC. Regenerating left every PDF byte-identical (md5). Two truth entries changed, only in `dims[].spans`:
+  - plan-flush-jamb.
+  - **plan-gaps**, which had the same latent bug since M.1d. Its only w-BC opening is the out-of-range 4.6 m gap, which `onBC` leaves out, so the committed truth called all 11 of its dimensions opening widths. Nothing ever read that: the e2e's model check skips plan-gaps (its 4.6 m gap leaves the room open), and no Node test reads `spans`. So the correction changes no test's outcome.
+
 ## 24. O.1 — self-hosted OCR: DONE (2026-10-14)
 
 - OCR makes no third-party request. Before: `worker.min.js` (124 kB) and `tesseract-core-simd-lstm.wasm.js` (3.9 MB) from jsdelivr, `eng.traineddata.gz` (2.95 MB, `@tesseract.js-data/eng` `4.0.0_best_int`) from jsdelivr, for both the image import and the PDF OCR fallback; tesseract.js and tesseract.js-core 5.1.1. Now served from `public/tesseract/` (about 11 MB with the non-SIMD core as fallback; under the 15 MB limit, so no LFS), config in `src/lib/blueprint/ocrAssets.ts`.
@@ -1395,3 +1404,87 @@ All four variants: 14 of 14 walls within 0.5 mm and thickness within 0.5 mm, all
 - e2e-calibrate, e2e-studio, e2e-snap, e2e-background: exit 0, first run.
 - **One failure, logged before the rerun:** e2e-pdf-import's first run failed "plan-single-stroke.pdf: the tracing was used as before (no PDF-only line)". Not a flake: rule 8 rightly applies to the butt-capped files (section 3), and the e2e's list of rule-8 fixtures did not have them yet. Added (section 5); rerun exit 0. Baseline unchanged (plan-test.pdf 16/0/10/0/1/9/0/0/5 Good, plan-test-2.pdf 33/0/13/0/2/12/0/0/8 Check): no number better, none worse.
 - Limits: diagonal strokes are not walls; two parallel single-stroke walls of one width overlapping at least two widths but under 0.6 m apart read as one wall's heavy-pen faces; a heavy-pen wall thinner than twice its pen reads as two thin walls; treads over 0.3 m apart pair into adjacent slabs that don't overlap and are not caught. Synthetic fixtures only.
+
+## 31. Q.4a — arrowheads, two-reading scales, T-junction face breaks, flush jambs (2026-10-21; not committed)
+
+**No real CAD PDF has been read in this step.** The four fixes come from a diagnosis of one real file (made with `scripts/q3-report.ts`); that file is now used up as a test and must not be used to prove these rules. No fresh holdout has been run. Every rule below is a drawing convention proven on a new SYNTHETIC fixture. (HANDOFF has no Q.3 section; the only Q.3 artefact is the diagnosis script.)
+
+### 0. Prediction, written before any change (checked in §5)
+
+- **Fix 1 (arrowheads).** plan-arrows: today both rows are measured "line length" between the arrowheads' BASES, short by the two arrowheads (2.5 + 2.5 and 3.5 + 3.5 text heights), and the scale is off by that ratio (both rows, so the scale band is "good" with a wrong value, or "check" once fix 2 is in). After: "between arrow tips", within 0.1 mm, scale good. Existing fixtures: only plan-chatgpt-poche has filled triangles (20), and their tips sit exactly at its dimension lines' ends, where ticks are measured today. So 10 of its 12 rows change their "how" from "between ticks" to "between arrow tips", with the same lengths (to float). Its scale, reading, build and verdict are unchanged, and so are its baseline numbers (12 dimensions, 0 flagged). Every other fixture: unchanged (no triangles).
+- **Fix 2 (two readings).** plan-dims-disagree: "good" today (both readings within 5% of their median), "check" after with "Two readings disagree by 6.2%: …". Existing fixtures that drop from good to check: **none** (every fixture with a dimension scale has 9 or more readings; plan-no-dims has none). The image pipeline is unchanged.
+- **Fix 3 (T breaks).** plan-t-breaks: today six 100 mm gaps (one per T: B, H, I, F, L, M) are listed beside the real 300 mm and 100 mm gaps. After: only the 300 mm gap and the 100 mm gap away from any T. Existing fixtures: unchanged. plan-chatgpt-flat keeps its 115 mm gap, because no wall is drawn there. plan-gaps keeps its 300 mm and 4600 mm gaps.
+- **Fix 4 (flush jamb).** plan-flush-jamb: today the window flush with partition BI's face is refused ("must sit fully inside its wall"), so the verdict is Check. After: placed, every opening exact, verdict Good. Existing fixtures: unchanged, because none has a refused opening today.
+- **Snapshot, verdicts and baseline.**
+  - The snapshot of every older fixture: unchanged (it does not record a row's "how").
+  - test-pdf-verdict: unchanged for older fixtures.
+  - test-plans-baseline: unchanged (plan-test.pdf 16/0/10/0/1/9/0/0/5 Good, plan-test-2.pdf 33/0/13/0/2/12/0/0/8 Check).
+
+### 1. Fixtures (all SYNTHETIC; new `make-pdf-fixtures.ts` options, all off by default)
+
+Regenerating left all 43 older PDFs byte-identical (md5).
+
+| Fixture | Option | What it draws | In truth.json |
+| --- | --- | --- | --- |
+| plan-arrows | `arrows` | The imperial house with only "10668 mm" and 28'-0", each drawn as two line pieces stopping at filled arrowheads 2.5 and 3.5 text heights long. Text sits in the line's gap. Extension lines are 5 pt (under the 7 pt text height) and set back 1.5 pt. | yes |
+| plan-dims-disagree | `twoDims` | plan-filled with only the 10 m and 8 m dimensions, drawn 3% long and 3% short. | **no**: its median is 0.09% off, like plan-strips |
+| plan-t-breaks | `faceLines` | Every wall outline as LINES minus the other walls' footprints, so a face breaks at each of the six Ts. Also a real 0.30 m gap on w-BI and a 0.10 m gap on w-CM. | yes |
+| plan-flush-jamb | `flushJamb` | The imperial house with A–C as one wall and a 1.2 m window whose jamb is flush with w-BI's east face. | yes, w-AC split at B |
+
+Older truth entries: all identical except plan-gaps, whose `dims[].spans` was corrected (latent bug, §23).
+
+### 2. Failing first (`scripts/test-pdf-q4.ts`, `Q4_ONLY=n`, on the code before each fix)
+
+1. **Arrowheads.**
+   - Synthetic: `'ticks' !== 'arrows'` (a 20 pt arrowhead's 8 pt base passed as a tick).
+   - plan-arrows: `28'-0"` measured "ticks" 203 pt, against 252 tip to tip (1659.5 mm short, ratio 1.2414). "10668 mm" measured "line length" 280 pt, against 315 (1185.3 mm short, ratio 1.1250).
+   - The scale was "good", 0.040071 m/pt against the true 0.033867 (ratio 1.1832).
+2. **Two readings.** `two readings 1.1% apart: check`, `'good' !== 'check'`. plan-dims-disagree was "good: 2 printed dimensions agree within 5%, and the title block's 1:100 agrees."
+3. **T breaks.**
+   - Synthetic: `[100]` for `[]`.
+   - plan-t-breaks: gaps 100 × 6 (the six Ts), plus 300 and 100 (the real ones).
+4. **Flush jamb.** `refused 1`: "Opening vo1 from the PDF left out: A window must sit fully inside its wall, clear of the walls at its ends. The traced opening o3 is kept instead." The verdict was Check. The rounded jamb sat at 0.0533 m against a span start of 0.05334 m: 0.04 mm out.
+
+After the fixes, every section passes:
+- **Arrows.** Both rows are "between arrow tips" with 0.00 mm error, and the scale is good and exact.
+- **Two readings.** "Two readings disagree by 6.2%: …"
+- **T breaks.** Only 100 and 300 mm are reported.
+- **Flush jamb.** 10 of 10 openings and Good.
+
+### 3. Prediction (§0) against the result
+
+- Fix 1: **right.** plan-chatgpt-poche: 10 of 12 rows now "arrows", every length and the scale identical to 4 decimals. No other fixture has a filled triangle.
+- Fix 2: **right.** No fixture changed status.
+- Fix 3: **wrong on one fixture.** I predicted plan-chatgpt-flat would keep its 115 mm gap, repeating Q.1's description of it as "the break where the truth wants the missing wall".
+  - It is not there. The gap is at x 6428–6543 mm on the y 2384.5 mm wall, centred on the 115 mm wall at x 6485.5 that meets it at a T, so it is a T break, and fix 3 rightly drops it.
+  - Its snapshot changed only there (`gaps` [0.115] → [], `outOfRangeGaps` 1 → 0), and it is listed in `test-pdf-snapshot.ts` `CHANGED`.
+  - Q.1's §4 sentence about that gap was wrong.
+- Fix 4: **right.** No older fixture had a refused opening.
+- Verdicts: **right.** Every older fixture is unchanged; the new ones are Good.
+- Baseline: **right.** e2e: "no number worse than its baseline" for both files, and the numbers are equal (no better either):
+  - plan-test.pdf: 16/0/10/0/1/9/0/0/5, Good.
+  - plan-test-2.pdf: 33/0/13/0/2/12/0/0/8, Check.
+
+### 4. Assertions and test data changed, as stated
+
+- **`test-pdf-snapshot.ts`.** `CHANGED` gains plan-chatgpt-flat (the T break above). The snapshot was not re-frozen: the four new fixtures are listed as "not in the snapshot", and `test-pdf-q4.ts` covers them.
+- **`test-pdf-verdict.ts`.** EXPECTED gains the four new fixtures, all Good.
+- **`e2e-pdf-import.ts`.**
+  - `checkGapsReview`'s messages now name the file they check instead of "plan-gaps:". It is also called for plan-t-breaks, and takes its screenshot for plan-gaps only.
+  - New checks: plan-arrows' rows are "between arrow tips", and a plan-dims-disagree block asserts "check" with the reason.
+  - The three truth fixtures go through every generic fixture check at 1440.
+- **`package.json`.** `test-pdf-q4.ts` runs before the snapshot.
+- **`truth.json`.** Three new entries; plan-gaps' `spans` corrected.
+- No other assertion was changed.
+
+### 5. Verification
+
+- `npm test`: exit 0. `npx tsc --noEmit`: clean.
+- Cold build: no dev server was running (`lsof -i :3000` empty), `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`: exit 0 in 12 s. Both greps after the build (dev hooks incl. `__background`, and CDN): `clean`.
+- `.next` deleted again and `npm run dev` started: pid 310, cwd this checkout, `/studio` 200.
+- `e2e-pdf-import`:
+  - First run: failed on plan-flush-jamb's model rows, a bug in the new fixture's truth, logged in §23 before the rerun.
+  - Rerun after the generator fix: exit 0. No product source changed between the runs (only the generator, truth.json and docs).
+- `e2e-calibrate` (16 s), `e2e-snap` (21 s), `e2e-background` (23 s), `e2e-studio` (150 s): all exit 0 first time, one at a time, no source edited meanwhile.
+
+**The real file that exposed these four problems is now used up. No fresh holdout has been run.** Every rule here is proven on synthetic fixtures only; no real CAD PDF has been read to prove them.

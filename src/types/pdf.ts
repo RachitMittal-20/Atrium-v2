@@ -77,14 +77,15 @@ export interface DimensionMatch {
   text: string;
   /** The printed value in metres. */
   metres: number;
-  /** The measured length in points: between the ticks (or extension lines) when
-   *  both ends have one, else the line's own length (`measure`). */
+  /** The measured length in points: between filled arrowheads' tips when both ends have one (step
+   *  Q.4a), else between the ticks (or extension lines) when both ends have one, else the line's own
+   *  length (`measure`). */
   lengthPt: number;
   /** The matched line (both parts of a line broken around its text, joined). */
   line: { x1: number; y1: number; x2: number; y2: number };
-  /** What `lengthPt` measures between: the two ticks' crossings, or the line's ends. */
+  /** What `lengthPt` measures between: the arrow tips, the two ticks' crossings, or the line's ends. */
   ends: { x1: number; y1: number; x2: number; y2: number };
-  measure: "ticks" | "line";
+  measure: "arrows" | "ticks" | "line";
   /** "ocr": the text was read by OCR off a raster of the page (outlined text). */
   source: "pdf" | "ocr";
   /** The text's centre and its axis-aligned box, in points. */
@@ -235,7 +236,7 @@ export interface VectorWalls {
  *  model-versus-printed check (`spans` and `approximate` set). */
 export interface DimensionRow {
   text: string;
-  /** "between ticks" / "line length", and "read by OCR" when it was. */
+  /** "between arrow tips" / "between ticks" / "line length", and "read by OCR" when it was. */
   how: string;
   /** Model check only: what the model length runs between ("centre to centre", ...). */
   spans?: string;
