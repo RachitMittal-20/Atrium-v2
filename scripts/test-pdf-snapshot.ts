@@ -29,6 +29,18 @@ const CHANGED: Record<string, string> = {
   "plan-chatgpt-flat.pdf": "step Q.4a: its one out-of-range gap (115 mm at x 6428–6543, y 2384.5 mm) is the face break where the 115 mm wall at x 6485.5 meets the y 2384.5 wall at a T, so it is no longer reported (gaps [0.115] -> [], outOfRangeGaps 1 -> 0); nothing else changed",
 };
 
+/**
+ * Step C.3: the picture-trace is the one part of a reading that depends on the machine, because it traces
+ * a raster that @napi-rs/canvas (Skia) draws, and Skia's anti-aliasing differs a little between a Mac and
+ * Linux. On plan-against-wall.pdf that renumbered the traced walls (p19 on a Mac, p22 on Linux; "p15" or
+ * "p15+p16") and, on Linux, gave a traced opening no wall, so a note appeared. Everything the PDF itself
+ * says (walls, openings, rooms, counts, verdict) is still compared exactly. In the notes only, a traced
+ * wall's id is compared as "p#", and the note that counts traced openings with no wall under them is not
+ * compared (the plan's openings, which it reports on, are). Used for comparing, never for the frozen file.
+ */
+const stable = (v: unknown): string =>
+  JSON.stringify(v, (k, x) => (k === "notes" && Array.isArray(x) ? x.filter((n) => !/had no wall under them/.test(n)).map((n) => String(n).replace(/\bp\d+(\+p\d+)*\b/g, "p#")) : x));
+
 const round = (v: unknown): unknown => (typeof v === "number" ? Math.round(v * 1e6) / 1e6 || 0 : v);
 
 async function reading(file: string) {
@@ -74,7 +86,7 @@ async function main() {
   const differ: string[] = [];
   for (const f of Object.keys(frozen)) {
     assert.ok(f in got, `${f}: in the snapshot but no longer a fixture`);
-    if (JSON.stringify(got[f]) === JSON.stringify(frozen[f])) continue;
+    if (stable(got[f]) === stable(frozen[f])) continue;
     if (CHANGED[f]) console.log(`   ${f}: differs, as expected (${CHANGED[f]})`);
     else differ.push(f);
   }
@@ -83,7 +95,7 @@ async function main() {
     for (const k of Object.keys({ ...a, ...b })) if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) console.log(`   ${f} ${k}:\n     was ${JSON.stringify(a[k])}\n     now ${JSON.stringify(b[k])}`);
   }
   assert.deepEqual(differ, [], "every older fixture reads and builds exactly as frozen");
-  const unchecked = Object.keys(CHANGED).filter((f) => JSON.stringify(got[f]) === JSON.stringify(frozen[f]));
+  const unchecked = Object.keys(CHANGED).filter((f) => stable(got[f]) === stable(frozen[f]));
   assert.deepEqual(unchecked, [], "a fixture listed as changed must actually differ (stale entry)");
   const fresh = files.filter((f) => !(f in frozen));
   console.log(`snapshot: ${Object.keys(frozen).length} fixtures as frozen${Object.keys(CHANGED).length ? ` (${Object.keys(CHANGED).length} changed as stated)` : ""}; not in the snapshot: ${fresh.join(", ") || "none"}`);

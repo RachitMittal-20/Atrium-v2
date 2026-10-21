@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import sharp from "sharp";
 import * as THREE from "three";
 import { zipSync } from "three/examples/jsm/libs/fflate.module.js";
 import {
@@ -342,17 +343,42 @@ async function main() {
     assert.match(await refusal(() => unzipFiles(new Uint8Array([80, 75, 3, 4, 1, 2, 3]))), /couldn't be opened/, "a damaged zip");
   }
 
-  // ------------------------------------------------------------ table.zip is byte-identical twice (step M.1d)
+  // ------------------------------------------------------------ table.zip (steps M.1d, C.3)
   {
+    const dir = join(__dirname, "../tests/fixtures/models");
     const obj = new TextEncoder().encode(makeObj(TABLE, "table.mtl"));
     const mtl = new TextEncoder().encode(tableMtl("textures/wood.png"));
     const png = await woodPng();
     const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
     const [one, two] = [sha(tableZip(obj, mtl, png)), sha(tableZip(obj, mtl, png))];
-    assert.equal(one, two, "table.zip is the same bytes on two runs (fixed timestamps and entry order)");
-    // And the committed fixture is exactly what the writer produces, so an e2e run leaves no diff.
-    assert.equal(sha(new Uint8Array(readFileSync(join(__dirname, "../tests/fixtures/models/table.zip")))), one, "the committed table.zip is what writeFixtures writes");
-    console.log(`table.zip: deterministic, sha256 ${one.slice(0, 16)}… twice, and equal to the committed fixture`);
+    assert.equal(one, two, "table.zip is the same bytes on two runs on this machine (fixed timestamps and entry order)");
+
+    // The committed zip is NOT compared byte for byte (step C.3). fflate writes each entry's DOS timestamp with
+    // LOCAL-time getters, so the same ZIP_MTIME gives different bytes in different time zones (a Mac in IST and a
+    // UTC runner differ in exactly those fields). What matters is the content, so check that.
+    const committed = new Uint8Array(readFileSync(join(dir, "table.zip")));
+    const loose = (name: string) => new Uint8Array(readFileSync(join(dir, name)));
+    const expected = [
+      ["table/table.obj", loose("table.obj")],
+      ["table/table.mtl", loose("table.mtl")],
+      ["table/textures/wood.png", loose("textures/wood.png")],
+    ] as const;
+    // the importer's real reader (the one the studio uses) opens it, and its entries come back in this order
+    const { files, warnings } = unzipFiles(committed);
+    assert.deepEqual(warnings, [], "the importer's zip reader has nothing to say about the committed zip");
+    assert.deepEqual(files.map((f) => f.name), expected.map(([n]) => n), "the zip's entry names, in order");
+    for (const [i, [name, bytes]] of expected.entries()) assert.equal(sha(files[i].bytes), sha(bytes), `${name}: the zip's entry is the committed loose file`);
+    // the committed loose files are still what the writer produces: text exactly, the PNG by its pixels
+    // (the PNG's own bytes come from sharp's encoder, which this test does not own)
+    assert.equal(sha(expected[0][1]), sha(obj), "table.obj is what writeFixtures writes");
+    assert.equal(sha(expected[1][1]), sha(mtl), "table.mtl is what writeFixtures writes");
+    const pixels = (b: Uint8Array) => sharp(b).raw().toBuffer({ resolveWithObject: true });
+    const [made, kept] = [await pixels(png), await pixels(expected[2][1])];
+    assert.deepEqual(made.info, kept.info, "wood.png: same size and channels as writeFixtures makes");
+    assert.ok(made.data.equals(kept.data), "wood.png: same pixels as writeFixtures makes");
+    // and the picked model inside it is found, as the studio would
+    assert.equal(pickModel(gatherFiles([file("table.zip", committed)]).files).model.name, "table/table.obj");
+    console.log(`table.zip: deterministic on this machine (sha256 ${one.slice(0, 16)}…), and its content equals the committed files`);
   }
 
   console.log("OK");
