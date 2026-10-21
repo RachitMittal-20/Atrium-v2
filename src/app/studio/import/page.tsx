@@ -44,6 +44,17 @@
  * storage is refused the build still completes, with the note "The drawing could not be kept for
  * the background".
  *
+ * Step W.1: none of the vector review runs on this thread. buildPdfPlan, its rooms and coverage,
+ * the verdict and the model-versus-printed rows are built in src/workers/review.worker.ts
+ * (runReview, importFile.ts): first as a last progress stage, "Checking the reading", before the
+ * review screen shows; again in the worker when a different scale is chosen (the last review stays
+ * on screen, marked pending, and Build waits for the new one); and Build model's own build, with
+ * its carried takeoffs. A worker silent for 60 s is stopped and the screen says TOO_LONG with
+ * "Start again"; other failures are plain words. The first table's rows (dimensionRows) are one
+ * map over the PDF worker's matches and stay here; overrides are laid on the worker's model rows
+ * here (withOverrides), so typing one never waits. Images and scanned pages (buildFromAnalysis)
+ * are built here as before.
+ *
  * Nothing else is kept except the plan loaded into the store, which autosaves to
  * the browser (src/store/persistence.ts). Editing walls
  * here is a later piece; this screen only reviews.
@@ -52,59 +63,39 @@ import { lenText } from "@/lib/units/current";
 import { useUnitsStore } from "@/store/unitsStore";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { buildFromAnalysis, STAGES, type Analysis, type AnalysisWarning, type Stage } from "@/lib/blueprint/analyse";
 import { usePlanStore } from "@/store/planStore";
 import { flushSavedPlan, usePersistenceReady } from "@/store/persistence";
-import { dimensionRows, modelRows, rowsToCsv, type Overrides } from "@/lib/pdf/dimensions";
-import { buildPdfPlan, planToPixels, type PdfBuild } from "@/lib/pdf/snap";
-import { planVerdict, verdictText } from "@/lib/pdf/verdict";
+import { dimensionRows, rowsToCsv, withOverrides, type Overrides } from "@/lib/pdf/dimensions";
+import { planToPixels, type PdfBuild } from "@/lib/pdf/snap";
+import type { PdfReview } from "@/lib/pdf/review";
+import { verdictText } from "@/lib/pdf/verdict";
 import { buildMapping } from "@/lib/background/mapping";
 import { keepDrawing } from "@/lib/background/keep";
 import { assetStore } from "@/lib/import/assetCache";
-import { approximateIndexes, MAX_PDF_TAKEOFFS, pdfTakeoffs } from "@/lib/pdf/takeoffs";
-import { wallsHash } from "@/lib/takeoff/rows";
+import { MAX_PDF_TAKEOFFS } from "@/lib/pdf/takeoffs";
 import type { PlanScale } from "@/types/blueprint";
 import type { PdfInfo } from "@/types/pdf";
 import type { Vec2 } from "@/types/plan";
 import { DimensionCheck } from "./DimensionCheck";
-import { Cancelled, checkFile, decodeImage, isPdf, runAnalysis, runPdf, STAGE_LABELS, type PdfPageSize } from "./importFile";
+import { Cancelled, checkFile, decodeImage, isPdf, JobError, runAnalysis, runPdf, runReview, STAGE_LABELS, type PdfPageSize } from "./importFile";
 import { CoveragePanel, detachedLabel, PagePicker, PdfPanel, VerdictBanner } from "./PdfPanels";
 import { PlanViewer } from "./PlanViewer";
 import { primaryBtn, ScalePanel, secondaryBtn } from "./ScalePanel";
 
 type Phase =
   | { kind: "idle" }
-  | { kind: "busy"; stage: Stage | null; fraction: number; pdf?: boolean }
+  | { kind: "busy"; stage: Stage | null; fraction: number; pdf?: boolean; checking?: boolean }
   | { kind: "pages"; count: number; listed: PdfPageSize[] }
-  | { kind: "error"; message: string }
+  | { kind: "error"; message: string; again?: boolean }
   | { kind: "results"; analysis: Analysis; original: { width: number; height: number }; pdf?: PdfInfo };
 
 type Built = ReturnType<typeof buildFromAnalysis> | PdfBuild;
 
-/** The build for a page: a vector PDF with walls read from its lines goes through snap.ts. */
-function buildFor(analysis: Analysis, pdf: PdfInfo | undefined, scale: PlanScale): Built {
-  return pdf?.vectorWalls ? buildPdfPlan(analysis, pdf, scale) : buildFromAnalysis(analysis, scale);
-}
-
-/**
- * Step M.2b: every printed dimension the review matched becomes a takeoff with source "pdf",
- * so the studio keeps checking the model against the drawing's own numbers. Vector pages only:
- * a scanned PDF and an image have no matched dimensions and carry nothing. Ids are "tp-N", not
- * random, so building the same page twice saves the same bytes.
- */
-function withPdfTakeoffs(built: Built, pdf: PdfInfo | undefined, overrides: Overrides): Built {
-  const matches = pdf?.scale?.matches ?? [];
-  if (!matches.length || !("coverage" in built)) return built;
-  const c = built.coverage;
-  const hash = wallsHash(built.plan.walls);
-  const toPlan = (x: number, y: number) => ({ x: x * c.mPerPt - c.origin.x, y: y * c.mPerPt - c.origin.y });
-  // The model check's own verdict on which dimensions land on a traced wall (the table's "approximate").
-  const approximate = approximateIndexes(modelRows(matches, built.plan, toPlan, (3 * c.traceMm) / 1000));
-  const takeoffs = pdfTakeoffs(matches, toPlan, overrides, approximate).map((t, i) => ({ ...t, id: `tp-${i + 1}`, wallsHash: hash }));
-  if (!takeoffs.length) return built;
-  return { ...built, plan: { ...built.plan, takeoffs: [...(built.plan.takeoffs ?? []), ...takeoffs] } };
-}
+/** Development only: scripts/e2e-pdf-watchdog.ts sets `window.__reviewRunaway` to make the review worker loop forever (TEST ONLY; compiled out of production). */
+const runaway = () => process.env.NODE_ENV === "development" && Boolean((window as { __reviewRunaway?: boolean }).__reviewRunaway);
+const noJob = { cancel: () => {} };
 
 /** One plain-words line per analysis warning. */
 function warningText(w: AnalysisWarning, a: Analysis): string {
@@ -144,9 +135,64 @@ export default function ImportPage() {
   const pdfPageRef = useRef<(n: number) => void>(() => {});
   const fileRef = useRef<HTMLInputElement>(null);
   const cancelRef = useRef<() => void>(() => {});
+  // Step W.1: the vector review and Build model run in the review worker. `reviewFor` is the scale the review is (being) built at.
+  const [review, setReview] = useState<(PdfReview & { pxPerM: number }) | null>(null); // with the scale it was built at
+  const [reviewPending, setReviewPending] = useState(false);
+  const [building, setBuilding] = useState(false);
+  const reviewJob = useRef(noJob);
+  const buildJob = useRef(noJob);
+  const reviewFor = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      reviewJob.current.cancel();
+      buildJob.current.cancel();
+    },
+    [],
+  );
+
+  const stopJobs = () => {
+    reviewJob.current.cancel();
+    buildJob.current.cancel();
+    reviewFor.current = null;
+    setReview(null);
+    setReviewPending(false);
+    setBuilding(false);
+  };
+
+  /** A worker that went silent for 60 s: everything stops and the screen says so, with Start again. */
+  const tooLong = (message: string) => {
+    cancelRef.current();
+    stopJobs();
+    setPhase({ kind: "error", message, again: true });
+  };
+
+  /** Builds the review at `scale` in the review worker; `then` runs once it is in (or has failed in plain words). */
+  function startReview(analysis: Analysis, pdf: PdfInfo, scale: PlanScale, then?: () => void) {
+    reviewJob.current.cancel();
+    reviewFor.current = scale.pxPerM;
+    setReviewPending(true);
+    const job = runReview({ analysis, pdf, scale }, { runaway: runaway() });
+    reviewJob.current = job;
+    job.result.then(
+      (r) => {
+        setReview({ ...r, pxPerM: scale.pxPerM });
+        setReviewPending(false);
+        then?.();
+      },
+      (e) => {
+        if (e instanceof Cancelled) return;
+        if (e instanceof JobError && e.stalled) return tooLong(e.message);
+        // As before W.1: a reading the builder refuses has no review, and Build model says why.
+        setReview(null);
+        setReviewPending(false);
+        then?.();
+      },
+    );
+  }
 
   const reset = () => {
     cancelRef.current();
+    stopJobs();
     setPhase({ kind: "idle" });
     setChosen(null);
     setPicking(false);
@@ -192,7 +238,12 @@ export default function ImportPage() {
       done: (analysis, pdf) => {
         // Development only: scripts/e2e-pdf-import.ts reads these.
         if (process.env.NODE_ENV === "development") Object.assign(window, { __importAnalysis: analysis, __importPdf: pdf });
-        setPhase({ kind: "results", analysis, original: { width: analysis.pixels.width, height: analysis.pixels.height }, pdf });
+        const show = () => setPhase({ kind: "results", analysis, original: { width: analysis.pixels.width, height: analysis.pixels.height }, pdf });
+        // Step W.1: a vector page with walls and a scale is checked in the review worker before the review screen shows.
+        if (pdf.vectorWalls && analysis.scale.pxPerM) {
+          setPhase({ kind: "busy", stage: null, fraction: 1, pdf: true, checking: true });
+          startReview(analysis, pdf, { pxPerM: analysis.scale.pxPerM, source: "pdf" }, show);
+        } else show();
       },
       error: (message) => setPhase({ kind: "error", message }),
     });
@@ -223,28 +274,23 @@ export default function ImportPage() {
     }
   }
 
+  // `review` is a vector PDF's merged build at the scale in use (the chosen one, else the PDF's), for
+  // the coverage report and the model check before Build; Build makes the same plan. Built in the
+  // review worker (step W.1): a new scale value starts a new review, the same value keeps this one.
+  const results = phase.kind === "results" ? phase : null;
+
   const choose = (s: PlanScale) => {
     setChosen(s);
     setBuilt(null); // a new scale makes the old build stale
     setPicking(false);
+    buildJob.current.cancel(); // and a build still running for the old one
+    setBuilding(false);
+    if (results?.pdf?.vectorWalls && s.pxPerM !== reviewFor.current) startReview(results.analysis, results.pdf, s);
   };
 
-  // A vector PDF's merged build at the scale in use (the chosen one, else the PDF's), for the
-  // coverage report and the model check before Build; Build makes the same plan.
-  const results = phase.kind === "results" ? phase : null;
-  const scaleInUse: PlanScale | null = chosen ?? (results?.pdf?.vectorWalls && results.analysis.scale.pxPerM ? { pxPerM: results.analysis.scale.pxPerM, source: "pdf" } : null);
-  const review = useMemo(() => {
-    if (!results?.pdf?.vectorWalls || !scaleInUse) return null;
-    try {
-      return buildPdfPlan(results.analysis, results.pdf, scaleInUse);
-    } catch {
-      return null; // Build model shows the error
-    }
-  }, [results, scaleInUse?.pxPerM]); // eslint-disable-line react-hooks/exhaustive-deps -- the scale's value, not its object
-
   // Step H.1: the verdict on the plan Build would make. Not usable asks for a second click.
-  const verdict = useMemo(() => (review ? planVerdict(review.plan, review.coverage) : null), [review]);
-  const [armedFor, setArmedFor] = useState<PdfBuild | null>(null);
+  const verdict = review?.verdict ?? null;
+  const [armedFor, setArmedFor] = useState<PdfReview | null>(null);
   const unusable = verdict?.level === "unusable";
   const armed = unusable && armedFor === review; // armed for THIS reading; a new scale makes a new review and disarms
 
@@ -252,11 +298,22 @@ export default function ImportPage() {
     if (!chosen) return;
     let next: Built;
     try {
-      next = withPdfTakeoffs(buildFor(analysis, pdf, chosen), pdf, overrides);
+      if (pdf?.vectorWalls) {
+        // Step W.1: the vector build, with the printed dimensions carried as takeoffs, in the review worker.
+        buildJob.current.cancel();
+        setBuilding(true);
+        const job = runReview({ analysis, pdf, scale: chosen, carry: overrides }, { runaway: runaway() });
+        buildJob.current = job;
+        next = (await job.result).build;
+        setBuilding(false);
+      } else next = buildFromAnalysis(analysis, chosen);
       setBuildError(null);
     } catch (e) {
+      if (e instanceof Cancelled) return;
+      if (e instanceof JobError && e.stalled) return tooLong(e.message);
+      setBuilding(false);
       setBuilt(null);
-      setBuildError(e instanceof Error ? e.message : "The model couldn't be built from this reading.");
+      setBuildError(e instanceof Error && e.message ? e.message : "The model couldn't be built from this reading.");
       return;
     }
     // Step M.2c: keep the drawing for the 2D background; storage refused only adds a note.
@@ -345,9 +402,9 @@ export default function ImportPage() {
             <div className="h-full bg-gilt transition-[width] duration-300" style={{ width: `${Math.max(4, phase.fraction * 100)}%` }} />
           </div>
           <ul className="flex flex-col gap-1 text-sm" aria-live="polite">
-            {phase.stage === null && <li className="text-iron">{phase.pdf ? "Reading the PDF…" : "Opening your image…"}</li>}
+            {phase.stage === null && !phase.checking && <li className="text-iron">{phase.pdf ? "Reading the PDF…" : "Opening your image…"}</li>}
             {STAGES.map((s) => {
-              const at = phase.stage === null ? -1 : STAGES.indexOf(phase.stage);
+              const at = phase.checking ? STAGES.length : phase.stage === null ? -1 : STAGES.indexOf(phase.stage);
               const i = STAGES.indexOf(s);
               const state = i < at ? "done" : i === at ? "now" : "later";
               return (
@@ -358,6 +415,13 @@ export default function ImportPage() {
                 </li>
               );
             })}
+            {phase.checking && (
+              // Step W.1: the review build, in its own worker, after the five reading stages.
+              <li className="flex items-center gap-2 text-iron" aria-current="step">
+                <span aria-hidden className="inline-block h-2 w-2 rounded-full bg-gilt" />
+                Checking the reading
+              </li>
+            )}
           </ul>
           <button type="button" className={`${secondaryBtn} self-start`} onClick={reset}>
             Cancel
@@ -378,14 +442,14 @@ export default function ImportPage() {
         <section role="alert" className="mx-auto flex max-w-md flex-col items-start gap-4 rounded border border-stone bg-vellum p-6" data-testid="error">
           <p data-testid="error-message">{phase.message}</p>
           <button type="button" className={primaryBtn} onClick={reset}>
-            Try another file
+            {phase.again ? "Start again" : "Try another file"}
           </button>
         </section>
       )}
 
       {phase.kind === "results" && (
         // Grid: phone order is plan, panels, tables; from lg the panels span both rows on the right.
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start" data-testid="results">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start" data-testid="results" data-review={reviewPending ? "pending" : review ? "ready" : "none"}>
           <div className="min-w-0 lg:col-start-1 lg:row-start-1">
             <PlanViewer
               analysis={phase.analysis}
@@ -393,29 +457,29 @@ export default function ImportPage() {
               points={points}
               onPick={(p) => setPoints((ps) => (ps.length >= 2 ? [p] : [...ps, p]))}
               traced={
-                review && scaleInUse
-                  ? review.coverage.tracedWalls.map((w) => {
-                      const px = planToPixels(review.coverage, scaleInUse.pxPerM, phase.pdf?.rasterOrigin);
-                      return { id: w.id, a: px(w.a), b: px(w.b), thickness: w.thickness * scaleInUse.pxPerM };
+                review
+                  ? review.build.coverage.tracedWalls.map((w) => {
+                      const px = planToPixels(review.build.coverage, review.pxPerM, phase.pdf?.rasterOrigin);
+                      return { id: w.id, a: px(w.a), b: px(w.b), thickness: w.thickness * review.pxPerM };
                     })
                   : undefined
               }
               openingMarks={
-                review && scaleInUse
+                review
                   ? (() => {
-                      const px = planToPixels(review.coverage, scaleInUse.pxPerM, phase.pdf?.rasterOrigin);
-                      const toPx = (m: { id: string; a: Vec2; b: Vec2; thickness: number }) => ({ id: m.id, a: px(m.a), b: px(m.b), thickness: m.thickness * scaleInUse.pxPerM });
+                      const px = planToPixels(review.build.coverage, review.pxPerM, phase.pdf?.rasterOrigin);
+                      const toPx = (m: { id: string; a: Vec2; b: Vec2; thickness: number }) => ({ id: m.id, a: px(m.a), b: px(m.b), thickness: m.thickness * review.pxPerM });
                       // Step M.1d: the gaps outside 0.45–4 m are highlighted too; `size` is dropped, the box is the gap.
                       // Step Q.2: so are the openings a wall ends inside, which are not read either.
-                      return { traced: review.coverage.tracedOpenings.map(toPx), unclassified: review.coverage.unclassifiedOpenings.map(toPx), gaps: [...review.coverage.outOfRangeGaps.map((g, i) => toPx({ id: `gap${i + 1}`, ...g })), ...review.coverage.conflicts.map((x, i) => toPx({ id: `conflict${i + 1}`, ...x }))] };
+                      return { traced: review.build.coverage.tracedOpenings.map(toPx), unclassified: review.build.coverage.unclassifiedOpenings.map(toPx), gaps: [...review.build.coverage.outOfRangeGaps.map((g, i) => toPx({ id: `gap${i + 1}`, ...g })), ...review.build.coverage.conflicts.map((x, i) => toPx({ id: `conflict${i + 1}`, ...x }))] };
                     })()
                   : undefined
               }
               detached={
-                review && scaleInUse
-                  ? review.coverage.detached.map((d, i) => {
+                review
+                  ? review.build.coverage.detached.map((d, i) => {
                       // Step Q.2: each detached group's footprint, outlined with its size.
-                      const px = planToPixels(review.coverage, scaleInUse.pxPerM, phase.pdf?.rasterOrigin);
+                      const px = planToPixels(review.build.coverage, review.pxPerM, phase.pdf?.rasterOrigin);
                       return { id: `detached${i + 1}`, min: px(d.min), max: px(d.max), label: detachedLabel(d, units), dropped: d.dropped };
                     })
                   : undefined
@@ -439,7 +503,12 @@ export default function ImportPage() {
             )}
 
             {phase.pdf && <PdfPanel pdf={phase.pdf} />}
-            {review && verdict && <CoveragePanel coverage={review.coverage} verdict={verdict} />}
+            {review && verdict && <CoveragePanel coverage={review.build.coverage} verdict={verdict} />}
+            {reviewPending && (
+              <p role="status" className="text-sm text-smoke" data-testid="review-pending">
+                Checking the reading at this scale…
+              </p>
+            )}
 
             <ScalePanel
               analysis={phase.analysis}
@@ -455,13 +524,13 @@ export default function ImportPage() {
             <button
               type="button"
               className={primaryBtn}
-              disabled={!chosen}
+              disabled={!chosen || reviewPending || building}
               onClick={() => {
                 if (unusable && !armed) return setArmedFor(review); // Not usable: the first click only asks
                 void build(phase.analysis, phase.original, phase.pdf);
               }}
             >
-              {unusable ? (armed ? "Confirm: build anyway" : "Build anyway") : "Build model"}
+              {building ? "Building…" : unusable ? (armed ? "Confirm: build anyway" : "Build anyway") : "Build model"}
             </button>
             {armed && verdict && (
               <p role="status" className="-mt-2 text-sm" data-testid="build-anyway-note">
@@ -487,13 +556,12 @@ export default function ImportPage() {
 }
 
 /** The dimension check and, once the PDF's walls are built, the model check; one CSV for both. */
-function Tables(p: { pdf: PdfInfo; chosen: PlanScale | null; review: PdfBuild | null; overrides: Overrides; setOverrides: (o: Overrides) => void; modelOverrides: Overrides; setModelOverrides: (o: Overrides) => void }) {
+function Tables(p: { pdf: PdfInfo; chosen: PlanScale | null; review: PdfReview | null; overrides: Overrides; setOverrides: (o: Overrides) => void; modelOverrides: Overrides; setModelOverrides: (o: Overrides) => void }) {
   const scale = p.pdf.scale!;
   const mPerPt = p.chosen ? p.pdf.pxPerPt / p.chosen.pxPerM : scale.mPerPt!;
   const rows = dimensionRows(scale.matches, mPerPt, p.overrides);
-  const c = p.review?.coverage;
-  // Ends within 3 raster pixels of a wall line, face or jamb land on it.
-  const model = p.review && c ? modelRows(scale.matches, p.review.plan, (x, y) => ({ x: x * c.mPerPt - c.origin.x, y: y * c.mPerPt - c.origin.y }), (3 * c.traceMm) / 1000, p.modelOverrides) : [];
+  // The model rows come from the review worker (step W.1) without overrides; the user's are laid on here.
+  const model = p.review ? withOverrides(p.review.model, p.modelOverrides, (r) => r.index) : [];
   const csv = () => rowsToCsv(rows, model);
   const at = p.chosen ? "at the scale in use" : "at the PDF's scale";
   return (

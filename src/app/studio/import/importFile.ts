@@ -11,6 +11,9 @@
  *   - runPdf: hands a PDF's bytes to src/workers/pdf.worker.ts, which lists
  *     its pages (with thumbnails when there are several), then reads the
  *     chosen one; cancel() terminates the worker and frees the thumbnails;
+ *   - runReview (step W.1): hands a read vector PDF page to src/workers/review.worker.ts, which
+ *     builds the review (buildPdfPlan, the verdict, the model rows) or, for Build model, the plan
+ *     with its carried takeoffs, so none of that runs on the page's main thread;
  *   - parseTypedLength: what the user types for a known length, in metres;
  *   - planSize: the size of the whole plan at a given scale, for the sanity
  *     checks in ScalePanel.tsx.
@@ -23,6 +26,13 @@
  * that runs out of memory takes the tab down with it before any of these can run;
  * the page reader's pixel budget and caps (src/lib/pdf/render.ts, extract.ts) are
  * what keep it from getting there.
+ *
+ * The review worker (step W.1) answers once, so its watchdog is shorter, REVIEW_STALL_MS (60 s),
+ * and its silence ends in TOO_LONG with `stalled` set, which the page shows with "Start again".
+ * Its other failures end in plain words too (`JobError`): a BlueprintError's own message, or a
+ * fixed sentence for a bug, a script that won't start or a reply that can't be read; the details
+ * go to the console only. The analysis and PDF workers keep STALL_MS: OCR on a big scan can be
+ * silent for longer than a minute, and image input is unchanged.
  */
 import type { Analysis, Stage } from "@/lib/blueprint/analyse";
 import { parseLength } from "@/lib/blueprint/scale";
@@ -32,19 +42,34 @@ import { MAX_EDGE, overBudget, PIXEL_BUDGET } from "@/lib/pdf/render";
 import type { PdfInfo } from "@/types/pdf";
 import type { AnalyseReply, AnalyseRequest } from "@/workers/analyse.worker";
 import type { PdfReply, PdfRequest } from "@/workers/pdf.worker";
+import { slimAnalysis, type PdfReview, type ReviewRequest } from "@/lib/pdf/review";
+import type { ReviewWorkerReply, ReviewWorkerRequest } from "@/workers/review.worker";
 
 const MAX_BYTES = 25 * 1024 * 1024;
 /** A worker that sends nothing for this long has stalled (step X.1). OCR on a big scan reports each stage, never minutes apart. */
 export const STALL_MS = 180_000;
 const STALLED = "Reading this plan stopped responding, so it was cancelled. Export just the floor plan, or a smaller sheet, and try again.";
 
-/** Calls `onStall` once if `poke` isn't called for STALL_MS; `stop` ends it. */
-function watchdog(onStall: () => void) {
-  let timer = setTimeout(onStall, STALL_MS);
+/** Step W.1: the review worker answers once; silence this long means a runaway. */
+export const REVIEW_STALL_MS = 60_000;
+export const TOO_LONG = "This drawing took too long to read. Try a smaller page or export a simpler PDF.";
+/** What a failed review or Build model says: always plain words; `stalled` when the watchdog stopped it. */
+export class JobError extends Error {
+  constructor(
+    message: string,
+    readonly stalled = false,
+  ) {
+    super(message);
+  }
+}
+
+/** Calls `onStall` once if `poke` isn't called for `ms`; `stop` ends it. */
+function watchdog(onStall: () => void, ms = STALL_MS) {
+  let timer = setTimeout(onStall, ms);
   return {
     poke: () => {
       clearTimeout(timer);
-      timer = setTimeout(onStall, STALL_MS);
+      timer = setTimeout(onStall, ms);
     },
     stop: () => clearTimeout(timer),
   };
@@ -215,6 +240,62 @@ export function runPdf(
       urls.forEach((u) => URL.revokeObjectURL(u));
     },
   };
+}
+
+/** What runReview needs of a Worker; scripts/test-review-worker.ts passes a worker thread instead. */
+export interface WorkerLike {
+  postMessage(message: unknown): void;
+  terminate(): void;
+  onmessage: ((e: MessageEvent) => void) | null;
+  onerror: ((e: ErrorEvent) => void) | null;
+  onmessageerror: ((e: MessageEvent) => void) | null;
+}
+
+const REVIEW_FAILED = "Something went wrong while checking this reading. Try another file, or export the plan page as an image.";
+
+/**
+ * Step W.1: builds a review (or, with `request.carry`, the Build model plan) in its own worker.
+ * The promise rejects with Cancelled after cancel(), else with a JobError in plain words. The
+ * analysis goes without its pixel bytes. `runaway` is the TEST-ONLY switch (src/lib/pdf/review.ts).
+ */
+export function runReview(request: ReviewRequest, opts: { make?: () => WorkerLike; stallMs?: number; runaway?: boolean } = {}): { result: Promise<PdfReview>; cancel: () => void } {
+  const worker = opts.make ? opts.make() : (new Worker(new URL("../../../workers/review.worker.ts", import.meta.url), { type: "module" }) as WorkerLike);
+  let cancel = () => {};
+  const result = new Promise<PdfReview>((resolve, reject) => {
+    let over = false;
+    const finish = () => {
+      over = true;
+      dog.stop();
+      worker.terminate();
+    };
+    const fail = (error: Error) => {
+      if (over) return;
+      finish();
+      reject(error);
+    };
+    const dog = watchdog(() => fail(new JobError(TOO_LONG, true)), opts.stallMs ?? REVIEW_STALL_MS);
+    cancel = () => fail(new Cancelled());
+    worker.onmessage = (e: MessageEvent<ReviewWorkerReply>) => {
+      const msg = e.data;
+      if (over) return;
+      if (msg?.type === "done") {
+        finish();
+        resolve(msg.review);
+      } else fail(new JobError(msg?.type === "error" && msg.user && msg.message ? msg.message : REVIEW_FAILED));
+    };
+    worker.onerror = (e) => {
+      console.error("[import] review worker failed", e);
+      fail(new JobError("Your browser couldn't start the plan checker. Reload the page and try again."));
+    };
+    worker.onmessageerror = (e) => {
+      console.error("[import] review worker's reply couldn't be read", e);
+      fail(new JobError(REVIEW_FAILED));
+    };
+  });
+  const test = process.env.NODE_ENV !== "production" && opts.runaway && { __runaway: true }; // compiled out of production
+  const msg: ReviewWorkerRequest = { type: "review", request: { ...request, analysis: slimAnalysis(request.analysis), ...test } };
+  worker.postMessage(msg);
+  return { result, cancel };
 }
 
 // parseTypedLength lives in src/lib/units/typed.ts (it must not sit beside the Worker constructors below: see there); re-exported for the import screen and its tests.

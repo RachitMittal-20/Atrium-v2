@@ -126,6 +126,19 @@ export function modelRows(matches: DimensionMatch[], plan: Pick<Plan, "walls" | 
   return out;
 }
 
+/**
+ * Step W.1: overrides laid on rows that were made without them (modelRows runs in the review
+ * worker, the overrides are typed on the page). An override only sets `override` and makes the
+ * status "overridden", so this is exactly the row passing it to `row` gives. `key` is the
+ * override's key for a row: its place for dimensionRows, its match index for modelRows.
+ */
+export function withOverrides<R extends DimensionRow>(rows: R[], overrides: Overrides, key: (r: R, i: number) => number): R[] {
+  return rows.map((r, i) => {
+    const o = overrides[key(r, i)];
+    return o ? { ...r, override: o, status: "overridden" as const } : r;
+  });
+}
+
 /** `v` to `digits` decimals, with a sign when asked, and never "-0.0". */
 export function fixed(v: number, digits: number, signed = false): string {
   const r = Number(v.toFixed(digits)) || 0; // -0 and a value that rounds to zero become 0

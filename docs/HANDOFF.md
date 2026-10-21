@@ -755,7 +755,7 @@ Rules:
 Verification status at `4ba7192` (main):
 - `npm test` (18 suites), `npx tsc --noEmit` and `npm run build` passed.
 - The browser e2e (`scripts/e2e-studio.ts`) was run on this commit after main was updated, and it passed (result below). To re-run it: terminal A runs `npm run dev` and stays running (it must be port 3000, and it must be `dev` and not `start`, because the e2e uses dev-only hooks such as `window.__planStore`); terminal B runs `npx tsx scripts/e2e-studio.ts` and must exit 0.
-- **Run before committing** (since 4.7c): `npm test`, `npx tsc --noEmit`, `perl -e 'alarm 300; exec @ARGV' npm run build` (this Mac has neither `timeout` nor `gtimeout`; since M.1d: a build that takes over five minutes means an import cycle or a hang, not a slow machine — a clean build is about 2 s. `npm test`'s `test-import-cycles.ts` catches the usual cause first), `grep -rlE "__studio3d|__pushPullDebug|__importDebug|__importPdf|__plan2d|__takeoffStore|__scene3d|__walkDebug|__background" .next/static || echo clean` and `grep -rlE "cdn\.jsdelivr|unpkg\.com|cdnjs" .next/static || echo clean` (both must print `clean`, run after the build), and with `npm run dev` on port 3000 from THIS checkout (`lsof -i :3000`, then the process's working directory): `npx tsx scripts/e2e-studio.ts`, `npx tsx scripts/e2e-walk.ts`, (since I.1a) `npx tsx scripts/e2e-import3d.ts` and (since M.1a) `npx tsx scripts/e2e-pdf-import.ts` (since M.2a) `npx tsx scripts/e2e-takeoff.ts`, (since U.1) `npx tsx scripts/e2e-units.ts` and (since M.2b) `npx tsx scripts/e2e-calibrate.ts`, (since O.1) `npx tsx scripts/e2e-offline-ocr.ts` (since M.2c) `npx tsx scripts/e2e-background.ts`, (since L.1) `npx tsx scripts/e2e-labels.ts` and (since P.1) `npx tsx scripts/e2e-snap.ts`, all exit 0. Before a sweep, check nothing else is driving port 3000 (`pgrep -fl "flake-hunt|scripts/e2e-"`): in M.2c a `flake-hunt` run started during F.1 was still running and sharing the server (section 23). `npm run build` needs a working `.next`: if it stalls with no output, see the flake-hunt item. Do not edit source files while an e2e runs: the dev server hot-reloads mid-test.
+- **Run before committing** (since 4.7c): `npm test`, `npx tsc --noEmit`, `perl -e 'alarm 300; exec @ARGV' npm run build` (this Mac has neither `timeout` nor `gtimeout`; since M.1d: a build that takes over five minutes means an import cycle or a hang, not a slow machine — a clean build is about 2 s. `npm test`'s `test-import-cycles.ts` catches the usual cause first), `grep -rlE "__studio3d|__pushPullDebug|__importDebug|__importPdf|__plan2d|__takeoffStore|__scene3d|__walkDebug|__background|__reviewRunaway|__runaway" .next/static || echo clean` (the last two since W.1) and `grep -rlE "cdn\.jsdelivr|unpkg\.com|cdnjs" .next/static || echo clean` (both must print `clean`, run after the build), and with `npm run dev` on port 3000 from THIS checkout (`lsof -i :3000`, then the process's working directory): `npx tsx scripts/e2e-studio.ts`, `npx tsx scripts/e2e-walk.ts`, (since I.1a) `npx tsx scripts/e2e-import3d.ts` and (since M.1a) `npx tsx scripts/e2e-pdf-import.ts` (since M.2a) `npx tsx scripts/e2e-takeoff.ts`, (since U.1) `npx tsx scripts/e2e-units.ts` and (since M.2b) `npx tsx scripts/e2e-calibrate.ts`, (since O.1) `npx tsx scripts/e2e-offline-ocr.ts` (since M.2c) `npx tsx scripts/e2e-background.ts`, (since L.1) `npx tsx scripts/e2e-labels.ts`, (since P.1) `npx tsx scripts/e2e-snap.ts` and (since W.1) `npx tsx scripts/e2e-pdf-watchdog.ts` (about 70 s: it waits out the real 60 s watchdog), all exit 0. Before a sweep, check nothing else is driving port 3000 (`pgrep -fl "flake-hunt|scripts/e2e-"`): in M.2c a `flake-hunt` run started during F.1 was still running and sharing the server (section 23). `npm run build` needs a working `.next`: if it stalls with no output, see the flake-hunt item. Do not edit source files while an e2e runs: the dev server hot-reloads mid-test.
 - **On-demand tool (not a pre-commit check), since F.1:** `npx tsx scripts/flake-hunt.ts [--rounds=10] [--prod-rounds=5] [--phases=fresh,warm,prod] [--suites=…] [--tag=before]`. It takes over port 3000 (refusing to touch a server that is not this checkout), runs every e2e suite back to back for many rounds against a dev server restarted each round, a long-lived warm one and `npm run build && npm run start`, and prints failure counts by suite and server state with each failure's step, assertion and first console error. Logs in `/tmp/flake-hunt/<tag>/`. It never retries and never relaxes a check. A full matrix is about four hours.
 - e2e result on `4ba7192`, 2026-10-01: PASSED, exit 0. At 1440 (mouse) and 390 (real touch events): 2D, select and edit, wall runs, draw walls, opening selection, doors and windows, Measure, nothing outside the viewport, 19 tab stops all with a focus ring, and the Import plan link; plus autosave restore and flipped-door swing persistence through a reload at both sizes. No 390 px flake appeared in this run. Tag `editor-complete-4.6` points at `4ba7192`.
 
@@ -978,6 +978,12 @@ After the last fix every suite was rerun on the final tree, the whole sweep, one
   - plan-flush-jamb.
   - **plan-gaps**, which had the same latent bug since M.1d. Its only w-BC opening is the out-of-range 4.6 m gap, which `onBC` leaves out, so the committed truth called all 11 of its dimensions opening widths. Nothing ever read that: the e2e's model check skips plan-gaps (its 4.6 m gap leaves the room open), and no Node test reads `spans`. So the correction changes no test's outcome.
 
+### Logged during W.1 (2026-10-21): `e2e-pdf-watchdog` failed on its first run on the new code (a bug in the new test, not a flake)
+
+- `page.waitForEvent: Timeout 120000ms exceeded while waiting for event "worker"`, step "wait for the watchdog's message while the worker loops".
+- Cause: the suite recognised the review worker by `/review\.worker/` in its URL, but Turbopack's dev worker URL is `turbopack-worker-….js#params=…src_workers_review_worker_ts…`: an underscore. Seen by logging every `page.on("worker")` URL.
+- Fix: the pattern is `/review[._]worker/`. No product source changed between the runs. The rerun passed (message after 60.3 s, longest heartbeat gap 105 ms).
+
 ## 24. O.1 — self-hosted OCR: DONE (2026-10-14)
 
 - OCR makes no third-party request. Before: `worker.min.js` (124 kB) and `tesseract-core-simd-lstm.wasm.js` (3.9 MB) from jsdelivr, `eng.traineddata.gz` (2.95 MB, `@tesseract.js-data/eng` `4.0.0_best_int`) from jsdelivr, for both the image import and the PDF OCR fallback; tesseract.js and tesseract.js-core 5.1.1. Now served from `public/tesseract/` (about 11 MB with the non-SIMD core as fallback; under the 15 MB limit, so no LFS), config in `src/lib/blueprint/ocrAssets.ts`.
@@ -1074,7 +1080,7 @@ It imports and builds. It no longer crashes, but the reading is poor. Compared w
 
 ### Not covered
 
-- `buildPdfPlan` still runs on the import page's main thread (the review and Build model). This fix removes the one runaway found there, but another would still freeze or kill the tab; the watchdog covers workers only.
+- `buildPdfPlan` still runs on the import page's main thread (the review and Build model). This fix removes the one runaway found there, but another would still freeze or kill the tab; the watchdog covers workers only. (Done in step W.1, section 32: the review and Build model's vector build run in `src/workers/review.worker.ts`.)
 - A dedicated worker runs in the page's renderer process, so a worker that does run out of memory still takes the tab. The budget and caps keep it from getting there; nothing can catch it after.
 - `decodeImage` decodes the whole image before its size is known, so an image of hundreds of megapixels can still crash in the decoder.
 - The crop needs a small drawing. A sheet-wide border or a far-off title block (plan-test.pdf has both), or a page-sized white fill, makes the content box the whole sheet. plan-test.pdf therefore still traces at 57 px/m (17.5 mm a pixel).
@@ -1488,3 +1494,92 @@ After the fixes, every section passes:
 - `e2e-calibrate` (16 s), `e2e-snap` (21 s), `e2e-background` (23 s), `e2e-studio` (150 s): all exit 0 first time, one at a time, no source edited meanwhile.
 
 **The real file that exposed these four problems is now used up. No fresh holdout has been run.** Every rule here is proven on synthetic fixtures only; no real CAD PDF has been read to prove them.
+
+## 32. W.1 — the PDF review off the main thread (2026-10-21; not committed)
+
+X.1's crash was a runaway (`polylabel`) inside `buildPdfPlan`, which ran in the import page's render. X.1 fixed that one runaway; this step moves the whole review into a worker, so any other runaway can only stall that worker. No reading rule or result changed, and neither did image input.
+
+### 1. What ran on the main thread before (measured in Node, warm, ms)
+
+`page.tsx`'s review `useMemo` (re-run on every new scale value) ran `buildPdfPlan` (which runs `buildPlan`, `mergeVector` one to three times, `validatePlan`, `deriveRooms` and `nameRooms`) and then `planVerdict` (another `deriveRooms`). Every render of the tables ran `dimensionRows` and `modelRows`. Build model ran `buildPdfPlan` again, then `withPdfTakeoffs` (`modelRows`, `pdfTakeoffs`, `wallsHash`), `buildMapping` and `keepDrawing` (IndexedDB, async).
+
+| file | buildPdfPlan | planVerdict | modelRows | takeoffs | dimensionRows | structured clone of analysis + pdf |
+|---|---|---|---|---|---|---|
+| plan-test.pdf (local) | 42.8 | 2.1 | 0.6 | 0.7 | 0.09 | 2.3 |
+| plan-test-2.pdf (local) | 39.6 | 1.9 | 0.5 | 0.8 | 0.02 | 2.4 |
+| plan-chatgpt-poche | 40.6 | 2.0 | 0.8 | 0.8 | 0.01 | 4.3 |
+| plan-chatgpt-flat | 14.3 | 1.7 | 0.3 | 0.3 | 0.03 | 1.4 |
+| plan-small-on-big | 3.6 | 0.6 | 0.3 | 0.4 | 0.01 | 3.1 |
+| plan-filled | 2.7 | 0.5 | 0.2 | 0.3 | 0.01 | 2.1 |
+
+Nothing was slow on these files. The risk was a runaway, which no time limit on the main thread can stop.
+
+### 2. What was built
+
+- `src/lib/pdf/review.ts` `reviewPdf`: the page's old computation, unchanged. With `carry` it also does the old `withPdfTakeoffs`, moved there verbatim. It also holds the TEST-ONLY `__runaway` loop.
+- `src/workers/review.worker.ts`: one worker per job, with no pdf.js.
+- `importFile.ts` `runReview`: a 60 s watchdog and `TOO_LONG`. Failures are a `JobError` in plain words. The worker can be injected (`WorkerLike`) for tests. The analysis is sent without its pixel bytes.
+- `dimensions.ts` `withOverrides`: overrides laid on rows that were made without them.
+- `page.tsx`:
+  - the stage "Checking the reading" before the review screen;
+  - a pending re-review on a new scale value, with the last review kept and Build disabled;
+  - Build's vector build in the worker ("Building…");
+  - "Start again" on a stall.
+  - `buildFromAnalysis` (images, scanned pages) is untouched.
+- The analysis and PDF workers keep their 180 s `STALL_MS`, because OCR on a big scan can be silent for over a minute.
+- The sliver guard in `rooms.ts` stays.
+- **Found on the way:** Turbopack copies every worker entry's own source verbatim into `.next/static/media` (`analyse.worker.….ts`, `pdf.worker.….ts`, `background.worker.….ts`, and now `review.worker.….ts`). The page loads the compiled `turbopack-worker` chunks, not these copies.
+  - With the switch first written in the worker file, its compiled branch was dead, but the dev-hook grep still found `__runaway` in that copy. So the switch lives in `review.ts`.
+  - These copies predate W.1 and are left as they are. They ship each worker's source, comments included.
+
+### 3. Failing first
+
+`scripts/e2e-pdf-watchdog.ts` was written before any worker code. It ran against the old main-thread code, with the same switch put temporarily in the review `useMemo`. It failed 6 s in:
+
+`Error: the page's heartbeat stopped for 3.1 s during step "wait for the watchdog's message while the worker loops": its main thread is frozen`
+
+On the new code it passes:
+- the message came 60.3 s after the review worker started;
+- 626 heartbeats arrived, with the longest gap 105 ms;
+- a `page.evaluate` halfway through answered in 1 ms;
+- the worker was terminated;
+- Start again then read plan-filled as Good.
+
+The first run on the new code failed on a bug in the test itself (section 23).
+
+### 4. Tests
+
+- **`scripts/test-review-worker.ts`** (new, in `npm test`, before the snapshot) runs the real worker module in a Node worker thread through `scripts/worker-thread.ts`. It checks:
+  - **45 fixtures**, each reviewed and built through the thread. Each equals the old page code, kept in the test verbatim, apart from the creation time. 44 of them carry dimensions as takeoffs with an override.
+  - `withOverrides` equals overrides passed to `modelRows` and `dimensionRows`.
+  - The error paths:
+    - a BlueprintError keeps its words;
+    - a bug, a missing worker script, an unreadable reply, a wrong-shaped reply, and a bug's own message with `user: false` each give fixed sentences;
+    - the bug's details go to the worker's console.
+  - `cancel()` rejects with `Cancelled` and terminates the worker.
+  - The runaway: about 70 heartbeats on the test's thread with the longest gap under 30 ms; a 1.5 s watchdog fires within 1.5 s and terminates the thread.
+  - `REVIEW_STALL_MS` is 60 s, and `STALL_MS` is still 180 s.
+- **`test-pdf-snapshot.ts`**: unchanged, and it passes. All 38 frozen fixtures read, build, judge and derive rooms exactly as frozen, and the same two are listed as changed.
+- **`test-import-cycles.ts`**: 121 files, no cycles.
+- **No existing assertion was changed.** Waits were not needed either: the review screen appears only once its review is in.
+
+### 5. Limits
+
+- Images and scanned pages still build on the page.
+- A worker that runs out of memory still takes the tab.
+- One review runs at a time.
+- The e2e checks the 60 s watchdog at 1440 only.
+
+### 6. Verification
+
+- `npx tsc --noEmit`: clean. `npm test`: exit 0 on the final tree, with `test-review-worker.ts` included.
+- **Cold build**, twice:
+  - The dev server was stopped and `.next` deleted, then `perl -e 'alarm 300; exec @ARGV' npm run build`: exit 0 in 12.8 s.
+  - The dev-hook grep, with `__reviewRunaway|__runaway` added, found `__runaway` in the media copy of `review.worker.ts` (§2). The switch was moved into `review.ts`.
+  - Rebuilt cold: exit 0 in 13.2 s. Both greps then printed `clean`, and the compiled review chunks contain no `for(;;)`.
+- `.next` deleted again and `npm run dev` restarted: pid 14750, cwd this checkout, `/studio` 200, nothing else driving port 3000.
+- **Browser suites**, one at a time, `/studio` probed before each. Each exited 0 first time on that server, with no source edited meanwhile:
+  - `e2e-pdf-watchdog` 68 s: message after 60.4 s, longest heartbeat gap 119 ms.
+  - `e2e-pdf-import` 120 s. Per-file times are 1.0–1.8 s, as in earlier steps, and the test-plans rows are unchanged against the baseline. The longer total is not explained.
+  - `e2e-studio` 154 s, `e2e-snap` 22 s, `e2e-background` 22 s, `e2e-calibrate` 16 s, `e2e-offline-ocr` 21 s.
+- The one failure on the way, `e2e-pdf-watchdog`'s first run (a test bug), is logged in section 23.
