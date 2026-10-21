@@ -1,0 +1,65 @@
+# ci.yml — runs the "Run before committing" checks 1 to 3 (docs/HANDOFF.md) on every push and pull request,
+# on a clean Ubuntu machine: npm test, tsc, lint (non-blocking), production build and the two bundle greps.
+# The browser e2e suites are NOT here: they need a dev server and Chromium, see section 33 of docs/HANDOFF.md.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same branch cancels the older run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node version comes from .nvmrc (the version the project is developed on).
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # Prints "SKIPPED test-plans/06…" for the one optional local-only input (test-plans/ is not in git).
+      - name: Tests
+        run: npm test
+
+      - name: Types
+        run: npx tsc --noEmit
+
+      # Lint fails today (25 errors: 19 in vendored public/tesseract/*.js, 6 react-hooks errors in
+      # PlanViewer, PlanModel, ItemPanel and ImportedItems; HANDOFF section 17). Non-blocking until those are fixed.
+      - name: Lint (non-blocking)
+        run: npm run lint
+        continue-on-error: true
+
+      # A build over 5 minutes means an import cycle or a hang (CLAUDE.md, M.1d); the job limit is 15 minutes.
+      - name: Production build
+        run: npm run build
+
+      # grep exits 0 when it FINDS something, so a hit fails the step. Same patterns as HANDOFF "Run before committing".
+      - name: No dev hooks in the bundle
+        run: |
+          if grep -rlE "__studio3d|__pushPullDebug|__importDebug|__importPdf|__plan2d|__takeoffStore|__scene3d|__walkDebug|__background|__reviewRunaway|__runaway" .next/static; then
+            echo "dev-only hooks reached the production bundle (files above)"; exit 1
+          fi
+          echo clean
+
+      - name: No CDN URLs in the bundle
+        run: |
+          if grep -rlE "cdn\.jsdelivr|unpkg\.com|cdnjs" .next/static; then
+            echo "a CDN URL reached the production bundle (files above)"; exit 1
+          fi
+          echo clean
