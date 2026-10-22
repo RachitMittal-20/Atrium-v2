@@ -20,7 +20,7 @@ export const LANDING_SCENES: LandingScene[] = [
     image: "/images/01_mansion.jpg",
     alt: "A white classical villa with arched black-framed windows at sunset, a circular driveway in front",
     title: "From one drawing, a whole house",
-    caption: "Every wall you see started as a line on a plan.",
+    caption: "Every wall in Atrium starts as a line on a plan.",
   },
   {
     id: "lobby",
@@ -34,14 +34,14 @@ export const LANDING_SCENES: LandingScene[] = [
     image: "/images/03_living_room.jpg",
     alt: "A living room with fluted columns, a coffered ceiling and white modular sofas",
     title: "The living room",
-    caption: "Move a wall and the room, its area and its drawings follow.",
+    caption: "Move a wall and the room's area follows.",
   },
   {
     id: "dining",
     image: "/images/04_dining_room.jpg",
     alt: "A long candlelit dining table beneath tall arched windows and a stone fireplace",
     title: "The dining room",
-    caption: "Furnish it from a catalog of lights, furniture and finishes.",
+    caption: "Measure it, check it against the drawing, and take its areas off.",
   },
   {
     id: "piano",
