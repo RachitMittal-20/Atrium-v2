@@ -1,6 +1,6 @@
 # Deploying Atrium to Vercel (step D.1)
 
-Atrium is one Next.js app with no server code: every route is prerendered static content (`next build` marks `/`, `/limits`, `/studio`, `/studio/import` and `/_not-found` as `○ Static`), there are no API routes, no database and no secrets, and the browser asks no host but its own origin. Vercel's free (Hobby) tier is enough. **Nothing here has been deployed yet**; these are the steps to follow.
+Atrium is one Next.js app with no server code: every route is prerendered static content (`next build` marks `/`, `/limits`, `/studio`, `/studio/import` and `/_not-found` as `○ Static`), there are no API routes, no database and no secrets, and the browser asks no host but its own origin. Vercel's free (Hobby) tier is enough. **Live at https://atrium-v2-ashen.vercel.app/ (first deployed 2026-10-21)**; these are the steps that were followed.
 
 ## Before the first deploy
 

@@ -124,7 +124,7 @@ export function LandingTour() {
             </button>
           )}
 
-          {/* Honesty note: the photographs are stock, not Atrium output. Quiet, wraps at 390 px. */}
+          {/* Honesty note: the photographs are AI-generated, not Atrium output. Quiet, wraps at 390 px. */}
           {i === 0 && (
             <p className="mx-auto mt-4 max-w-[40ch] text-xs text-vellum [text-shadow:0_1px_3px_rgb(0_0_0/0.7),0_0_12px_rgb(0_0_0/0.45)]">
               Illustrative photographs. Atrium makes plain walls, doors and windows from your plan, as shown in the studio.
