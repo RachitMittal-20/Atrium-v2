@@ -9,7 +9,9 @@
  * src/components/three/WalkControls.tsx watches `mode`: on entering it saves the
  * orbit camera into `savedOrbit`, on exiting it puts that camera back exactly.
  * `walkPose` is published by WalkControls at most 15 times a second; the live
- * pose lives in its refs. `frame` asks the orbit camera to frame an imported model
+ * pose lives in its refs. `ghost` ("Walk through walls", step G.1) makes the walk
+ * ignore walls: a view setting, refused outside walk, set to false by every
+ * enterWalk and exitWalk, never saved. `frame` asks the orbit camera to frame an imported model
  * (Show in view, step I.1b); it is ignored while walking.
  *
  * Connects to: src/lib/walk/collision.ts, src/store/planStore.ts; read by
@@ -45,6 +47,10 @@ interface ViewState {
   savedOrbit: SavedOrbit | null;
   /** Fixed eye height (m) while walking; recomputed only when the collision rebuilds. */
   eyeHeight: number;
+  /** "Walk through walls": the walk camera ignores walls (collision's ghost option). Only true while walking. */
+  ghost: boolean;
+  /** Turn ghost on or off; refused (false) outside walk. WalkControls rescues the camera when it turns off. */
+  setGhost: (on: boolean) => boolean;
   /** One line for the 3D pane, cleared by itself. */
   notice: string | null;
   /** A request to frame an imported model with the orbit camera (step I.1b: Show in view, or right after an import,
@@ -61,6 +67,9 @@ interface ViewState {
 
 export const NO_ROOM_NOTICE = "Walk needs at least one closed room.";
 export const MOVED_NOTICE = "A wall moved onto you, so we moved you.";
+export const GHOST_STATUS = "Walls are ignored. Turn this off to be stopped by walls.";
+/** The one walk shortcut beside W A S D, the arrows, Shift and Escape (read on the 3D host by WalkControls). */
+export const GHOST_KEY = "g";
 const NOTICE_MS = 4000;
 
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -72,6 +81,7 @@ export const useViewStore = create<ViewState>((set, get) => ({
   eyeHeight: 1.6,
   notice: null,
   frame: null,
+  ghost: false,
 
   enterWalk: () => {
     if (get().mode === "walk") return true;
@@ -85,11 +95,17 @@ export const useViewStore = create<ViewState>((set, get) => ({
       mode: "walk",
       walkPose: { x: start.position.x, y: start.position.y, heading: start.heading, pitch: 0 },
       eyeHeight: eyeHeight(plan, start.position),
+      ghost: false, // every walk starts stopped by walls
     });
     return true;
   },
   exitWalk: () => {
-    if (get().mode === "walk") set({ mode: "orbit" });
+    if (get().mode === "walk") set({ mode: "orbit", ghost: false });
+  },
+  setGhost: (on) => {
+    if (get().mode !== "walk") return false;
+    if (get().ghost !== on) set({ ghost: on });
+    return true;
   },
   setPose: (walkPose) => set({ walkPose }),
   requestFrame: (itemId, auto) => {

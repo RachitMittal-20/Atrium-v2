@@ -2,9 +2,12 @@
 
 /**
  * WalkOverlay.tsx — the 3D pane's own controls, top-left of the pane (not the
- * top bar, so they fit at 390 px): the Orbit | Walk toggle, and while walking a
- * one-line hint, an Exit button and, on touch screens, a joystick bottom-left
- * (move and strafe) while a drag anywhere else on the canvas looks. Also shows
+ * top bar, so they fit at 390 px): the Orbit | Walk toggle, the "Walk through
+ * walls" toggle (viewStore.ghost, step G.1; disabled outside walk, key G, with a
+ * status line while on), and while walking a one-line hint, an Exit button and,
+ * on touch screens, a joystick bottom-left (move and strafe) while a drag
+ * anywhere else on the canvas looks. The top row wraps on a phone, so nothing
+ * there reaches the joystick at the bottom. Also shows
  * viewStore's one-line notice ("Walk needs at least one closed room.", "A wall
  * moved onto you…") in a polite live region.
  *
@@ -14,7 +17,7 @@
  * src/components/three/WalkControls.tsx reads every frame.
  */
 import { useEffect, useRef, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
-import { useViewStore, walkJoystick } from "@/store/viewStore";
+import { GHOST_STATUS, useViewStore, walkJoystick } from "@/store/viewStore";
 
 const COARSE = "(any-pointer: coarse)";
 const watchCoarse = (cb: () => void) => {
@@ -77,6 +80,7 @@ function Joystick() {
 export function WalkOverlay({ host }: { host: RefObject<HTMLDivElement | null> }) {
   const walking = useViewStore((s) => s.mode === "walk");
   const notice = useViewStore((s) => s.notice);
+  const ghost = useViewStore((s) => s.ghost);
   const touch = useSyncExternalStore(watchCoarse, hasTouch, () => false);
   const walkButton = useRef<HTMLButtonElement>(null);
 
@@ -92,7 +96,7 @@ export function WalkOverlay({ host }: { host: RefObject<HTMLDivElement | null> }
   return (
     <>
       <div className="pointer-events-none absolute left-2 top-2 z-10 flex max-w-[calc(100%-1rem)] flex-col items-start gap-1.5 text-sm text-iron">
-        <div className="pointer-events-auto flex items-center gap-1.5">
+        <div className="pointer-events-auto flex flex-wrap items-center gap-1.5">
           <div role="group" aria-label="Camera" className="flex rounded border border-stone bg-vellum p-0.5 shadow-sm">
             <button type="button" data-testid="camera-orbit" aria-pressed={!walking} onClick={() => walking && useViewStore.getState().exitWalk()} className={toggle(!walking)}>
               Orbit
@@ -106,7 +110,27 @@ export function WalkOverlay({ host }: { host: RefObject<HTMLDivElement | null> }
               Exit
             </button>
           )}
+          <button
+            type="button"
+            data-testid="walk-ghost"
+            aria-pressed={ghost}
+            aria-keyshortcuts="G"
+            disabled={!walking}
+            title={walking ? "Walk through walls (G)" : "Walk through walls works in Walk"}
+            onClick={() => {
+              useViewStore.getState().setGhost(!ghost);
+              host.current?.focus({ preventScroll: true }); // W A S D keep working
+            }}
+            className={`min-h-11 rounded border border-stone px-3 shadow-sm disabled:cursor-not-allowed disabled:bg-vellum disabled:opacity-60 ${ghost ? "bg-cyanotype text-vellum" : "bg-vellum hover:bg-limestone"}`}
+          >
+            Walk through walls
+          </button>
         </div>
+        {walking && ghost && (
+          <p data-testid="walk-ghost-status" className="rounded border-l-2 border-cyanotype bg-vellum/90 px-2 py-1 text-xs shadow-sm">
+            {GHOST_STATUS}
+          </p>
+        )}
         {walking && (
           <p data-testid="walk-hud" className="rounded bg-vellum/90 px-2 py-1 text-xs shadow-sm">
             {touch ? "Drag to look. Use the joystick to move." : "Walk: W A S D to move, drag to look, Shift to run, Esc to exit"}

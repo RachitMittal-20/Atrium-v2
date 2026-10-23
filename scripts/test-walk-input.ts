@@ -5,7 +5,9 @@
  * release, and that the plan → world mapping agrees with a real three.js camera
  * after lookAt. Then the view store (src/store/viewStore.ts): entering walk on
  * the sample plan, refusing a plan with no room, and that walking never reaches
- * the autosave payload.
+ * the autosave payload. Step G.1: the ghost flag ("Walk through walls") is
+ * refused outside walk, off on every walk start and after every exit, never in
+ * the payload, and its key G collides with no tool, walking or typed key.
  * Run: npx tsx scripts/test-walk-input.ts (part of npm test).
  */
 import assert from "node:assert/strict";
@@ -28,7 +30,8 @@ import {
   type WalkState,
 } from "../src/lib/walk/input";
 import { usePlanStore } from "../src/store/planStore";
-import { NO_ROOM_NOTICE, useViewStore } from "../src/store/viewStore";
+import { TOOL_SHORTCUTS } from "../src/store/toolStore";
+import { GHOST_KEY, NO_ROOM_NOTICE, useViewStore } from "../src/store/viewStore";
 
 const EPS = 1e-9;
 const none: WalkInput = { forward: 0, strafe: 0, turn: 0, run: false, lookDX: 0, lookDY: 0 };
@@ -192,6 +195,42 @@ const pass = (msg: string) => console.log(`  PASS ${msg}`);
   assert.equal(v().notice, NO_ROOM_NOTICE);
   v().setNotice(null);
   pass(`view store: starts in ${largest.name} at (${p.x.toFixed(2)}, ${p.y.toFixed(2)}), eye ${v().eyeHeight.toFixed(2)} m; refuses an empty plan; payload stays { schema, savedAt, plan }`);
+}
+
+// ---- step G.1: the ghost flag is a view setting that never outlives a walk
+{
+  usePlanStore.getState().loadPlan(structuredClone(samplePlan));
+  const v = useViewStore.getState;
+  assert.equal(v().ghost, false, "off by default");
+  assert.equal(v().setGhost(true), false, "refused outside walk");
+  assert.equal(v().ghost, false, "still off outside walk");
+  assert.equal(v().enterWalk(), true);
+  assert.equal(v().ghost, false, "a walk starts with it off");
+  assert.equal(v().setGhost(true), true, "accepted while walking");
+  assert.equal(v().ghost, true);
+  const before = serializePlan(usePlanStore.getState().plan, new Date(0));
+  assert.ok(!before.includes("ghost"), "never in the autosave payload");
+  v().exitWalk();
+  assert.equal(v().ghost, false, "exit turns it off");
+  assert.equal(v().enterWalk(), true);
+  assert.equal(v().ghost, false, "and the next walk starts with it off");
+  v().setGhost(true);
+  useViewStore.setState({ mode: "orbit" }); // a mode change that bypassed exitWalk…
+  assert.equal(v().enterWalk(), true);
+  assert.equal(v().ghost, false, "…still starts the next walk with it off");
+  v().exitWalk();
+  pass("ghost: refused outside walk, off at every walk start and after exit, not in the payload");
+}
+
+// ---- step G.1: G is free
+{
+  const tools = Object.values(TOOL_SHORTCUTS);
+  assert.equal(new Set(tools).size, tools.length, `no two tools share a shortcut: ${JSON.stringify(TOOL_SHORTCUTS)}`);
+  assert.equal(GHOST_KEY, "g");
+  assert.ok(!tools.includes(GHOST_KEY), `${GHOST_KEY} is no tool's key`);
+  assert.ok(!"wasd".includes(GHOST_KEY), `${GHOST_KEY} is not a walking key`);
+  assert.ok(!/^[0-9.,'"+\-cmftin %°]$/i.test(GHOST_KEY), `${GHOST_KEY} is not a key a typed distance, angle or percentage uses`);
+  pass(`ghost key ${GHOST_KEY.toUpperCase()}: unique among ${tools.join(", ")}, W A S D and typed-value keys`);
 }
 
 console.log("\nOK");

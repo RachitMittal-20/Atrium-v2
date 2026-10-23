@@ -11,12 +11,22 @@
  *     most 10 s): the clearance at the camera (its distance to the nearest wall) is
  *     sampled every 100 ms, must get under 0.25 m (it really reached a wall) and must
  *     never drop below the camera radius (0.2 m);
+ *   - step G.1, "Walk through walls": the toggle is disabled before Walk; with the
+ *     camera stopped at that wall, G turns it on (aria-pressed, the status line), W
+ *     carries the camera into the wall and out the other side, S backs it into the wall
+ *     again; G turns it off there, and the camera is put on a clear point (clearance >=
+ *     the radius, under 2 m away) with the notice. From here on the browser prefers
+ *     reduced motion (a real media setting, no hook), so a released key stops the
+ *     camera on the next frame instead of gliding out of a 0.1 m wall;
  *   - press Escape: Walk ends and the orbit camera (position, view direction, fov,
- *     near) is back exactly, the position within 0.001 mm.
+ *     near) is back exactly, the position within 0.001 mm; entering Walk again, the
+ *     toggle is off, and Escape again restores the orbit camera as exactly.
  * At 390×844 with real touch (Chromium's own touch input through CDP), the same, with
- * the on-screen joystick pushed up instead of W, and the Exit button instead
- * of Escape (a phone has no Escape key).
- * Screenshots: /tmp/studio/walk-{1440,390}.png, taken mid-walk.
+ * the on-screen joystick pushed up instead of W (and gently down instead of S), taps
+ * on the toggle instead of G (which must be at least 44 px and overlap neither the
+ * joystick nor Exit), and the Exit button instead of Escape (a phone has no Escape key).
+ * Screenshots: /tmp/studio/walk-{1440,390}.png, taken mid-walk; walk-ghost-on-1440.png
+ * and walk-ghost-390.png, taken with the toggle on and the camera inside the wall.
  * Run: npx tsx scripts/e2e-walk.ts
  */
 import assert from "node:assert/strict";
@@ -34,6 +44,7 @@ const AT_WALL = 0.25; // m: a clearance this small means the camera has walked u
 type Vec = [number, number, number];
 type WalkDebug = {
   mode(): string;
+  ghost(): boolean;
   pose(): { x: number; y: number; heading: number; pitch: number; eye: number };
   camera(): { position: Vec; forward: Vec; right: Vec; fov: number; near: number };
   clearance(): number;
@@ -46,7 +57,25 @@ const camera = (page: Page) => page.evaluate(() => (window as Win).__walkDebug!.
 const mode = (page: Page) => page.evaluate(() => (window as Win).__walkDebug!.mode());
 const pose = (page: Page) => page.evaluate(() => (window as Win).__walkDebug!.pose());
 const clearance = (page: Page) => page.evaluate(() => (window as Win).__walkDebug!.clearance());
+const ghost = (page: Page) => page.evaluate(() => (window as Win).__walkDebug!.ghost());
 const gap = (a: Vec, b: Vec) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+const MOVED_NOTICE = "A wall moved onto you, so we moved you."; // src/store/viewStore.ts
+const GHOST_STATUS = "Walls are ignored. Turn this off to be stopped by walls.";
+type Box = { x: number; y: number; width: number; height: number };
+const overlaps = (a: Box, b: Box) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+
+/** Hold a movement until the page-side condition (a string, evaluated every frame) holds; at most 10 s. */
+async function holdUntil(page: Page, hold: () => Promise<void>, release: () => Promise<void>, condition: string, what: string) {
+  await hold();
+  try {
+    await page.waitForFunction(condition, null, { polling: "raf", timeout: 10000 });
+  } catch {
+    throw new Error(`${what}: not reached within 10 s (clearance ${(await clearance(page)).toFixed(3)} m)`);
+  } finally {
+    await release();
+  }
+  await page.waitForTimeout(200); // reduced motion: the next frame stops it; this only lets the last pose publish
+}
 
 /** Sample the clearance every 100 ms while forward is held, until the camera has been at a wall for half a second
  *  (it keeps pushing into it) or `ms` is up; returns the smallest clearance seen. */
@@ -83,6 +112,7 @@ async function check(width: number, height: number, touch: boolean) {
   assert.equal(await tid(page, "tool-move").getAttribute("aria-pressed"), "true", `${tag}: Move chosen before walking`);
   assert.equal(await mode(page), "orbit");
   const orbit = await camera(page);
+  assert.equal(await tid(page, "walk-ghost").isDisabled(), true, `${tag}: Walk through walls is disabled before Walk`);
 
   // ---- enter Walk
   await press("camera-walk");
@@ -131,21 +161,109 @@ async function check(width: number, height: number, touch: boolean) {
   assert.ok(minClear < AT_WALL, `${tag}: it walked up to a wall (min clearance ${minClear.toFixed(3)} m), so the next check means something`);
   assert.ok(minClear >= CAMERA_RADIUS - 1e-6, `${tag}: the clearance never dropped below the camera radius (min ${minClear.toFixed(3)} m)`);
 
+  // ---- step G.1: walk through walls, then turn it off inside one
+  step(`${tag}: walk through walls`);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const toggle = tid(page, "walk-ghost");
+  const cdp = touch ? await page.context().newCDPSession(page) : null;
+  const stick = (await tid(page, "walk-joystick").boundingBox().catch(() => null)) ?? { x: 0, y: 0, width: 0, height: 0 };
+  const sc = { x: stick.x + stick.width / 2, y: stick.y + stick.height / 2 };
+  /** Forward (+1) or back (-1) by W / S, or the joystick pushed `dy` px from its centre (negative is forward). */
+  const mover = (dir: 1 | -1) => ({
+    hold: async () => {
+      if (!touch) return page.keyboard.down(dir > 0 ? "w" : "s");
+      await cdp!.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: sc.x, y: sc.y }] });
+      const dy = dir > 0 ? -40 : 14; // back: a gentle push, slow enough to stop inside a 0.1 m wall
+      for (let i = 1; i <= 4; i++) await cdp!.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: sc.x, y: sc.y + (dy * i) / 4 }] });
+    },
+    release: async () => {
+      if (!touch) return page.keyboard.up(dir > 0 ? "w" : "s");
+      await cdp!.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    },
+  });
+  const flip = async () => {
+    if (touch) await toggle.tap();
+    else {
+      await tid(page, "scene-3d").focus();
+      await page.keyboard.press("g");
+    }
+  };
+  if (touch) {
+    const t = (await toggle.boundingBox())!;
+    assert.ok(t.height >= 44 && t.width >= 44, `${tag}: the toggle is a 44 px target (${t.width.toFixed(0)} × ${t.height.toFixed(0)})`);
+    assert.ok(!overlaps(t, stick), `${tag}: the toggle does not overlap the joystick`);
+    assert.ok(!overlaps(t, (await tid(page, "walk-exit").boundingBox())!), `${tag}: the toggle does not overlap Exit`);
+  }
+  assert.equal(await toggle.isDisabled(), false, `${tag}: the toggle is enabled while walking`);
+  assert.equal(await toggle.getAttribute("aria-pressed"), "false", `${tag}: and off`);
+  const atWall = await pose(page);
+  await flip();
+  assert.equal(await ghost(page), true, `${tag}: ${touch ? "a tap" : "G"} turns Walk through walls on`);
+  assert.equal(await toggle.getAttribute("aria-pressed"), "true", `${tag}: aria-pressed says so`);
+  assert.equal((await tid(page, "walk-ghost-status").textContent())?.trim(), GHOST_STATUS, `${tag}: with the status line`);
+
+  // Forward: into the wall the camera was stopped by (clearance below 0) and out the far side (clearance back over 0.25 m).
+  const fwd = mover(1);
+  await page.evaluate("window.__ghostSeenInside = false");
+  await holdUntil(page, fwd.hold, fwd.release, "(() => { const c = window.__walkDebug.clearance(); if (c < 0) window.__ghostSeenInside = true; return window.__ghostSeenInside && c > 0.25; })()", `${tag}: through the wall`);
+  const through = await pose(page);
+  const passed = (through.x - atWall.x) * Math.cos(atWall.heading) + (through.y - atWall.y) * Math.sin(atWall.heading);
+  assert.ok(passed > 0.3, `${tag}: the camera went on past where the wall stopped it (${passed.toFixed(2)} m)`);
+  assert.ok((await clearance(page)) >= CAMERA_RADIUS, `${tag}: and stands clear on the other side`);
+
+  // Back: into the same wall again, and stop there.
+  const back_ = mover(-1);
+  await holdUntil(page, back_.hold, back_.release, "window.__walkDebug.clearance() < 0", `${tag}: back into the wall`);
+  const inside = await clearance(page);
+  assert.ok(inside < CAMERA_RADIUS - 0.001, `${tag}: stopped where a wall covers the camera (clearance ${inside.toFixed(3)} m)`);
+  await page.screenshot({ path: `${OUT}/${touch ? "walk-ghost-390" : "walk-ghost-on-1440"}.png` });
+  const before = await pose(page);
+
+  // Off, inside the wall: put on the nearest clear point, with the notice.
+  await flip();
+  assert.equal(await ghost(page), false, `${tag}: turned off`);
+  assert.equal(await toggle.getAttribute("aria-pressed"), "false");
+  assert.equal(await tid(page, "walk-ghost-status").count(), 0, `${tag}: the status line is gone`);
+  await page.waitForTimeout(200);
+  const rescued = await pose(page);
+  const jump = Math.hypot(rescued.x - before.x, rescued.y - before.y);
+  const clear = await clearance(page);
+  assert.ok(clear >= CAMERA_RADIUS - 1e-6, `${tag}: the camera is on a clear point (clearance ${clear.toFixed(4)} m)`);
+  assert.ok(jump > 0 && jump <= 2, `${tag}: moved ${jump.toFixed(3)} m to get there`);
+  assert.equal(rescued.eye, before.eye, `${tag}: the eye height is unchanged`);
+  assert.equal((await tid(page, "walk-notice").textContent())?.trim(), MOVED_NOTICE, `${tag}: with the notice`);
+  if (cdp) await cdp.detach();
+
   // ---- leave Walk: Escape on a keyboard, the Exit button on a phone; the orbit camera comes back exactly
-  if (!touch) {
-    await tid(page, "scene-3d").focus();
-    await page.keyboard.press("Escape");
-  } else await press("walk-exit");
+  const leave = async (when: string) => {
+    if (!touch) {
+      await tid(page, "scene-3d").focus();
+      await page.keyboard.press("Escape");
+    } else await press("walk-exit");
+    await page.waitForTimeout(400);
+    assert.equal(await mode(page), "orbit", `${tag}: ${touch ? "Exit" : "Escape"} ends Walk${when}`);
+    const back = await camera(page);
+    const off = gap(back.position, orbit.position);
+    assert.ok(off < 1e-6, `${tag}: the orbit camera is back within 0.001 mm${when} (off by ${(off * 1000).toFixed(6)} mm)`);
+    assert.ok(gap(back.forward, orbit.forward) < 1e-6, `${tag}: looking the same way`);
+    assert.equal(back.fov, orbit.fov, `${tag}: same fov`);
+    assert.equal(back.near, orbit.near, `${tag}: same near plane`);
+    assert.equal(await tid(page, "tool-move").getAttribute("aria-disabled"), "false", `${tag}: after Walk, Move is enabled again`);
+    assert.equal(await toggle.isDisabled(), true, `${tag}: the toggle is disabled outside Walk`);
+    return off;
+  };
+  const off = await leave("");
+  await press("camera-walk");
   await page.waitForTimeout(400);
-  assert.equal(await mode(page), "orbit", `${tag}: ${touch ? "Exit" : "Escape"} ends Walk`);
-  const back = await camera(page);
-  const off = gap(back.position, orbit.position);
-  assert.ok(off < 1e-6, `${tag}: the orbit camera is back within 0.001 mm (off by ${(off * 1000).toFixed(6)} mm)`);
-  assert.ok(gap(back.forward, orbit.forward) < 1e-6, `${tag}: looking the same way`);
-  assert.equal(back.fov, orbit.fov, `${tag}: same fov`);
-  assert.equal(back.near, orbit.near, `${tag}: same near plane`);
-  assert.equal(await tid(page, "tool-move").getAttribute("aria-disabled"), "false", `${tag}: after Walk, Move is enabled again`);
-  console.log(`${tag}: ok (${touch ? "joystick" : "W key"}: moved ${moved.toFixed(2)} m, min clearance ${minClear.toFixed(3)} m; orbit camera back within ${(off * 1000).toFixed(6)} mm)`);
+  assert.equal(await mode(page), "walk", `${tag}: walking again`);
+  assert.equal(await ghost(page), false, `${tag}: the next walk starts with Walk through walls off`);
+  assert.equal(await toggle.getAttribute("aria-pressed"), "false");
+  const off2 = await leave(" the second time");
+  console.log(
+    `${tag}: ok (${touch ? "joystick" : "W key"}: moved ${moved.toFixed(2)} m, min clearance ${minClear.toFixed(3)} m; ` +
+      `ghost: ${passed.toFixed(2)} m past the wall, stopped inside it at clearance ${inside.toFixed(3)} m, put ${jump.toFixed(3)} m away at ${clear.toFixed(3)} m; ` +
+      `orbit camera back within ${(off * 1000).toFixed(6)} mm, then ${(off2 * 1000).toFixed(6)} mm)`,
+  );
   await browser.close();
 }
 

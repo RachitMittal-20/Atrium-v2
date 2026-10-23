@@ -18,6 +18,12 @@
  * along the shortest exit normal; `clearance` is the true Euclidean distance.
  * A centre outside every grown rectangle therefore always has clearance >= the
  * radius.
+ *
+ * Ghost (step G.1, "Walk through walls"): `moveWithCollision(…, { ghost: true })`
+ * skips the solids and keeps only the fence. It is an option on the CALL: the
+ * build, its memo and `collisionStats.builds` are untouched. `rescuePoint` is
+ * where the camera goes when a wall covers it (after an edit, or when ghost
+ * turns off inside a wall).
  */
 import type { Plan, Vec2 } from "@/types/plan";
 import { pointToWallDistance, wallDirection, wallLength, JOINT_EPS } from "@/lib/plan/geometry";
@@ -227,9 +233,11 @@ const clampTo = (b: Box, p: Vec2): Vec2 => ({ x: Math.min(b.maxX, Math.max(b.min
  * of at most SUBSTEP; after each, up to PASSES passes push the centre out of
  * every grown piece it is in. A substep that still overlaps (a corner tighter
  * than the passes can settle) is undone and the move stops there, so a start
- * that is free never ends inside a solid.
+ * that is free never ends inside a solid. With `ghost` the solids are skipped
+ * and only the fence holds (per axis, so clamping once equals clamping each substep).
  */
-export function moveWithCollision(c: Collision, from: Vec2, delta: Vec2): Vec2 {
+export function moveWithCollision(c: Collision, from: Vec2, delta: Vec2, opts: { ghost?: boolean } = {}): Vec2 {
+  if (opts.ghost) return clampTo(c.fence, { x: from.x + delta.x, y: from.y + delta.y });
   const len = Math.hypot(delta.x, delta.y);
   const n = Math.ceil(len / SUBSTEP);
   let p = { ...from };
@@ -275,6 +283,23 @@ export function freePointNear(c: Collision, p: Vec2, maxDist = 2): Vec2 | null {
     if (best) return best;
   }
   return null;
+}
+
+/** A wall within radius − this of the camera counts as on it (the walk's rescue threshold). */
+export const RESCUE_SLACK = 0.001;
+
+/**
+ * Where the camera goes when a wall may cover it at p: p itself when its
+ * clearance is at least radius − RESCUE_SLACK (moved false), else the nearest
+ * free point within 2 m (freePointNear), else the start pose with its heading;
+ * null when there is none of those (no closed room), and walking must stop.
+ */
+export function rescuePoint(plan: Plan, c: Collision, p: Vec2): { position: Vec2; heading: number | null; moved: boolean } | null {
+  if (clearance(c, p) >= CAMERA_RADIUS - RESCUE_SLACK) return { position: { x: p.x, y: p.y }, heading: null, moved: false };
+  const free = freePointNear(c, p, 2);
+  if (free) return { position: free, heading: null, moved: true };
+  const start = startPose(plan, c);
+  return start ? { position: start.position, heading: start.heading, moved: true } : null;
 }
 
 // ---------------------------------------------------------------- start and eye height

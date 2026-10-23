@@ -18,7 +18,12 @@
  *   wall now covers the camera, it is moved to freePointNear, else to the start
  *   pose, with a notice. The eye height is otherwise fixed, so walking past a
  *   low wall never bobs the view.
- * - Keys (W A S D, left/right arrows, Shift, Escape) are read on the focusable
+ * - Ghost ("Walk through walls", viewStore.ghost, step G.1): the move is
+ *   moveWithCollision's ghost option (walls skipped, the fence kept) and a
+ *   rebuild does no rescue. Turning it off while walking runs the same rescue
+ *   at once (rescuePoint), with the same notice; the eye height stays. G
+ *   toggles it, read on the host like the walking keys.
+ * - Keys (W A S D, left/right arrows, Shift, Escape, G) are read on the focusable
  *   host element Scene3D wraps around the canvas, so they count only while the
  *   3D view has focus, and never in a form field; the 2D canvas keeps its own
  *   arrow keys. Keys are released on blur and when the tab is hidden.
@@ -32,17 +37,16 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useRef, type RefObject } from "react";
 import * as THREE from "three";
 import { isTypingTarget } from "@/lib/keyboard";
-import { CAMERA_RADIUS, clearance, eyeHeight, freePointNear, getCollision, moveWithCollision, startPose, type Collision } from "@/lib/walk/collision";
+import { clearance, eyeHeight, getCollision, moveWithCollision, rescuePoint, type Collision } from "@/lib/walk/collision";
 import { planToWorld, walkForward, walkStep } from "@/lib/walk/input";
 import { usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
-import { MOVED_NOTICE, NO_ROOM_NOTICE, useViewStore, walkJoystick } from "@/store/viewStore";
+import { GHOST_KEY, MOVED_NOTICE, NO_ROOM_NOTICE, useViewStore, walkJoystick } from "@/store/viewStore";
 import type { Plan } from "@/types/plan";
 
 const WALK_FOV = 70;
 const WALK_NEAR = 0.05;
 const PUBLISH_EVERY = 1 / 15; // s: the store hears the pose at most 15 times a second
-const SETTLE_SLACK = 0.001; // a wall within radius - 1 mm of the camera counts as on it
 const KEYS = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight"]);
 
 type Orbit = { target: THREE.Vector3; enabled: boolean };
@@ -73,22 +77,29 @@ export function WalkControls({ host }: { host: RefObject<HTMLDivElement | null> 
     look.current = { id: null, x: 0, y: 0, dx: 0, dy: 0 };
     walkJoystick.forward = walkJoystick.strafe = 0;
   };
-  /** The collision was rebuilt: new eye height, and step out from under a wall that moved onto us. False if walking had to stop. */
-  const settle = (plan: Plan, c: Collision): boolean => {
+  /** Step out from under a wall (rescuePoint: within radius - 1 mm counts as on it), with the notice. False if walking had to stop. */
+  const rescue = (plan: Plan, c: Collision): boolean => {
     const w = pose.current;
-    if (clearance(c, w) < CAMERA_RADIUS - SETTLE_SLACK) {
-      const free = freePointNear(c, w, 2);
-      const start = free ? null : startPose(plan, c);
-      if (!free && !start) {
-        useViewStore.getState().exitWalk();
-        useViewStore.getState().setNotice(NO_ROOM_NOTICE);
-        return false;
-      }
-      if (free) Object.assign(w, free);
-      else Object.assign(w, start!.position, { heading: start!.heading });
+    const r = rescuePoint(plan, c, w);
+    if (!r) {
+      useViewStore.getState().exitWalk();
+      useViewStore.getState().setNotice(NO_ROOM_NOTICE);
+      return false;
+    }
+    if (r.moved) {
+      Object.assign(w, r.position);
+      if (r.heading !== null) w.heading = r.heading;
       w.velocity = { x: 0, y: 0 };
       useViewStore.getState().setNotice(MOVED_NOTICE);
+      placeCamera();
+      publish();
     }
+    return true;
+  };
+  /** The collision was rebuilt: new eye height, and (unless walls are ignored) step out from under a wall that moved onto us. */
+  const settle = (plan: Plan, c: Collision): boolean => {
+    const w = pose.current;
+    if (!useViewStore.getState().ghost && !rescue(plan, c)) return false;
     w.eye = eyeHeight(plan, w);
     useViewStore.setState({ eyeHeight: w.eye });
     publish();
@@ -99,6 +110,10 @@ export function WalkControls({ host }: { host: RefObject<HTMLDivElement | null> 
   useEffect(
     () =>
       useViewStore.subscribe((s, prev) => {
+        if (s.mode === "walk" && prev.mode === "walk" && prev.ghost && !s.ghost) {
+          rescue(usePlanStore.getState().plan, getCollision(usePlanStore.getState().plan)); // walls count again: off any wall we are in
+          return;
+        }
         if (s.mode === prev.mode) return;
         const controls = get().controls as unknown as Orbit | null;
         release();
@@ -165,7 +180,7 @@ export function WalkControls({ host }: { host: RefObject<HTMLDivElement | null> 
       { reducedMotion: reduced.current },
     );
     l.dx = l.dy = 0;
-    const p = moveWithCollision(c, w, step.delta);
+    const p = moveWithCollision(c, w, step.delta, { ghost: useViewStore.getState().ghost });
     Object.assign(w, { x: p.x, y: p.y, heading: step.heading, pitch: step.pitch, velocity: step.velocity });
     placeCamera();
     w.sincePublish += dt;
@@ -180,6 +195,12 @@ export function WalkControls({ host }: { host: RefObject<HTMLDivElement | null> 
     const onKeyDown = (e: KeyboardEvent) => {
       if (!walking() || isTypingTarget(e.target)) return;
       if (e.key === "Escape") return useViewStore.getState().exitWalk();
+      if (e.key.toLowerCase() === GHOST_KEY && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const v = useViewStore.getState();
+        v.setGhost(!v.ghost);
+        e.preventDefault();
+        return;
+      }
       // With a modifier held (Ctrl+Z, Cmd+S…) the key is a shortcut, and macOS drops the keyup, so it would stick.
       if (!KEYS.has(e.code) || e.metaKey || e.ctrlKey || e.altKey) return;
       keys.current.add(e.code);
@@ -241,6 +262,7 @@ export function WalkControls({ host }: { host: RefObject<HTMLDivElement | null> 
     if (process.env.NODE_ENV === "production") return;
     const hook = {
       mode: () => useViewStore.getState().mode,
+      ghost: () => useViewStore.getState().ghost,
       pose: () => {
         const { x, y, heading, pitch, eye } = pose.current;
         return { x, y, heading, pitch, eye };

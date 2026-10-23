@@ -2,7 +2,9 @@
  * test-walk.ts — checks the walkthrough collision model (src/lib/walk/collision.ts)
  * on the sample plan, on plans built from fixtures 01–04 (buildPlan at 100 px/m,
  * as test-toplan does) and on small hand-built plans. Cases (a)–(l) are listed
- * as they run. Edits in (j) and (l) go through the real plan store.
+ * as they run. Edits in (j) and (l) go through the real plan store. Cases
+ * (m)–(o) are step G.1's ghost option and rescuePoint; (a)–(l) call the mover
+ * exactly as before, with no option.
  *
  * To show the tests have teeth, a deliberately naive mover (no substeps, one
  * pass that adds up every push found at the target) is run through (c), (h)
@@ -31,6 +33,7 @@ import {
   getCollision,
   MIN_DOOR_WIDTH,
   moveWithCollision,
+  rescuePoint,
   startPose,
   type Collision,
 } from "../src/lib/walk/collision";
@@ -351,6 +354,104 @@ async function main() {
   assert.ok(free && clearance(cl, free) >= R && len(sub(free, stood)) <= 2, `(l) free point ${JSON.stringify(free)}`);
   assert.equal(freePointNear(cl, stood, 0.05), null, "(l) nothing free within 5 cm");
   console.log(`  PASS free point (${free!.x.toFixed(2)}, ${free!.y.toFixed(2)}), ${len(sub(free!, stood)).toFixed(2)} m away; null within 0.05 m`);
+
+  report("(m)", "ghost (step G.1): moves straight through a wall, a window and in one move across a wall; the build is untouched");
+  {
+    const ghost = { ghost: true };
+    const builds = collisionStats.builds;
+    const pieces = sampleC.pieces.slice();
+    const through = push(sampleC, (c, f, d) => moveWithCollision(c, f, d, ghost), { x: 2, y: 2 }, { x: 0, y: -0.05 }, 58); // north through w-AB, to 0.2 m inside the fence (y -1.1)
+    assert.ok(len(sub(through.at(-1)!, { x: 2, y: -0.9 })) < 1e-9, `(m) ghost through w-AB ended at ${JSON.stringify(through.at(-1))}`);
+    assert.ok(through.some((q) => clearance(sampleC, q) < 0), "(m) the path really ran inside the wall");
+    const win = sample.openings.find((o) => o.id === "win-living-n")!;
+    const { centre, n } = openingFrame(sample, win);
+    const out = moveWithCollision(sampleC, add(centre, n, -1), { x: n.x * 2, y: n.y * 2 }, ghost);
+    assert.ok(len(sub(out, add(centre, n, 1))) < 1e-9, "(m) ghost through a window");
+    const tunnel = buildCollision(plan([W([0, -5], [0, 5], 0.05)]));
+    assert.ok(len(sub(moveWithCollision(tunnel, { x: -0.5, y: 0 }, { x: 1, y: 0 }, ghost), { x: 0.5, y: 0 })) < 1e-9, "(m) one ghost move crosses a wall");
+    assert.equal(collisionStats.builds, builds, "(m) the option builds nothing");
+    assert.deepEqual(sampleC.pieces, pieces, "(m) the option leaves the solids as they were");
+    console.log("  PASS through w-AB to (2, -0.9), through win-living-n, one 1 m move across a wall; no rebuild, solids unchanged");
+  }
+
+  report("(n)", "ghost property: 20,000 seeded random moves per plan are never blocked (only the fence holds)");
+  for (const p of [sample, ...fixtures]) {
+    const c = buildCollision(p);
+    let seed = 20261023;
+    const rand = () => {
+      seed = (seed + 0x6d2b79f5) | 0; // mulberry32, as in (k)
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const f = c.fence;
+    const clamp = (q: Vec2) => ({ x: Math.min(f.maxX, Math.max(f.minX, q.x)), y: Math.min(f.maxY, Math.max(f.minY, q.y)) });
+    let q = startPose(p, c)!.position;
+    let inside = 0;
+    let crossed = 0;
+    for (let k = 0; k < 20000; k++) {
+      const a = rand() * 2 * Math.PI;
+      const l = rand() * 1.5;
+      const want = clamp(add(q, { x: Math.cos(a), y: Math.sin(a) }, l));
+      const blocked = moveWithCollision(c, q, { x: Math.cos(a) * l, y: Math.sin(a) * l });
+      const next = moveWithCollision(c, q, { x: Math.cos(a) * l, y: Math.sin(a) * l }, { ghost: true });
+      assert.ok(len(sub(next, want)) < 1e-9, `(n) ${p.name} move ${k}: ghost ended ${len(sub(next, want))} m short`);
+      if (len(sub(blocked, want)) > 1e-6) crossed++; // a move collision would have stopped or turned
+      if (clearance(c, next) < 0) inside++;
+      q = next;
+    }
+    assert.ok(crossed > 100 && inside > 100, `(n) ${p.name}: the walk met walls (${crossed} moves walls would have changed, ${inside} ends inside one)`);
+    console.log(`  PASS ${p.name}: every move ended where it aimed (clamped to the fence); ${crossed} would have been stopped by walls, ${inside} ended inside a wall`);
+  }
+
+  report("(o)", "rescuePoint (ghost turned off, or a wall moved onto you): clear, nearest, never stuck");
+  {
+    /** The nearest point to p with clearance >= R, by a 5 mm grid within 1 m. */
+    const nearestClear = (c: Collision, p: Vec2) => {
+      let best = Infinity;
+      for (let i = -200; i <= 200; i++)
+        for (let j = -200; j <= 200; j++) {
+          const d = Math.hypot(i, j) * 0.005;
+          if (d < best && clearance(c, { x: p.x + i * 0.005, y: p.y + j * 0.005 }) >= R) best = d;
+        }
+      return best;
+    };
+    const canMove = (c: Collision, p: Vec2) =>
+      Array.from({ length: 16 }, (_, i) => (i / 16) * 2 * Math.PI).some((a) => len(sub(moveWithCollision(c, p, { x: Math.cos(a) * 0.3, y: Math.sin(a) * 0.3 }), p)) > 0.299);
+    const cases: [string, Vec2, boolean][] = [
+      ["inside w-AB, 5 cm off its centre line", { x: 2, y: 0.05 }, true],
+      ["in d-bed1's doorway, on its centre", { x: 4, y: 2.9 }, false],
+      ["in d-bed1's doorway, 5 cm from a jamb", { x: 4, y: 2.5 }, true],
+      ["at corner A, inside both walls", { x: 0, y: 0 }, true],
+      ["in bedroom 1's corner at A, 0.1 m from both faces", { x: 0.2, y: 0.2 }, true],
+      ["exactly on w-AB's centre line", { x: 2, y: 0 }, true],
+      ["in the living room, far from any wall", { x: 7, y: 2.5 }, false],
+    ];
+    for (const [label, p, moves] of cases) {
+      const r = rescuePoint(sample, sampleC, p)!;
+      assert.equal(r.moved, moves, `(o) ${label}: moved ${r.moved}`);
+      assert.equal(r.heading, null, `(o) ${label}: a free point was found, so no start pose`);
+      const d = len(sub(r.position, p));
+      assert.ok(clearance(sampleC, r.position) >= R - (moves ? 0 : 0.001), `(o) ${label}: clearance ${clearance(sampleC, r.position)}`);
+      assert.ok(canMove(sampleC, r.position), `(o) ${label}: stuck at ${JSON.stringify(r.position)}`);
+      if (!moves) assert.equal(d, 0, `(o) ${label}: stays put`);
+      else {
+        const best = nearestClear(sampleC, p);
+        assert.ok(d <= best + 0.02, `(o) ${label}: went ${d.toFixed(3)} m, the nearest clear point is ${best.toFixed(3)} m`);
+      }
+      const f = sampleC.fence;
+      assert.ok(r.position.x >= f.minX && r.position.x <= f.maxX && r.position.y >= f.minY && r.position.y <= f.maxY, `(o) ${label}: outside the fence`);
+      console.log(`  PASS ${label}: ${moves ? `to (${r.position.x.toFixed(3)}, ${r.position.y.toFixed(3)}), ${d.toFixed(3)} m, clearance ${clearance(sampleC, r.position).toFixed(3)} m` : "stays"}`);
+    }
+    // No free point within 2 m: the start pose (a 6 m thick slab of wall around a room); none at all: null.
+    const slab = plan([W([0, 0], [10, 0], 6), W([10, 0], [10, 10], 0.2), W([10, 10], [0, 10], 0.2), W([0, 10], [0, 0], 0.2)]);
+    const sc = buildCollision(slab);
+    const r = rescuePoint(slab, sc, { x: 5, y: 0 })!;
+    assert.ok(r.moved && r.heading !== null && clearance(sc, r.position) >= R, "(o) deep inside a 6 m slab: the start pose");
+    const lone = plan([W([0, 0], [10, 0], 6)]);
+    assert.equal(rescuePoint(lone, buildCollision(lone), { x: 5, y: 0 }), null, "(o) no free point and no room: null");
+    console.log("  PASS 3 m inside a slab: the start pose; with no room either: null (walking stops)");
+  }
 
   report("timing", "build time, not asserted");
   const time = (p: Plan) => {
