@@ -75,6 +75,7 @@ import { usePlanStore } from "@/store/planStore";
 import { flushSavedPlan, usePersistenceReady } from "@/store/persistence";
 import { dimensionRows, rowsToCsv, withOverrides, type Overrides } from "@/lib/pdf/dimensions";
 import { planToPixels, type PdfBuild } from "@/lib/pdf/snap";
+import { drawnFromPlan, openingBars } from "@/lib/pdf/overlay";
 import type { PdfReview } from "@/lib/pdf/review";
 import { verdictText } from "@/lib/pdf/verdict";
 import { shownWarnings } from "@/lib/pdf/warnings";
@@ -496,6 +497,12 @@ export default function ImportPage() {
                       // Step Q.2: so are the openings a wall ends inside, which are not read either.
                       return { traced: review.build.coverage.tracedOpenings.map(toPx), unclassified: review.build.coverage.unclassifiedOpenings.map(toPx), gaps: [...review.build.coverage.outOfRangeGaps.map((g, i) => toPx({ id: `gap${i + 1}`, ...g })), ...review.build.coverage.conflicts.map((x, i) => toPx({ id: `conflict${i + 1}`, ...x }))] };
                     })()
+                  : undefined
+              }
+              exactOpenings={
+                // Step R.3: with nothing traced in the build, draw the plan's openings, as the model has them.
+                review && drawnFromPlan(review.build.coverage)
+                  ? { bars: openingBars(review.build.plan, review.pxPerM, planToPixels(review.build.coverage, review.pxPerM, phase.pdf?.rasterOrigin)), pxPerM: review.pxPerM }
                   : undefined
               }
               detached={

@@ -133,7 +133,7 @@ export function WalkOverlay({ host }: { host: RefObject<HTMLDivElement | null> }
         )}
         {walking && (
           <p data-testid="walk-hud" className="rounded bg-vellum/90 px-2 py-1 text-xs shadow-sm">
-            {touch ? "Drag to look. Use the joystick to move." : "Walk: W A S D to move, drag to look, Shift to run, Esc to exit"}
+            {touch ? "Drag to look. Use the joystick to move." : "Walk: W A S D to move, drag to look, Shift to run, G to walk through walls, Esc to exit"}
           </p>
         )}
         {/* Always in the DOM so screen readers announce a new notice. */}

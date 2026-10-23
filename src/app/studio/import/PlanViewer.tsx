@@ -19,6 +19,10 @@
  * building and lying outside it (walls.ts rule 7b), each outlined with its size, orange when it was
  * left out (a title block) and gilt when it was kept (a separate building).
  *
+ * Step R.3: when the build holds only PDF-read walls and openings (`exactOpenings`, from
+ * pdf/overlay.ts), the door and window bars are the plan's own openings (jambs, wall thickness), not
+ * the tracing's guesses; otherwise they are the traced openings, as before.
+ *
  * Picking: while `picking` is on, a click (a press that hardly moves) reports
  * the image pixel under it through onPick; ScalePanel.tsx uses this to set
  * the scale from two points, drawn here with the line between them.
@@ -27,6 +31,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Analysis } from "@/lib/blueprint/analyse";
+import type { OpeningBar } from "@/lib/pdf/overlay";
 import type { Vec2 } from "@/types/plan";
 
 type Layer = "walls" | "doors" | "windows" | "ends" | "traced" | "tracedOpenings" | "unclassified" | "gaps" | "detached";
@@ -77,6 +82,7 @@ export function PlanViewer({
   traced,
   openingMarks,
   detached,
+  exactOpenings,
 }: {
   analysis: Analysis;
   picking: boolean;
@@ -89,6 +95,8 @@ export function PlanViewer({
   openingMarks?: { traced: Mark[]; unclassified: Mark[]; gaps: Mark[] };
   /** Step Q.2: detached groups (walls.ts rule 7b), outlined with their sizes. */
   detached?: Outline[];
+  /** Step R.3: the built plan's openings in image pixels, drawn instead of `analysis.openings`. */
+  exactOpenings?: { bars: OpeningBar[]; pxPerM: number };
 }) {
   const { width: W, height: H } = analysis.pixels;
   const url = useImageUrl(analysis);
@@ -166,8 +174,13 @@ export function PlanViewer({
     onPick({ x: (e.clientX - r.left - view.x) / view.k, y: (e.clientY - r.top - view.y) / view.k });
   };
 
-  const doors = useMemo(() => analysis.openings.filter((o) => o.kind === "door"), [analysis]);
-  const windows = useMemo(() => analysis.openings.filter((o) => o.kind === "window"), [analysis]);
+  // Bars to draw: the plan's own openings when given (R.3), else the tracing's; both as a line a→b with a stroke.
+  const bars = useMemo(
+    () => (exactOpenings ? exactOpenings.bars.map((o) => ({ ...o, stroke: o.thickness })) : analysis.openings.map((o, i) => ({ id: `t${i}`, wallId: "", kind: o.kind, a: o.a, b: o.b, stroke: o.wallThicknessPx * 1.2 }))),
+    [analysis, exactOpenings],
+  );
+  const doors = useMemo(() => bars.filter((o) => o.kind === "door"), [bars]);
+  const windows = useMemo(() => bars.filter((o) => o.kind === "window"), [bars]);
   const px = 1 / view.k; // one screen pixel, in image pixels: keeps dots and the measure line a fixed size on screen
 
   const layers: { id: Layer; label: string; count: number; swatch: string; hint?: string }[] = [
@@ -191,8 +204,8 @@ export function PlanViewer({
   const box = (m: Mark, kind: string) => (
     <line key={m.id} data-opening-mark={kind} data-id={m.id} x1={m.a.x} y1={m.a.y} x2={m.b.x} y2={m.b.y} strokeWidth={Math.max(m.thickness * 2.4, 8 * px)} strokeDasharray={`${8 * px} ${5 * px}`} strokeOpacity={0.55} />
   );
-  const bar = (o: Analysis["openings"][number], i: number, kind: string) => (
-    <line key={i} data-kind={kind} x1={o.a.x} y1={o.a.y} x2={o.b.x} y2={o.b.y} strokeWidth={o.wallThicknessPx * 1.2} strokeLinecap="butt" />
+  const bar = (o: (typeof bars)[number], kind: string) => (
+    <line key={o.id} data-kind={kind} data-opening-id={exactOpenings ? o.id : undefined} data-wall-id={exactOpenings ? o.wallId : undefined} x1={o.a.x} y1={o.a.y} x2={o.b.x} y2={o.b.y} strokeWidth={o.stroke} strokeLinecap="butt" />
   );
 
   return (
@@ -209,7 +222,7 @@ export function PlanViewer({
           onPointerUp={onPointerUp}
           onPointerCancel={() => (drag.current = null)}
         >
-          <g data-testid="plan-content" transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
+          <g data-testid="plan-content" data-px-per-m={exactOpenings?.pxPerM} data-openings-from={exactOpenings ? "plan" : "tracing"} transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
             {url && <image href={url} width={W} height={H} style={{ imageRendering: view.k > 2 ? "pixelated" : "auto" }} />}
             {show.walls && (
               <g data-layer="walls" className="stroke-cyanotype" strokeOpacity={0.55} strokeLinecap="square">
@@ -218,8 +231,8 @@ export function PlanViewer({
                 ))}
               </g>
             )}
-            {show.doors && <g data-layer="doors" className="stroke-overlay-door">{doors.map((o, i) => bar(o, i, "door"))}</g>}
-            {show.windows && <g data-layer="windows" className="stroke-overlay-window">{windows.map((o, i) => bar(o, i, "window"))}</g>}
+            {show.doors && <g data-layer="doors" className="stroke-overlay-door">{doors.map((o) => bar(o, "door"))}</g>}
+            {show.windows && <g data-layer="windows" className="stroke-overlay-window">{windows.map((o) => bar(o, "window"))}</g>}
             {show.ends && (
               <g data-layer="ends" className="fill-overlay-end stroke-vellum" strokeWidth={1.5 * px}>
                 {analysis.unpaired.map((p, i) => (

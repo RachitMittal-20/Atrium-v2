@@ -107,6 +107,12 @@
  * tips"; plan-t-breaks reports only its two real narrow gaps, none at its six T-junctions; plan-flush-jamb
  * places the window flush with a T's face (Good); plan-dims-disagree (not in truth.json) is "check" with
  * "Two readings disagree by 6.2%: …".
+ * Step R.3 (the overlay draws the built plan's openings when nothing in the build is traced): at 1440
+ * and 390, plan-filled and plan-chatgpt-flat (and any other fixture whose overlay says
+ * data-openings-from="plan"): every door and window box in the rendered SVG is along its wall
+ * (0.01 deg), as long as its opening is wide and as thick as its wall (1 mm) in the built plan.
+ * Screenshot r3-overlay-1440.png: the review overlay of plan-chatgpt-flat.
+ *
  * Screenshots in /tmp/studio/: pdf-review-1440.png, pdf-dimension-check-1440.png,
  * pdf-fit-warning-1440.png, pdf-review-390.png, pdf-coverage-1440.png,
  * pdf-model-check-1440.png, pdf-clutter-1440.png, pdf-traced-1440.png, and (M.1c)
@@ -252,6 +258,38 @@ async function session(browser: Browser, width: number, height: number, touch: b
     await guard(page.waitForURL(/\/studio$/));
     await guard(waitForHook(page, "__planStore", "Open in studio had just been pressed"));
     return page.evaluate(() => (window as Win).__planStore!.getState().plan);
+  };
+
+  /** Step R.3: the door and window boxes in the rendered SVG (before Build model), and where they came from.
+   *  No named inner function in the evaluated body (keepNames would inject __name). */
+  const readOverlay = () =>
+    page.evaluate(() => {
+      const g = document.querySelector("[data-testid=plan-content]")!;
+      return {
+        from: g.getAttribute("data-openings-from"),
+        pxPerM: Number(g.getAttribute("data-px-per-m")),
+        bars: [...g.querySelectorAll("line[data-opening-id]")].map((l) => ({ id: l.getAttribute("data-opening-id")!, wallId: l.getAttribute("data-wall-id")!, x1: Number(l.getAttribute("x1")), y1: Number(l.getAttribute("y1")), x2: Number(l.getAttribute("x2")), y2: Number(l.getAttribute("y2")), stroke: Number(l.getAttribute("stroke-width")) })),
+      };
+    });
+  /** Step R.3: each box lies along its wall (0.01°), is as long as its opening is wide and as thick as its wall (1 mm), in the built plan. */
+  const checkOverlay = (file: string, ov: Awaited<ReturnType<typeof readOverlay>>, plan: Awaited<ReturnType<typeof buildAndOpen>>) => {
+    if (ov.from !== "plan") return "overlay boxes from the tracing (traced walls or openings in the build)";
+    assert.ok(ov.pxPerM > 0, `${file}: the overlay says its scale`);
+    assert.equal(ov.bars.length, plan.openings.length, `${file}: one overlay box per opening of the built plan`);
+    for (const o of plan.openings) {
+      const bar = ov.bars.find((b) => b.id === o.id);
+      assert.ok(bar, `${file}: a box for opening ${o.id}`);
+      const w = plan.walls.find((x) => x.id === o.wallId)!;
+      assert.equal(bar.wallId, o.wallId, `${file}: ${o.id}: the box is on its wall`);
+      let d = (Math.abs(Math.atan2(bar.y2 - bar.y1, bar.x2 - bar.x1) - Math.atan2(w.b.y - w.a.y, w.b.x - w.a.x)) * 180) / Math.PI;
+      d %= 180;
+      d = Math.min(d, 180 - d);
+      assert.ok(d <= 0.01, `${file}: ${o.id}: ${d.toFixed(3)}° off its wall`);
+      const len = Math.hypot(bar.x2 - bar.x1, bar.y2 - bar.y1) / ov.pxPerM;
+      assert.ok(Math.abs(len - o.width) <= 0.001, `${file}: ${o.id}: box ${(len * 1000).toFixed(1)} mm long, opening ${(o.width * 1000).toFixed(1)} mm`);
+      assert.ok(Math.abs(bar.stroke / ov.pxPerM - w.thickness) <= 0.001, `${file}: ${o.id}: box ${((bar.stroke / ov.pxPerM) * 1000).toFixed(1)} mm thick, wall ${(w.thickness * 1000).toFixed(1)} mm`);
+    }
+    return `${plan.openings.length} overlay boxes along their walls, widths and thicknesses within 1 mm`;
   };
 
   /** Every wall read from the PDF on a true wall within 1 mm (both ends, page frame), rooms named from the PDF. */
@@ -775,7 +813,9 @@ async function session(browser: Browser, width: number, height: number, touch: b
         await page.screenshot({ path: `${OUT}/pdf-review-390.png`, fullPage: true });
       }
       if (t.expectedScale !== "none" && (!touch || PHONE.includes(file))) {
+        const overlay = await readOverlay();
         const plan = await buildAndOpen();
+        line += `; ${checkOverlay(file, overlay, plan)}`;
         line += `; ${checkPlan(file, plan, t)}`;
         line += `; panel: ${await checkPanel(plan)}`;
         if (DOOR_FILES.includes(file)) line += `; ${await checkDoorsStudio(file, plan, t)}`;
@@ -869,15 +909,32 @@ async function session(browser: Browser, width: number, height: number, touch: b
     assert.equal(await tid(page, "coverage-openings-caveat").count(), 0, `${file}: no caveat on a Good plan`);
     const furniture = await tid(page, "coverage-furniture").locator("li").count();
     assert.equal(furniture, 9, `${file}: nine groups of furniture listed`);
+    const overlay = await readOverlay();
+    assert.equal(overlay.from, "plan", `${file}: the overlay draws the plan's openings`);
+    // Step R.3: what the overlay looks like. Before R.3 this file showed two tilted and two oversized boxes.
+    await tid(page, "plan-viewer").screenshot({ path: `${OUT}/r3-overlay-1440.png` });
     const plan = await buildAndOpen();
+    const overlayLine = checkOverlay(file, overlay, plan);
     assert.ok(plan.walls.length === 16 && plan.walls.every((w) => w.provenance === "vector"), `${file}: 16 walls in the studio, all read from the PDF`);
     const names = plan.rooms.map((r) => r.name).sort();
     assert.deepEqual(names, ["Bathroom / Kitchen", "Bedroom 1", "Bedroom 2", "Hall", "Living"], `${file}: the five rooms the drawing closes`);
     report.push(
-      `1440 ${file} (ChatGPT-generated, not real CAD): walls 16 exact, 0 traced ("${PDF_ONLY_LINE}"); "${ol}"; 9 dimensions read, 0 flagged, model check 9 OK; ${furniture} furniture groups listed; rooms ${names.join(", ")}. Still wrong: the passage is an unclassified door; Bathroom and Kitchen are one room (no wall drawn); ${(ms / 1000).toFixed(1)} s`,
+      `1440 ${file} (ChatGPT-generated, not real CAD): walls 16 exact, 0 traced ("${PDF_ONLY_LINE}"); "${ol}"; 9 dimensions read, 0 flagged, model check 9 OK; ${furniture} furniture groups listed; rooms ${names.join(", ")}; ${overlayLine}. Still wrong: the passage is an unclassified door; Bathroom and Kitchen are one room (no wall drawn); ${(ms / 1000).toFixed(1)} s`,
       extra,
     );
     console.log(report.slice(-2).join("\n"));
+  }
+
+  // ---------------------------------------------------------------- step R.3: the same overlay check on the phone
+  if (touch) {
+    step("390 plan-chatgpt-flat overlay");
+    const file = "plan-chatgpt-flat.pdf";
+    await upload(join(DIR, file));
+    const overlay = await readOverlay();
+    assert.equal(overlay.from, "plan", `${file}: the overlay draws the plan's openings`);
+    const plan = await buildAndOpen();
+    report.push(`390 ${file}: ${checkOverlay(file, overlay, plan)}`);
+    console.log(report.slice(-1).join("\n"));
   }
 
   // ---------------------------------------------------------------- step Q.2: plan-chatgpt-poche (ChatGPT-generated, not real CAD)
