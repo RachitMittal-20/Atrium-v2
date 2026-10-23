@@ -77,6 +77,7 @@ import { dimensionRows, rowsToCsv, withOverrides, type Overrides } from "@/lib/p
 import { planToPixels, type PdfBuild } from "@/lib/pdf/snap";
 import type { PdfReview } from "@/lib/pdf/review";
 import { verdictText } from "@/lib/pdf/verdict";
+import { shownWarnings } from "@/lib/pdf/warnings";
 import { buildMapping } from "@/lib/background/mapping";
 import { keepDrawing } from "@/lib/background/keep";
 import { assetStore } from "@/lib/import/assetCache";
@@ -516,9 +517,9 @@ export default function ImportPage() {
 
           <aside className="flex w-full flex-col gap-4 lg:col-start-2 lg:row-span-2 lg:row-start-1">
             {verdict && <VerdictBanner verdict={verdict} />}
-            {phase.analysis.warnings.length > 0 && (
+            {shownWarnings(phase.analysis.warnings, review?.build.coverage).length > 0 && (
               <ul role="status" className="flex flex-col gap-1 rounded border border-gilt/50 bg-vellum p-4 text-sm" data-testid="warnings">
-                {phase.analysis.warnings.map((w) => (
+                {shownWarnings(phase.analysis.warnings, review?.build.coverage).map((w) => (
                   <li key={w.code}>{warningText(w, phase.analysis)}</li>
                 ))}
               </ul>
@@ -559,7 +560,7 @@ export default function ImportPage() {
                 {verdictText(verdict)} Building it as read gives a model you will mostly have to redraw. Click again to build it.
               </p>
             )}
-            {!chosen && <p className="-mt-2 text-sm text-smoke">Choose a scale first.</p>}
+            {!chosen && <p className="-mt-2 text-sm text-smoke">Press Use this scale (or set it yourself) to continue.</p>}
             {buildError && <p role="alert">{buildError}</p>}
             {built && <Summary built={built} carried={phase.pdf?.scale?.matches.length ?? 0} drawingNote={drawingNote} onOpen={openInStudio} />}
 
