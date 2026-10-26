@@ -17,6 +17,8 @@
  * nothing while the page rests or once it has scrolled away. Each frame drawn is counted to `onRender`.
  * Pixel ratio is capped at 1.5 on coarse (touch) pointers and 2 elsewhere. Colours are the design tokens, read
  * from the page's CSS custom properties; no tone mapping (`flat`), so the sheet's colours match the DOM drawing.
+ * Step L.2: each frame the camera is fitted (cameraAt) so the whole sheet and the model are in view and the model stays
+ * below the headline, whose height it measures from the stage's [data-headline] element.
  * Connects to: src/lib/landing/{blueprint,blueprintMeshes}.ts, src/components/landing/BlueprintScene.tsx.
  */
 "use client";
@@ -48,7 +50,8 @@ const token = (name: string) => getComputedStyle(document.documentElement).getPr
 /** The page's sheet SVG as a stand-alone image: every element's computed fill and stroke written onto a copy (a
  *  data: URL image sees no page CSS), at TEXTURE_PX on its longer side. Local data only; nothing is fetched. */
 function sheetImageUrl(svg: SVGSVGElement): { url: string; w: number; h: number } {
-  const [, , vw, vh] = svg.getAttribute("viewBox")!.split(/\s+/).map(Number);
+  // The texture is the sheet itself (data-sheet-box), not the page's view of it, which has paper-less margin round it.
+  const [bx, by, vw, vh] = svg.dataset.sheetBox!.split(" ").map(Number);
   const scale = TEXTURE_PX / Math.max(vw, vh);
   const copy = svg.cloneNode(true) as SVGSVGElement;
   const from = [svg, ...svg.querySelectorAll("*")];
@@ -61,8 +64,17 @@ function sheetImageUrl(svg: SVGSVGElement): { url: string; w: number; h: number 
   const [w, h] = [Math.round(vw * scale), Math.round(vh * scale)];
   copy.setAttribute("width", String(w));
   copy.setAttribute("height", String(h));
+  copy.setAttribute("viewBox", `${bx} ${by} ${vw} ${vh}`);
   copy.setAttribute("preserveAspectRatio", "none");
   return { url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(copy))}`, w, h };
+}
+
+/** The share of the stage's height the headline block covers, plus a small gap: the camera keeps the model below it. */
+function headlineReserve(stage: HTMLElement | null): number {
+  const head = stage?.querySelector("[data-headline]");
+  if (!stage || !head) return 0;
+  const [s, h] = [stage.getBoundingClientRect(), head.getBoundingClientRect()];
+  return s.height > 0 ? Math.min(0.5, Math.max(0, (h.bottom - s.top + 12) / s.height)) : 0;
 }
 
 function Scene({ progress, stage, onReady, onRender }: Props) {
@@ -118,7 +130,7 @@ function Scene({ progress, stage, onReady, onRender }: Props) {
       if (b === last.b && size.width === last.w && size.height === last.h) return;
       last = { b, w: size.width, h: size.height };
       const cam = camera as THREE.PerspectiveCamera;
-      const pose = cameraAt(b, samplePlan, size.width / size.height);
+      const pose = cameraAt(b, samplePlan, size.width / size.height, headlineReserve(stage.current));
       cam.aspect = size.width / size.height;
       cam.position.set(...pose.position);
       cam.lookAt(...pose.target);

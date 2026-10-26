@@ -87,11 +87,11 @@ export function axonometricFaces(plan: Plan): { faces: AxoFace[]; sheet: [number
     }
   }
   faces.sort((a, b) => b.depth - a.depth);
-  // The sheet the model stands on, at floor level; the view is framed on the model, so the sheet runs off it.
+  // The sheet the model stands on, at floor level. Step L.2: the view holds the whole sheet, not only the model.
   const box = sheetBox(plan);
   const sheet = [[box.x, box.y], [box.x + box.w, box.y], [box.x + box.w, box.y + box.h], [box.x, box.y + box.h]].map(([x, y]) => project(x, 0, y));
-  const xs = faces.flatMap((f) => f.points.map((p) => p[0]));
-  const ys = faces.flatMap((f) => f.points.map((p) => p[1]));
+  const xs = [...faces.flatMap((f) => f.points.map((p) => p[0])), ...sheet.map((p) => p[0])];
+  const ys = [...faces.flatMap((f) => f.points.map((p) => p[1])), ...sheet.map((p) => p[1])];
   const pad = 1;
   const [x0, y0] = [Math.min(...xs) - pad, Math.min(...ys) - pad];
   return { faces, sheet, viewBox: [x0, y0, Math.max(...xs) + pad - x0, Math.max(...ys) + pad - y0] };

@@ -11,7 +11,7 @@ Tick each active item (`[x]`) as its step finishes.
 - [x] 8.1 Blueprint scene
 - [x] N.1 Studio polish: a way back from the autosaved plan, first-run hints, empty states, OCR room-name noise fix
 - [x] 5.2 and 5.3 Bird's-eye view and Recenter
-- [ ] 8.4 Landing polish: preloader, lazy photos, simple mobile tour
+- [x] 8.4 Landing polish: preloader, lazy photos, simple mobile tour (step L.2, section 43)
 - [ ] 7.1, 7.3, 7.2 Area schedule, PDF takeoff report, GLB and OBJ export
 - [ ] 9.2 and 9.3 Lighthouse audit, performance and accessibility, Safari and Firefox checks
 - [ ] Reader fixes for doors and windows, proven on a fresh real plan
@@ -1946,4 +1946,61 @@ No reading rule, geometry, detection or existing assertion changed. Nothing was 
 - The home view keeps no strip clear, since it is the opening pose. A plan that fills the pane's height when tilted could reach the top row, as before V.1.
 - In Top, a corner near the middle of the view is hard to pick with Move: its line is a pixel or two long on screen and only its top tenth or so counts as visible.
 - The walk hint line does not mention R (the button's tooltip and `aria-keyshortcuts` do).
+
+
+## 43. L.2 — landing polish: no cropping, one headline, a preloader, photos on demand, a crossfade tour (step 8.4, 2026-10-26; not committed)
+**Report first (before any change).** Production build (`next build`, `next start`), Playwright Chromium on SwiftShader, this Mac under load, so these are headless numbers, not a phone's. `scripts/landing-report.ts` (new):
+- First-load JS: `/` 11 chunks, 609 kB raw / **194 kB gzip**.
+- Photographs: 2560×1440 JPEGs of 1010, 1180, 893, 789 and 719 kB on the wire. **All five loaded before the first scroll, at both 1440 and 390: 4590 kB.** Native `loading="lazy"` did not help: the tour sits exactly one screen below the fold, inside the lazy-load distance.
+- LCP (the h1, which is also FCP) at 1440 / 390, after a warm-up page: 472–548 ms / 80–188 ms (four runs); CLS 0. (A first, unwarmed run said 912 / 188 ms: it included the browser's own start-up.)
+- Tour frame times through the whole pinned tour at 390 (touch) / 1440: 716 frames, median 16.7, p95 33.3, max 33.4, 0 over 50 ms / 509 frames, p95 50.1, max 116.6, 26 over 50 ms.
+
+**Cropping (the cause).** `cameraAt` fitted only the model's bounding sphere at the end and interpolated in between, so the sheet (larger than the model, and rotated) ran off the screen; at the start the sheet touched the screen's edges exactly. Failing first: the new pixel test on the 8.1 page failed at 0% (37% of the outer ring was not ground at 1440), and `test-landing-scene.ts` failed on the missing `SHEET_FIT`. Now every frame is fitted: sheet corners and model box inside the view, sheet at 96%, model below the measured headline band from 25% of the build (CLAUDE.md "Landing polish").
+
+**Done.** New: `scripts/landing-report.ts`. Changed: `src/lib/landing/{blueprint,blueprintMeshes,timeline}.ts`, `src/components/landing/{BlueprintScene,BlueprintCanvas,BlueprintDrawings,LandingTour}.tsx`, `src/data/landingScenes.ts` (the mansion's heading and caption), `src/app/globals.css` (the preloader), `scripts/{test-landing-scene,e2e-landing}.ts`, CLAUDE.md. No studio code, reading rule or other test changed.
+
+**Changed assertions (each listed):**
+1. `test-landing-scene.ts`: "the sheet fits the first frame exactly" (fit = 1 within 1e-9) is now "fits at `SHEET_FIT` (0.96) within 1e-4" (the first frame is a hair off vertical), and the aspect list gained 1280×720. Everything else in it is unchanged; the new block (41 values of b at three viewports) is added.
+2. `e2e-landing.ts`: `headlineInFirstScreen` also asserts one h1 and the sentence once in the page's text; `runStatic` waits for the preloader to go before its first screenshot and asserts the outer ring is ground on both steps; `scrollTo` has an optional `maxStep` (defaults as before); `main()` can run one part (`E2E_ONLY`); the suite timeout went from 600 s to 1500 s. No threshold changed.
+
+**After (production build, same method):**
+- First-load JS: **195 kB gzip** (612 kB raw, +1 kB). JS on the wire before first scroll: 443 kB (was 442).
+- Photos before first scroll: **1, 1010 kB** at both sizes (was 5, 4590 kB). With real scrolls: the lobby once the tour is near, the living room only once the scroll reaches the lobby, all five by the end of the tour.
+- LCP = FCP (the h1) at 1440 / 390: 472–576 ms / 64–120 ms (five runs): the same as before. CLS 0.0000.
+- Preloader (dev server, e2e): gone at 1144 ms with the canvas ready at 862 ms (1440), 1128 / 875 ms (390); no layout shift, the page height the same before and after.
+- Tour frame times at 390: median 16.7, p95 16.7–16.8, max 33–67, 0 or 1 frame over 50 ms (six runs; e2e run: 2 over 50 ms, max 83). At 1440 the code path is unchanged and the numbers moved with the machine's load (15 to 68 frames over 50 ms in different runs), so no claim either way.
+- Caption contrast against the picture: 7.7:1 (1440), 6.8:1 (390).
+
+**What the runs found (each fixed; none a flake unless said):**
+1. The new fit test on the 8.1 page failed first, as intended (above).
+2. First fit run on the new code: a black frame round the 3D sheet at 0% and 100%. The page's SVG had gained a CSS `scale(0.96)`, and the canvas serialised the SVG with it into the texture, which then had transparent edges. Fixed, and a near-black-pixel assertion added.
+3. The new CSS scale delayed first paint by about 130 ms at 1440 (bisected by building variants), and the preloader's compositor animations by about 170 ms more. Now the SVG's `viewBox` does the 0.96 and the preloader animates `width` and `visibility` only; FCP is back to the old numbers.
+4. Tour at 390 with a plain crossfade had 5 to 11 frames over 50 ms (the old arch tour had 0): fades without `will-change: opacity` repainted a full-screen photo per frame. Added `will-change: opacity` to the layers under 640 px: 0 or 1.
+5. The photo test saw the living room requested 60 px before the tour's pin: the test helper's wheel was counted twice by a moving scroll and overshot. Scrolls in that test are now in steps of 200 px, with checkpoints 400 px clear of a boundary. (Test bug.)
+6. The blocked-chunk test blocked nothing on a production build (hashed chunk names). It now judges a script by whether it holds `WebGLRenderer`.
+7. On a production server `e2e-landing`'s "three.js was fetched" check fails by design (it matches readable chunk names; the suite is dev-only, as CLAUDE.md says); I used production only for the parts that read no chunk name.
+8. First full dev run: `1440 nowebgl: the sheet is not blank`. The no-WebGL context is not reduced motion, so the preloader was still fading when the screenshot was taken. The static runs now wait for it to go. (Test bug.)
+9. A first `landing-report` run with the 1440 browser cold and a loaded machine made it look as if LCP had risen by 300 ms; the report now warms the browser first and I compared old and new builds back to back, three to four runs each.
+
+**Verified (macOS, Node 24.14.0), on the final tree:**
+- `npm test` exit 0; `npx tsc --noEmit` exit 0; eslint clean on the landing files.
+- Cold build: dev server stopped, `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`, exit 0 in 16 s (compiled in 5.2 s).
+- Dev-hook grep (incl. `__background`) and CDN grep: both clean.
+- Dev server started from a fresh `.next`, then one at a time: `e2e-landing` exit 0 (after the fix in 8; its first run failed), `e2e-feedback` exit 0, `e2e-studio` exit 0.
+
+**Screenshots** (`/tmp/studio/`):
+- `landing-final-0-1440.png`: the blueprint sheet as a cyanotype rectangle with a band of dark ground on each side and a few pixels above and below; the headline sits over its top margin and straddles the paper's left and right edges (legible on both).
+- `landing-final-100-1440.png`: the finished model from the south-south-east, all four corners of the sheet visible, a band of ground round it, the headline clear above the model.
+- `landing-final-0-390.png`: the sheet fills the width with a few pixels of ground each side, the headline above; the lower third of the screen is empty ground (the sheet's shape is nearly square).
+- `landing-final-100-390.png`: the whole model and sheet in view, about three quarters of the screen's width, with a gap under the headline and about a quarter of the screen empty below it. This is the cost of keeping the whole sheet in view on a narrow screen.
+- `landing-final-tour-390.png`: the mansion at the tour's start: "Every wall starts as a line on a plan" on three lines over the villa's door, the caption, Step inside, and the "Illustrative photographs" note below it, nothing overlapping.
+- Also `landing-final-{0,100}-1280.png` and `landing-final-tour-1440.png`.
+
+**Decisions to confirm.**
+- "The first scene" for the preloader is the blueprint hero (its 3D canvas), not the mansion photo, which is below it; the mansion's photo is still eager and high priority as asked, though it is not on screen until the hand-over.
+- The mansion's heading is three lines at 390 and covers the villa's door; a shorter line would cover less.
+- At 390 the model ends smaller than in 8.1 because the whole sheet must fit.
+- The photos themselves were not re-encoded ("visual result identical").
+
+**Not covered:** a real phone, Safari, Firefox; Linux CI (the Node test uses only committed code); Lighthouse (9.2).
 

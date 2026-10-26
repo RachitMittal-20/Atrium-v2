@@ -28,8 +28,10 @@ export const FOV = 40;
 /** The last frame: degrees from straight down, and round from due south towards the east. */
 const END_POLAR = 56;
 const END_AZIMUTH = 32;
-/** At the last frame the model sits this fraction of the view's half-height below the centre, clear of the headline. */
-const END_DROP = 0.2;
+/** The sheet fills at most this share of the view, so its edges never touch the viewport's (step L.2). The DOM sheet is scaled by the same number. */
+export const SHEET_FIT = 0.96;
+/** The headline's band is kept clear of the model fully from this build progress on (the walls are still flat before it). */
+const CLEAR_BY = 0.25;
 /** The first frame is "straight down": a hair off vertical, so lookAt has an up direction (north at the top). */
 const START_POLAR = 1e-4;
 
@@ -114,44 +116,98 @@ export interface CameraPose {
   target: [number, number, number];
 }
 
+type V3 = [number, number, number];
+const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+interface FitPoint {
+  p: V3;
+  /** The share of the view's height kept clear at the top for this point (the headline's band); 0 for the sheet. */
+  top: number;
+}
+
 /**
- * Where the camera stands at build progress b, for a view of `aspect` (width / height).
- * b = 0: straight down on the sheet box's centre, at the distance where the box just fits (the larger of its two
- * sides relative to the view fills it), so the first 3D frame lines up with the DOM drawing of the same box.
- * b = 1: on a sphere round the plan's centre, tilted END_POLAR from vertical and turned END_AZIMUTH from south,
- * far enough to hold the whole model (its bounding sphere in the narrower of the two fields of view) and never
- * nearer than 1.1 times the start: the camera always pulls back. It aims a little above the model (END_DROP of
- * the view's half-height), so the model sits in the space below the headline. Between, everything eases with one
- * smoothstep.
+ * The camera's distance and sideways shift that put every point inside the view, for a camera looking at `centre`
+ * from direction `o` (unit, from the centre to the camera) with screen axes `right` and `up`. A point p, measured from
+ * the centre, has screen coordinates x = p·right, y = p·up and depth d − p·o; it is inside when |x − sx| ≤ h·depth
+ * and −v·depth ≤ y − sy ≤ v·(1 − 2·top)·depth (v = SHEET_FIT · tan(fov/2), h = v · aspect), where (sx, sy) is how far
+ * the camera and its aim slide across the view. For a given distance those are intervals for sx and sy, which only
+ * widen as the distance grows, so a bisection finds the nearest distance with a non-empty pair, and the shift is
+ * the middle of each interval (the content is centred in what is left of the view).
  */
-export function cameraAt(b: number, plan: Plan, aspect: number): CameraPose {
+function fitView(points: FitPoint[], centre: V3, o: V3, right: V3, up: V3, aspect: number): { d: number; shift: [number, number]; at: (d: number) => [number, number] } {
+  const v = Math.tan(rad(FOV / 2)) * SHEET_FIT;
+  const h = v * aspect;
+  const q = points.map(({ p, top }) => {
+    const r: V3 = [p[0] - centre[0], p[1] - centre[1], p[2] - centre[2]];
+    return { x: dot(r, right), y: dot(r, up), po: dot(r, o), hi: v * (1 - 2 * top) };
+  });
+  const range = (d: number): [number, number, number, number] | null => {
+    let [xl, xh, yl, yh] = [-Infinity, Infinity, -Infinity, Infinity];
+    for (const t of q) {
+      const depth = d - t.po;
+      if (depth <= 0) return null;
+      xl = Math.max(xl, t.x - h * depth);
+      xh = Math.min(xh, t.x + h * depth);
+      yl = Math.max(yl, t.y - t.hi * depth);
+      yh = Math.min(yh, t.y + v * depth);
+    }
+    return xl <= xh && yl <= yh ? [xl, xh, yl, yh] : null;
+  };
+  const at = (d: number): [number, number] => {
+    const r = range(d) ?? [0, 0, 0, 0];
+    return [(r[0] + r[1]) / 2, (r[2] + r[3]) / 2];
+  };
+  let lo = Math.max(...q.map((t) => t.po)) + 1e-6;
+  let hi = Math.max(lo * 2, 1000);
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (range(mid)) hi = mid;
+    else lo = mid;
+  }
+  return { d: hi, shift: at(hi), at };
+}
+
+/**
+ * Where the camera stands at build progress b, for a view of `aspect` (width / height), with the top `reserve`
+ * (0 to 0.5) of the view kept clear of the model for the headline (the page measures it; 0 by default).
+ *
+ * The direction is eased with one smoothstep from straight down (b = 0) to END_POLAR tilted and END_AZIMUTH turned
+ * from south (b = 1). At every b the camera stands at the nearest distance, and aims at the sideways shift, where
+ *   - the four corners of the whole sheet are inside the view (within SHEET_FIT of it), and
+ *   - the model's box, at the height the walls have risen to, is inside it and, as the build passes CLEAR_BY, below
+ *     the headline's band,
+ * found exactly by fitView (not an interpolation, so no frame between the ends can crop). b = 0 is straight down on the
+ * sheet's centre, its larger relative side filling SHEET_FIT of the view, which is what the DOM drawing shows; and the
+ * camera never comes nearer than the start (it ends at least 1.1 times as far).
+ */
+export function cameraAt(b: number, plan: Plan, aspect: number, reserve = 0): CameraPose {
   const box = sheetBox(plan);
   const pb = planBounds(plan);
   const H = tallest(plan);
-  const half = Math.tan(rad(FOV / 2));
-  const r0 = Math.max(box.h / 2, box.w / 2 / aspect) / half;
-  const narrow = Math.min(half, half * aspect); // tan of the narrower half-angle
-  const R = Math.hypot(pb.w, pb.h, H) / 2;
-  // The sphere fit, grown by END_DROP: the model is moved down the view by that much, so it needs the room.
-  const r1 = Math.max(r0 * 1.1, (R / Math.sin(Math.atan(narrow))) * 0.95 * (1 + END_DROP));
   const e = smooth(b);
-  const r = lerp(r0, r1, e);
   const polar = lerp(START_POLAR, rad(END_POLAR), e);
   const azimuth = lerp(0, rad(END_AZIMUTH), e);
   // From the target to the camera. Azimuth 0 is due south (+z), so with up = +Y the screen's top is north (-z):
   // the first frame reads exactly like the 2D plan.
-  const o = [Math.sin(polar) * Math.sin(azimuth), Math.cos(polar), Math.sin(polar) * Math.cos(azimuth)];
+  const o: V3 = [Math.sin(polar) * Math.sin(azimuth), Math.cos(polar), Math.sin(polar) * Math.cos(azimuth)];
   // The screen's up direction for that view: (f × Y) × f with f = -o, which is Y minus its part along o, normalised.
   const k = o[1];
   const ul = Math.hypot(-k * o[0], 1 - k * o[1], -k * o[2]) || 1;
-  const up = [(-k * o[0]) / ul, (1 - k * o[1]) / ul, (-k * o[2]) / ul];
-  const drop = END_DROP * e * r * half; // aiming this far up the screen puts the model this far down it
-  const target: [number, number, number] = [
-    lerp(box.x + box.w / 2, pb.x + pb.w / 2, e) + up[0] * drop,
-    lerp(0, H * 0.3, e) + up[1] * drop,
-    lerp(box.y + box.h / 2, pb.y + pb.h / 2, e) + up[2] * drop,
-  ];
-  return { position: [target[0] + r * o[0], target[1] + r * o[1], target[2] + r * o[2]], target };
+  const up: V3 = [(-k * o[0]) / ul, (1 - k * o[1]) / ul, (-k * o[2]) / ul];
+  const right: V3 = [up[1] * o[2] - up[2] * o[1], up[2] * o[0] - up[0] * o[2], up[0] * o[1] - up[1] * o[0]]; // up × o
+  const centre: V3 = [box.x + box.w / 2, 0, box.y + box.h / 2];
+
+  const sheetPts: FitPoint[] = [[box.x, box.y], [box.x + box.w, box.y], [box.x, box.y + box.h], [box.x + box.w, box.y + box.h]].map(([x, z]) => ({ p: [x, 0, z] as V3, top: 0 }));
+  const clear = Math.min(0.5, Math.max(0, reserve)) * smooth(b / CLEAR_BY);
+  const top = wallRise(b) * H;
+  const modelPts: FitPoint[] = [pb.x, pb.x + pb.w].flatMap((x) => [pb.y, pb.y + pb.h].flatMap((z) => [0, top].map((y) => ({ p: [x, y, z] as V3, top: clear }))));
+  const fit = fitView([...sheetPts, ...modelPts], centre, o, right, up, aspect);
+  // Never nearer than the start: the distance that fits the sheet alone, looking straight down.
+  const start = fitView(sheetPts, centre, [0, 1, 0], [1, 0, 0], [0, 0, -1], aspect).d;
+  const d = Math.max(fit.d, start * lerp(1, 1.1, e));
+  const [sx, sy] = fit.at(d);
+  const target: V3 = [centre[0] + right[0] * sx + up[0] * sy, centre[1] + right[1] * sx + up[1] * sy, centre[2] + right[2] * sx + up[2] * sy];
+  return { position: [target[0] + d * o[0], target[1] + d * o[1], target[2] + d * o[2]], target };
 }
 
 /**

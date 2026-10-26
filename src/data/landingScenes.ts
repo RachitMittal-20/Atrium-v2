@@ -19,8 +19,9 @@ export const LANDING_SCENES: LandingScene[] = [
     id: "mansion",
     image: "/images/01_mansion.jpg",
     alt: "A white classical villa with arched black-framed windows at sunset, a circular driveway in front",
-    title: "From one drawing, a whole house",
-    caption: "Every wall in Atrium starts as a line on a plan.",
+    // The page's one "From one drawing, a whole house" is the blueprint scene's h1 (step L.2); this scene has its own line.
+    title: "Every wall starts as a line on a plan",
+    caption: "Atrium turns the lines of a plan into walls, doors and windows you can walk through.",
   },
   {
     id: "lobby",

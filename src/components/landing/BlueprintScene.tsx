@@ -25,17 +25,25 @@
  * drawing code stays on the server. Test hooks are plain attributes, never window globals: data-mode, data-ready
  * (the canvas has drawn the sheet), data-step (static mode), data-renders (frames the canvas has drawn),
  * data-build-end and data-fade-start.
+ *
+ * Step L.2. The preloader (the wordmark and a thin bar, fixed over the page, so nothing moves when it goes) covers the
+ * page only while the 3D canvas is getting ready: it goes when the canvas has drawn the sheet, or PRELOADER_MAX_MS after
+ * navigation started, or at once when the scene is static (reduced motion hides it in CSS before any script runs) or the
+ * canvas fails to load; and a CSS animation (globals.css, .preloader) hides it after the same time even if no script
+ * runs at all. It never takes a pointer. A canvas that fails to load or start is caught here (CanvasBoundary) and the
+ * scene falls back to the static mode, instead of the error taking the landing page down. `data-preloader` says
+ * "showing", or "done:<ms>" with the time since navigation started.
  * Connects to: src/lib/landing/timeline.ts, src/components/landing/{BlueprintCanvas,BlueprintDrawings,LandingTour}.tsx,
  * src/components/motion/SmoothScrollProvider.tsx; tested by scripts/e2e-landing.ts and scripts/test-landing-scene.ts.
  */
 "use client";
 
-import { useCallback, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Component, useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { useGSAP } from "@gsap/react";
-import { BUILD_END, FADE_START } from "@/lib/landing/timeline"; // not blueprint.ts: that would bring its geometry into first load
+import { BUILD_END, FADE_START, PRELOADER_MAX_MS } from "@/lib/landing/timeline"; // not blueprint.ts: that would bring its geometry into first load
 
 gsap.registerPlugin(ScrollTrigger, useGSAP);
 
@@ -67,16 +75,53 @@ const subscribe = (change: () => void) => {
 const browserMode = (): Mode => (window.matchMedia(REDUCED).matches || !hasWebGL() ? "static" : "3d");
 const serverMode = (): Mode => "pending";
 
+/** Catches a canvas that cannot load (a failed chunk) or start (no WebGL after all), so the page carries on as static. */
+class CanvasBoundary extends Component<{ onError: () => void; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch() {
+    this.props.onError();
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+
 export function BlueprintScene({ sheet, endState }: { sheet: ReactNode; endState: ReactNode }) {
   const root = useRef<HTMLElement>(null);
   const stage = useRef<HTMLDivElement>(null);
   const progress = useRef({ b: 0 }); // the build's progress, tweened by the timeline and read by the canvas every tick
-  const mode = useSyncExternalStore(subscribe, browserMode, serverMode);
+  const browser = useSyncExternalStore(subscribe, browserMode, serverMode);
+  const [failed, setFailed] = useState(false);
+  const mode: Mode = failed ? "static" : browser;
   const [ready, setReady] = useState(false);
+  const [preloader, setPreloader] = useState<"showing" | "leaving" | "gone">("showing");
   const [step, setStep] = useState(0); // static mode: 0 the sheet, 1 the end state, 2 handed over
   // Stable, so the canvas's ticker effect is not torn down (and its frame count reset) when this re-renders.
   const onReady = useCallback(() => setReady(true), []);
   const onRender = useCallback((n: number) => root.current?.setAttribute("data-renders", String(n)), []);
+
+  // The preloader's end: the canvas is ready, or the scene is static, or the time is up (measured from navigation start).
+  useEffect(() => {
+    if (preloader !== "showing" || mode === "pending") return;
+    const leave = () => {
+      root.current?.setAttribute("data-preloader", `done:${Math.round(performance.now())}`);
+      setPreloader("leaving");
+    };
+    if (mode === "static" || ready) {
+      leave();
+      return;
+    }
+    const timer = setTimeout(leave, Math.max(0, PRELOADER_MAX_MS - performance.now()));
+    return () => clearTimeout(timer);
+  }, [mode, ready, preloader]);
+  useEffect(() => {
+    if (preloader !== "leaving") return;
+    const timer = setTimeout(() => setPreloader("gone"), 300); // the fade-out (duration-300) has finished
+    return () => clearTimeout(timer);
+  }, [preloader]);
 
   useGSAP(
     () => {
@@ -102,6 +147,7 @@ export function BlueprintScene({ sheet, endState }: { sheet: ReactNode; endState
       data-mode={mode}
       data-ready={ready}
       data-step={step}
+      data-preloader="showing"
       data-build-end={BUILD_END}
       data-fade-start={FADE_START}
       className="relative -mb-[100svh] h-[300svh]"
@@ -119,19 +165,29 @@ export function BlueprintScene({ sheet, endState }: { sheet: ReactNode; endState
         )}
         {mode === "3d" && (
           <div data-testid="blueprint-canvas" aria-hidden className={`pointer-events-none absolute inset-0 transition-opacity duration-500 ${ready ? "opacity-100" : "opacity-0"}`}>
-            <BlueprintCanvas
-              progress={progress}
-              stage={stage}
-              onReady={onReady}
-              onRender={onRender}
-            />
+            <CanvasBoundary onError={() => setFailed(true)}>
+              <BlueprintCanvas progress={progress} stage={stage} onReady={onReady} onRender={onRender} />
+            </CanvasBoundary>
           </div>
         )}
-        <div className="pointer-events-none absolute inset-x-0 top-0 px-6 pt-10 text-center text-vellum sm:pt-14">
+        <div data-headline className="pointer-events-none absolute inset-x-0 top-0 px-6 pt-10 text-center text-vellum sm:pt-14">
           <h1 className="font-display text-2xl leading-tight sm:text-4xl">From one drawing, a whole house</h1>
           <p className="mx-auto mt-3 max-w-[46ch] text-base text-vellum/85 sm:text-lg">This is the studio&apos;s own sample plan. Scroll to raise its walls.</p>
         </div>
       </div>
+      {preloader !== "gone" && (
+        <div
+          data-testid="preloader"
+          aria-hidden
+          style={{ "--preloader-max": `${PRELOADER_MAX_MS - 250}ms` } as CSSProperties}
+          className={`preloader pointer-events-none fixed inset-0 z-50 flex flex-col items-center justify-center bg-iron transition-opacity duration-300 motion-reduce:hidden ${preloader === "leaving" ? "opacity-0" : "opacity-100"}`}
+        >
+          <span className="font-display text-3xl text-vellum">Atrium</span>
+          <div className="mt-6 h-px w-40 bg-vellum/20">
+            <div className={`preloader-bar h-full bg-gilt ${preloader === "leaving" ? "is-done" : ""}`} />
+          </div>
+        </div>
+      )}
     </section>
   );
 }

@@ -22,12 +22,29 @@
  * Then reduced motion (1440 and 390) and a Chromium with WebGL switched off (1440): data-mode="static", no canvas
  * and neither three.js nor react-three-fiber fetched, the sheet first and the end-state drawing after the middle, the stage gone at the end.
  * No console errors anywhere.
+ *
+ * Step L.2 adds (E2E_ONLY=fit|load|failed|tour runs one part; the rest of this header is step 8.1's):
+ *   fit     1440x900, 1280x720 and 390x844, 3D mode, nine scroll positions from 0 to 100% of the build, each by pixels:
+ *           the outer ring of the screenshot (one device pixel wide) is the ground colour, so no part of the sheet or the
+ *           model reaches the edge of the viewport (whole sheet and model in view); and from 25% of the build on, with the
+ *           headline text hidden, nothing model-coloured (RGB sum over 300; the ground, paper and grid are far under)
+ *           shows in the headline's band. FAILED on the 8.1 page: at 1440 the sheet ran off the bottom right at 100%.
+ *   h1      one h1, and "From one drawing, a whole house" once in the page's text (the mansion has its own heading).
+ *   load    at 1440 and 390: the preloader is visible from the first paint, is gone by 3 s and within a second of the
+ *           canvas being ready, layout shift stays under 0.01 and the page height does not change when it goes; the
+ *           photos after the first are not requested until the scroll is near them (network requests, node side), and
+ *           all five arrive by the end of the tour; under reduced motion the preloader is never visible.
+ *   failed  the canvas chunk blocked: the preloader still goes by 3 s, the scene turns static and the page works.
+ *   tour    at 390 the tour is a crossfade (no clip-path, no will-change, nothing wider than the screen), the hero caption
+ *           and Step inside do not overlap and the caption is readable (contrast against the picture, measured); at 1440
+ *           the arches are kept. Frame times through the tour are printed.
+ * Screenshots in /tmp/studio/ (L.2): landing-final-{0,100}-{1440,1280,390}.png, landing-final-tour-{1440,390}.png.
  * Screenshots in /tmp/studio/: landing-scene-{0,50,100}-1440.png, landing-scene-390.png (the 50% frame) and
  * landing-scene-{0,100}-390.png, landing-scene-reduced-{1440,390}.png, landing-scene-nowebgl-1440.png.
  * Run: npx tsx scripts/e2e-landing.ts
  */
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { chromium, type Browser, type Page } from "playwright";
 import sharp from "sharp";
 import { BASE, step, waitUntil, warmRoutes, watchErrors, withSuiteTimeout } from "./e2e-helpers";
@@ -63,7 +80,7 @@ async function settle(page: Page, what: string) {
 }
 
 /** Scrolls with the real device: mouse wheel (Lenis) or touch gestures, until within `tol` px of `y`. */
-async function scrollTo(page: Page, y: number, touch: boolean, tol: number, what: string) {
+async function scrollTo(page: Page, y: number, touch: boolean, tol: number, what: string, maxStep = touch ? 500 : Infinity) {
   const vw = await page.evaluate<number>("innerWidth");
   for (let i = 0; i < 40; i++) {
     const at = await page.evaluate<number>("scrollY");
@@ -71,12 +88,12 @@ async function scrollTo(page: Page, y: number, touch: boolean, tol: number, what
     if (Math.abs(d) <= tol) return;
     if (touch) {
       const cdp = await page.context().newCDPSession(page);
-      const move = Math.max(-500, Math.min(500, d));
+      const move = Math.max(-maxStep, Math.min(maxStep, d));
       // yDistance is positive to scroll UP: the finger moves down the screen.
       await cdp.send("Input.synthesizeScrollGesture", { x: Math.round(vw / 2), y: move > 0 ? 700 : 150, yDistance: -move, gestureSourceType: "touch", speed: 1200, preventFling: true });
       await cdp.detach();
     } else {
-      await page.mouse.wheel(0, d);
+      await page.mouse.wheel(0, Math.max(-maxStep, Math.min(maxStep, d)));
     }
     await settle(page, what);
   }
@@ -86,11 +103,50 @@ async function scrollTo(page: Page, y: number, touch: boolean, tol: number, what
 interface Pixels {
   data: Buffer;
   n: number;
+  w: number;
+  h: number;
 }
 const pixels = async (png: Buffer): Promise<Pixels> => {
   const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-  return { data, n: info.width * info.height };
+  return { data, n: info.width * info.height, w: info.width, h: info.height };
 };
+
+/** The ground colour (--color-iron) and the share of the frame's outer ring (`ring` device pixels wide) that is NOT it. */
+const IRON = [0x1c, 0x19, 0x16];
+function ringOffGround(p: Pixels, ring: number): number {
+  let off = 0;
+  let total = 0;
+  for (let y = 0; y < p.h; y++) {
+    for (let x = 0; x < p.w; x++) {
+      if (x >= ring && x < p.w - ring && y >= ring && y < p.h - ring) {
+        x = p.w - ring - 1; // jump across the middle of the row
+        continue;
+      }
+      const i = 3 * (y * p.w + x);
+      total++;
+      if (Math.abs(p.data[i] - IRON[0]) + Math.abs(p.data[i + 1] - IRON[1]) + Math.abs(p.data[i + 2] - IRON[2]) > 40) off++;
+    }
+  }
+  return off / total;
+}
+
+/** Pixels that are near-black (RGB sum under 30): the ground is 75, so these are an unpainted edge, not the scene. */
+function blackPixels(p: Pixels): number {
+  let n = 0;
+  for (let i = 0; i < p.n; i++) if (p.data[3 * i] + p.data[3 * i + 1] + p.data[3 * i + 2] < 30) n++;
+  return n;
+}
+
+/** Pixels inside the device-pixel box that look like the model (RGB sum over 300): ground, paper and grid are far under. */
+function modelPixelsIn(p: Pixels, box: { x0: number; y0: number; x1: number; y1: number }): number {
+  let n = 0;
+  for (let y = Math.max(0, Math.floor(box.y0)); y < Math.min(p.h, Math.ceil(box.y1)); y++)
+    for (let x = Math.max(0, Math.floor(box.x0)); x < Math.min(p.w, Math.ceil(box.x1)); x++) {
+      const i = 3 * (y * p.w + x);
+      if (p.data[i] + p.data[i + 1] + p.data[i + 2] > 300) n++;
+    }
+  return n;
+}
 
 /** Not blank: no one colour over 95% of the frame, and at least 3 colour bins with 0.5% each. Returns the numbers. */
 function blankness(p: Pixels) {
@@ -120,7 +176,11 @@ const noSideways = async (page: Page, width: number, what: string) => assert.ok(
 const renders = (page: Page) => page.evaluate<number>(`Number(document.querySelector("${SCENE}").dataset.renders || 0)`);
 const hideDevBadge = (page: Page) => page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
 
+const HEADLINE = "From one drawing, a whole house";
 async function headlineInFirstScreen(page: Page, tag: string) {
+  assert.equal(await page.locator("h1").count(), 1, `${tag}: exactly one h1`);
+  const said = await page.evaluate<number>(`document.body.textContent.split(${JSON.stringify(HEADLINE)}).length - 1`);
+  assert.equal(said, 1, `${tag}: "${HEADLINE}" appears once in the page's text (got ${said})`);
   const h1 = page.locator("h1");
   assert.equal((await h1.innerText()).trim(), "From one drawing, a whole house", `${tag}: the headline`);
   const box = await h1.boundingBox();
@@ -237,11 +297,14 @@ async function runStatic(browser: Browser, width: number, height: number, touch:
     await hideDevBadge(page);
     await waitUntil(page, `${tag}: the scene never chose a mode`, `document.querySelector("${SCENE}").dataset.mode !== "pending"`);
     assert.equal(await page.getAttribute(SCENE, "data-mode"), "static", `${tag}: the static fallback`);
+    // Without reduced motion the preloader covers the page until the scene has chosen; a screenshot waits for it to go (step L.2).
+    await waitUntil(page, `${tag}: the preloader never went`, `!document.querySelector("${PRELOADER}")`);
     await headlineInFirstScreen(page, tag);
     const end = `getComputedStyle(document.querySelector("[data-testid=blueprint-end]")).opacity`;
     assert.equal(await page.evaluate<string>(end), "0", `${tag}: the end state is hidden at the top`);
     const first = await pixels(await page.screenshot());
     assert.ok(!blankness(first).blank, `${tag}: the sheet is not blank`);
+    assert.equal(ringOffGround(first, touch ? 3 : 1), 0, `${tag}: the sheet reaches the edge of the viewport`);
 
     const g = await geometry(page);
     const tol = Math.round(g.span * 0.01);
@@ -251,6 +314,7 @@ async function runStatic(browser: Browser, width: number, height: number, touch:
     const shot = await page.screenshot({ path: `${OUT}/landing-scene-${why}-${width}.png` });
     const second = await pixels(shot);
     assert.ok(!blankness(second).blank, `${tag}: the end state is not blank`);
+    assert.equal(ringOffGround(second, touch ? 3 : 1), 0, `${tag}: the end-state drawing (model and sheet) reaches the edge of the viewport`);
     const d = changed(first, second);
     console.log(`  ${tag}: the end-state drawing differs from the sheet in ${pct(d)} of pixels`);
     assert.ok(d >= 0.15, `${tag}: the second step differs from the first (${pct(d)})`);
@@ -267,29 +331,339 @@ async function runStatic(browser: Browser, width: number, height: number, touch:
   }
 }
 
+// ------------------------------------------------------------------ step L.2
+
+const ONLY = process.env.E2E_ONLY ?? "";
+const wants = (part: string) => !ONLY || ONLY.split(",").includes(part);
+const TOUR = "section[aria-label='A walk through the house']";
+const PRELOADER = "[data-testid=preloader]";
+
+/** Polls a node-side condition; the message names what never happened. */
+async function until(cond: () => boolean, what: string, ms = 15_000) {
+  const end = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > end) throw new Error(`${what} (after ${ms / 1000} s)`);
+    await new Promise((done) => setTimeout(done, 50));
+  }
+}
+
+/** The whole sheet and the model are in view at nine positions of the build, and the headline's band is clear of the model. */
+async function runFit(browser: Browser, width: number, height: number, touch: boolean) {
+  const tag = `${width}x${height} fit`;
+  const dpr = touch ? 3 : 1;
+  const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: dpr, hasTouch: touch, isMobile: touch });
+  const page = await context.newPage();
+  watchErrors(page, tag, errors);
+  try {
+    step(`${tag}: open the landing page`);
+    await page.goto(`${BASE}/`);
+    await hideDevBadge(page);
+    await waitUntil(page, `${tag}: the scene never chose a mode`, `document.querySelector("${SCENE}").dataset.mode !== "pending"`);
+    assert.equal(await page.getAttribute(SCENE, "data-mode"), "3d", `${tag}: the 3D scene`);
+    await headlineInFirstScreen(page, tag);
+    await waitUntil(page, `${tag}: the canvas never drew the sheet`, `document.querySelector("${SCENE}").dataset.ready === "true"`, 90_000);
+    await waitUntil(page, `${tag}: the canvas never finished fading in`, `getComputedStyle(document.querySelector("[data-testid=blueprint-canvas]")).opacity === "1"`);
+    await waitUntil(page, `${tag}: the preloader never went`, `!document.querySelector("${PRELOADER}")`, 20_000);
+    const g = await geometry(page);
+    const tol = Math.round(g.span * 0.01);
+    for (const at of [0, 12.5, 25, 37.5, 50, 62.5, 75, 87.5, 100]) {
+      step(`${tag}: ${at}% of the build`);
+      await scrollTo(page, Math.round((g.span * g.buildEnd * at) / 100), touch, tol, `${at}%`);
+      await settle(page, `${at}%`);
+      const png = await page.screenshot();
+      if (at === 0 || at === 100) writeFileSync(`${OUT}/landing-final-${at}-${width}.png`, png);
+      const shot = await pixels(png);
+      const off = ringOffGround(shot, dpr);
+      const black = blackPixels(shot);
+      assert.equal(black, 0, `${tag} ${at}%: ${black} near-black pixels (an unpainted edge round the sheet?)`);
+      let band = 0;
+      if (at >= 25) {
+        // With the headline's text hidden, the model must not show in the band the headline occupies.
+        const head = (await page.locator("[data-headline]").boundingBox())!;
+        await page.evaluate(`document.querySelector("[data-headline]").style.visibility = "hidden"`);
+        const bare = await pixels(await page.screenshot());
+        await page.evaluate(`document.querySelector("[data-headline]").style.visibility = ""`);
+        band = modelPixelsIn(bare, { x0: 0, y0: 0, x1: bare.w, y1: (head.y + head.height) * dpr });
+      }
+      console.log(`  ${tag} ${at}%: ${(off * 100).toFixed(3)}% of the outer ring is not ground${at >= 25 ? `, ${band} model pixels in the headline's band` : ""}`);
+      assert.equal(off, 0, `${tag} ${at}%: the sheet or the model reaches the edge of the viewport (${(off * 100).toFixed(3)}% of the outer ring is not ground)`);
+      assert.equal(band, 0, `${tag} ${at}%: ${band} model pixels sit under the headline`);
+    }
+  } finally {
+    await context.close();
+  }
+}
+
+/** In-page recorder: when the preloader was seen, when it was not any more, when the canvas was ready, layout shift. */
+const RECORDER = `
+  window.__pre = { seen: false, hiddenAt: null, readyAt: null, cls: 0, shown: 0, after: 0 };
+  new PerformanceObserver((l) => { for (const e of l.getEntries()) if (!e.hadRecentInput) window.__pre.cls += e.value; }).observe({ type: "layout-shift", buffered: true });
+  setInterval(() => {
+    const p = window.__pre;
+    const el = document.querySelector("[data-testid=preloader]");
+    let vis = false;
+    if (el) { const s = getComputedStyle(el); vis = s.display !== "none" && s.visibility !== "hidden" && Number(s.opacity) > 0.05; }
+    const h = document.documentElement.scrollHeight;
+    if (vis) { p.seen = true; p.shown = h; }
+    if (p.seen && !vis && p.hiddenAt === null) { p.hiddenAt = performance.now(); p.after = h; }
+    const sc = document.querySelector("[data-testid=blueprint-scene]");
+    if (sc && sc.dataset.ready === "true" && p.readyAt === null) p.readyAt = performance.now();
+  }, 20);
+`;
+interface Rec {
+  seen: boolean;
+  hiddenAt: number | null;
+  readyAt: number | null;
+  cls: number;
+  shown: number;
+  after: number;
+}
+
+/** The preloader and the photos' loading, with a real scroll. */
+async function runLoad(browser: Browser, width: number, height: number, touch: boolean) {
+  const tag = `${width} load`;
+  const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: touch ? 3 : 1, hasTouch: touch, isMobile: touch });
+  const page = await context.newPage();
+  watchErrors(page, tag, errors);
+  await page.addInitScript({ content: RECORDER });
+  const photos: string[] = [];
+  page.on("request", (r) => {
+    const m = /\/images\/(\d\d)_/.exec(r.url());
+    if (m && !photos.includes(m[1])) photos.push(m[1]);
+  });
+  try {
+    step(`${tag}: the preloader at the first paint`);
+    await page.goto(`${BASE}/`, { waitUntil: "commit" });
+    await page.waitForSelector(PRELOADER, { state: "visible", timeout: 10_000 });
+    assert.match(await page.innerText(PRELOADER), /Atrium/, `${tag}: the preloader shows the wordmark`);
+    await hideDevBadge(page);
+
+    step(`${tag}: the preloader goes, by 3 s and soon after the canvas is ready`);
+    await waitUntil(page, `${tag}: the canvas never drew the sheet`, `document.querySelector("${SCENE}").dataset.ready === "true"`, 90_000);
+    await waitUntil(page, `${tag}: the preloader never went`, `window.__pre.hiddenAt !== null`, 20_000);
+    const rec = await page.evaluate<Rec>("window.__pre");
+    console.log(`  ${tag}: preloader gone at ${rec.hiddenAt!.toFixed(0)} ms, canvas ready at ${rec.readyAt!.toFixed(0)} ms, layout shift ${rec.cls.toFixed(4)}, page height ${rec.shown} → ${rec.after}`);
+    assert.ok(rec.seen, `${tag}: the preloader was seen`);
+    assert.ok(rec.hiddenAt! <= 3000, `${tag}: the preloader was gone by 3 s (${rec.hiddenAt!.toFixed(0)} ms)`);
+    assert.ok(rec.hiddenAt! <= Math.min(3000, rec.readyAt! + 1000), `${tag}: the preloader stayed past the point the hero was ready (gone ${rec.hiddenAt!.toFixed(0)} ms, ready ${rec.readyAt!.toFixed(0)} ms)`);
+    assert.ok(rec.cls < 0.01, `${tag}: layout shift ${rec.cls}`);
+    assert.equal(rec.after, rec.shown, `${tag}: the page's height did not change when the preloader went`);
+    await waitUntil(page, `${tag}: the preloader was never removed`, `!document.querySelector("${PRELOADER}")`);
+
+    step(`${tag}: photos are not requested before the scroll is near them`);
+    await page.waitForLoadState("networkidle");
+    assert.deepEqual(photos, ["01"], `${tag}: at rest only the first photo is requested (got ${photos})`);
+    const g = await geometry(page);
+    const tol = Math.round(g.span * 0.01);
+    const vh = await page.evaluate<number>("innerHeight");
+    // In steps of 200 px: a wheel or swipe that is counted twice by a moving scroll can then only overshoot by that much.
+    await scrollTo(page, Math.round(vh * 0.4), touch, tol, "a little way into the build", 200);
+    await page.waitForLoadState("networkidle");
+    assert.deepEqual(photos, ["01"], `${tag}: a little way into the build still only the first (got ${photos})`);
+    // 400 px short of the tour's pin (its progress is still 0): the tour has been in view for half a screen, so the lobby, and no more
+    await scrollTo(page, g.span - 400, touch, tol, "the tour's first screen", 200);
+    await until(() => photos.includes("02"), `${tag}: the lobby was never requested once the tour was near`);
+    await page.waitForLoadState("networkidle");
+    assert.deepEqual([...photos].sort(), ["01", "02"], `${tag}: before the tour's pin the first two (got ${photos}, scrollY ${await page.evaluate("scrollY")} of pin at ${g.span})`);
+    const spacer = await page.evaluate<number>(`(() => { const p = document.querySelector("${TOUR}").parentElement; if (!p.classList.contains("pin-spacer")) throw new Error("the tour is not pinned"); return p.offsetHeight - innerHeight; })()`);
+    await scrollTo(page, g.span + Math.round(spacer * 0.14), touch, tol, "into the first room change", 200);
+    await until(() => photos.includes("03"), `${tag}: the living room was never requested once the scroll reached the lobby`);
+    await page.waitForLoadState("networkidle");
+    assert.deepEqual([...photos].sort(), ["01", "02", "03"], `${tag}: one room ahead of the scroll, no more (got ${photos})`);
+    await scrollTo(page, g.span + Math.round(spacer * 0.875), touch, tol, "near the end of the tour", 600);
+    await until(() => photos.length === 5, `${tag}: not every photo arrived by the end of the tour (got ${photos})`);
+    console.log(`  ${tag}: photos requested in order: ${photos.join(", ")} (vh ${vh})`);
+  } finally {
+    await context.close();
+  }
+}
+
+/** Reduced motion: the preloader is never visible. */
+async function runLoadReduced(browser: Browser, width: number, height: number, touch: boolean) {
+  const tag = `${width} reduced load`;
+  const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: touch ? 3 : 1, hasTouch: touch, isMobile: touch, reducedMotion: "reduce" });
+  const page = await context.newPage();
+  watchErrors(page, tag, errors);
+  await page.addInitScript({ content: RECORDER });
+  try {
+    step(`${tag}: no preloader`);
+    await page.goto(`${BASE}/`, { waitUntil: "commit" });
+    await page.waitForSelector("h1", { state: "visible", timeout: 10_000 });
+    await waitUntil(page, `${tag}: the scene never chose a mode`, `document.querySelector("${SCENE}").dataset.mode !== "pending"`);
+    await waitUntil(page, `${tag}: the preloader element was never removed`, `!document.querySelector("${PRELOADER}")`);
+    assert.equal((await page.evaluate<Rec>("window.__pre")).seen, false, `${tag}: the preloader was never visible`);
+  } finally {
+    await context.close();
+  }
+}
+
+/** The 3D canvas's chunk is blocked: the page must still work, as the static scene. */
+async function runFailed(browser: Browser) {
+  const tag = "1440 canvas blocked";
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  const own: string[] = []; // the failed load is expected to be logged; anything else is not
+  watchErrors(page, tag, own);
+  await page.addInitScript({ content: RECORDER });
+  let blocked = 0;
+  // The chunk names are readable in development and hashed in a production build, so a script is judged by what it holds:
+  // three.js's renderer. The landing page's first-load scripts never contain it (that is step 8.1's rule).
+  await page.route(/\/_next\/static\/.*\.js/, async (route) => {
+    const res = await route.fetch();
+    if (/WebGLRenderer/.test(await res.text())) {
+      blocked++;
+      return route.abort();
+    }
+    return route.fulfill({ response: res });
+  });
+  try {
+    step(`${tag}: the page without its canvas`);
+    await page.goto(`${BASE}/`, { waitUntil: "commit" });
+    await page.waitForSelector(PRELOADER, { state: "visible", timeout: 10_000 });
+    await waitUntil(page, `${tag}: the preloader never went`, `window.__pre.hiddenAt !== null`, 20_000);
+    const rec = await page.evaluate<Rec>("window.__pre");
+    assert.ok(blocked > 0, `${tag}: the route blocked nothing, so this test proved nothing`);
+    assert.ok(rec.hiddenAt! <= 3000, `${tag}: the preloader was gone by 3 s (${rec.hiddenAt!.toFixed(0)} ms)`);
+    await waitUntil(page, `${tag}: the scene never fell back to static`, `document.querySelector("${SCENE}").dataset.mode === "static"`, 20_000);
+    assert.equal(await page.locator("canvas").count(), 0, `${tag}: no canvas`);
+    await headlineInFirstScreen(page, tag);
+    const g = await geometry(page);
+    await scrollTo(page, Math.round(g.span * g.buildEnd * 0.75), false, Math.round(g.span * 0.01), "the page still scrolls");
+    await waitUntil(page, `${tag}: the static end state never showed`, `getComputedStyle(document.querySelector("[data-testid=blueprint-end]")).opacity === "1"`);
+    console.log(`  ${tag}: ${blocked} requests blocked, preloader gone at ${rec.hiddenAt!.toFixed(0)} ms; logged: ${own.length ? own.map((e) => e.slice(0, 90)).join(" | ") : "nothing"}`);
+    for (const e of own) assert.match(e, /chunk|Failed to load|ERR_FAILED|net::|BlueprintCanvas|three/i, `${tag}: an unexpected error: ${e}`);
+  } finally {
+    await context.close();
+  }
+}
+
+/** The tour: a crossfade on a phone, arches on a desktop; the hero caption readable and clear of Step inside. */
+async function runTour(browser: Browser, width: number, height: number, touch: boolean) {
+  const tag = `${width} tour`;
+  const dpr = touch ? 3 : 1;
+  const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: dpr, hasTouch: touch, isMobile: touch });
+  const page = await context.newPage();
+  watchErrors(page, tag, errors);
+  try {
+    step(`${tag}: open the landing page`);
+    await page.goto(`${BASE}/`);
+    await hideDevBadge(page);
+    await waitUntil(page, `${tag}: the scene never chose a mode`, `document.querySelector("${SCENE}").dataset.mode !== "pending"`);
+    const g = await geometry(page);
+    const tol = Math.round(g.span * 0.01);
+    await scrollTo(page, g.span, touch, 2, "the tour's first screen");
+    await settle(page, "the tour's first screen");
+    const png = await page.screenshot({ path: `${OUT}/landing-final-tour-${width}.png` });
+    const shot = await pixels(png);
+    await noSideways(page, width, tag);
+
+    step(`${tag}: the hero caption and Step inside`);
+    const button = (await page.getByRole("button", { name: "Step inside" }).boundingBox())!;
+    const note = page.locator("p", { hasText: "Illustrative photographs" });
+    const nb = (await note.boundingBox())!;
+    const vh = await page.evaluate<number>("innerHeight");
+    const apart = nb.y >= button.y + button.height || nb.y + nb.height <= button.y || nb.x >= button.x + button.width || nb.x + nb.width <= button.x;
+    assert.ok(apart, `${tag}: the caption (${JSON.stringify(nb)}) overlaps Step inside (${JSON.stringify(button)})`);
+    assert.ok(nb.x >= 0 && nb.x + nb.width <= width && nb.y >= 0 && nb.y + nb.height <= vh, `${tag}: the caption is inside the screen (${JSON.stringify(nb)})`);
+    const fontPx = await note.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+    assert.ok(fontPx >= 12, `${tag}: the caption's text is ${fontPx}px`);
+    // Contrast: the text colour (vellum) against the picture behind it, measured on this screenshot's pixels in the
+    // caption's box: the background is the 75th percentile of the luminances under 0.7 (the text and its glow are above).
+    const lum = (r: number, gr: number, b: number) => {
+      const c = [r, gr, b].map((v) => ((v / 255) ** 2.2));
+      return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    };
+    const ls: number[] = [];
+    for (let y = Math.floor(nb.y * dpr); y < Math.ceil((nb.y + nb.height) * dpr); y++)
+      for (let x = Math.floor(nb.x * dpr); x < Math.ceil((nb.x + nb.width) * dpr); x++) {
+        const i = 3 * (y * shot.w + x);
+        const l = lum(shot.data[i], shot.data[i + 1], shot.data[i + 2]);
+        if (l < 0.7) ls.push(l);
+      }
+    ls.sort((a, b) => a - b);
+    const bg = ls[Math.floor(ls.length * 0.75)];
+    const ratio = (lum(0xf4, 0xef, 0xe5) + 0.05) / (bg + 0.05);
+    console.log(`  ${tag}: caption ${nb.width.toFixed(0)}x${nb.height.toFixed(0)} at y ${nb.y.toFixed(0)}, ${fontPx}px, Step inside ends at y ${(button.y + button.height).toFixed(0)}, contrast ${ratio.toFixed(1)}:1`);
+    assert.ok(ratio >= 4.5, `${tag}: the caption's contrast is ${ratio.toFixed(2)}:1`);
+
+    step(`${tag}: how the layers are made`);
+    const layers = `[...document.querySelectorAll("[data-layer]")].map((l) => { const s = getComputedStyle(l); const p = getComputedStyle(l.querySelector("[data-photo]")); return { clip: s.clipPath, wc: s.willChange, pwc: p.willChange, vis: s.visibility, op: Number(s.opacity) }; })`;
+    const at0 = await page.evaluate<{ clip: string; wc: string; pwc: string; vis: string; op: number }[]>(layers);
+    if (width < 640) {
+      // A crossfade: no clip-path, no photo scaling (the photos carry no will-change), and one promoted layer per room, for opacity only.
+      // (Without will-change: opacity every fade repainted a 3x full-screen photo on the main thread: 5 to 11 frames over 50 ms.)
+      for (const l of at0) assert.ok(l.clip === "none" && l.wc === "opacity" && l.pwc === "auto", `${tag}: a layer uses clip-path or a will-change other than opacity (${JSON.stringify(l)})`);
+      assert.deepEqual(at0.slice(1).map((l) => l.vis), ["hidden", "hidden", "hidden", "hidden"], `${tag}: the later rooms are hidden`);
+    } else {
+      assert.ok(at0.slice(1).every((l) => l.clip !== "none"), `${tag}: the arches are kept on a desktop`);
+    }
+    const spacer = await page.evaluate<number>(`document.querySelector("${TOUR}").parentElement.offsetHeight - innerHeight`);
+    await scrollTo(page, g.span + Math.round(spacer * 0.375), touch, tol, "mid tour");
+    await settle(page, "mid tour");
+    if (width < 640) {
+      const mid = await page.evaluate<{ vis: string }[]>(layers);
+      const shown = mid.filter((l) => l.vis !== "hidden").length;
+      assert.ok(shown <= 2, `${tag}: ${shown} layers are painted at once; a crossfade needs two at most`);
+      console.log(`  ${tag}: ${shown} layers painted at the middle of the tour`);
+    }
+    await noSideways(page, width, `${tag} mid`);
+
+    step(`${tag}: frame times through the tour`);
+    await scrollTo(page, g.span, touch, 2, "back to the tour's start");
+    await page.evaluate("window.__ft = []; window.__ftOn = true; (() => { let last = performance.now(); const loop = (t) => { window.__ft.push(t - last); last = t; if (window.__ftOn) requestAnimationFrame(loop); }; requestAnimationFrame(loop); })()");
+    for (let i = 1; i <= 8; i++) await scrollTo(page, g.span + Math.round((spacer * i) / 8), touch, tol, `tour ${i}/8`);
+    const times = await page.evaluate<number[]>("(window.__ftOn = false, window.__ft.slice(1))");
+    const sorted = [...times].sort((a, b) => a - b);
+    const q = (f: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * f))];
+    console.log(`  ${tag} frame times over ${sorted.length} frames: median ${q(0.5).toFixed(1)} ms, p95 ${q(0.95).toFixed(1)} ms, max ${sorted[sorted.length - 1].toFixed(1)} ms, over 50 ms: ${sorted.filter((t) => t > 50).length}`);
+  } finally {
+    await context.close();
+  }
+}
+
 async function main() {
   await warmRoutes(["/"]);
   mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch({ executablePath: EXECUTABLE, args: GL_ARGS });
   try {
-    await run3d(browser, 1440, 900, false);
-    await run3d(browser, 390, 844, true);
-    await runStatic(browser, 1440, 900, false, "reduced");
-    await runStatic(browser, 390, 844, true, "reduced");
+    if (wants("fit")) {
+      await runFit(browser, 1440, 900, false);
+      await runFit(browser, 1280, 720, false);
+      await runFit(browser, 390, 844, true);
+    }
+    if (wants("scene")) {
+      await run3d(browser, 1440, 900, false);
+      await run3d(browser, 390, 844, true);
+      await runStatic(browser, 1440, 900, false, "reduced");
+      await runStatic(browser, 390, 844, true, "reduced");
+    }
+    if (wants("load")) {
+      await runLoad(browser, 1440, 900, false);
+      await runLoad(browser, 390, 844, true);
+      await runLoadReduced(browser, 1440, 900, false);
+      await runLoadReduced(browser, 390, 844, true);
+    }
+    if (wants("failed")) await runFailed(browser);
+    if (wants("tour")) {
+      await runTour(browser, 1440, 900, false);
+      await runTour(browser, 390, 844, true);
+    }
   } finally {
     await browser.close();
   }
-  const noGl = await chromium.launch({ executablePath: EXECUTABLE, args: ["--disable-webgl", "--disable-webgl2"] });
-  try {
-    await runStatic(noGl, 1440, 900, false, "nowebgl");
-  } finally {
-    await noGl.close();
+  if (wants("scene")) {
+    const noGl = await chromium.launch({ executablePath: EXECUTABLE, args: ["--disable-webgl", "--disable-webgl2"] });
+    try {
+      await runStatic(noGl, 1440, 900, false, "nowebgl");
+    } finally {
+      await noGl.close();
+    }
   }
   assert.deepEqual(errors, [], `console errors:\n${errors.join("\n")}`);
   console.log("e2e-landing: OK");
 }
 
-withSuiteTimeout("e2e-landing", 600_000, main).catch((e) => {
+withSuiteTimeout("e2e-landing", 1_500_000, main).catch((e) => {
   console.error(e);
   process.exit(1);
 });

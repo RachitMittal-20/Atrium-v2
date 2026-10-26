@@ -17,7 +17,7 @@
  * src/components/landing/{BlueprintScene,BlueprintCanvas}.tsx.
  */
 import { samplePlan } from "@/data/samplePlan";
-import { sheetBox, sheetShapes } from "@/lib/landing/blueprint";
+import { SHEET_FIT, sheetBox, sheetShapes } from "@/lib/landing/blueprint";
 import { axonometricFaces } from "@/lib/landing/blueprintMeshes";
 import type { Vec2 } from "@/types/plan";
 
@@ -30,10 +30,14 @@ export function BlueprintSheet() {
   const grid: number[][] = [];
   for (let x = Math.ceil(box.x); x <= box.x + box.w; x++) grid.push([x, box.y, x, box.y + box.h]);
   for (let y = Math.ceil(box.y); y <= box.y + box.h; y++) grid.push([box.x, y, box.x + box.w, y]);
+  // The view is the sheet grown by 1 / SHEET_FIT about its centre, so the sheet fills SHEET_FIT of it (step L.2) and no
+  // edge touches the screen's. (A CSS scale() on this SVG did the same but made the first paint 130 ms later at 1440.)
+  const [vw, vh] = [box.w / SHEET_FIT, box.h / SHEET_FIT];
   return (
     <svg
       data-blueprint-sheet
-      viewBox={`${box.x} ${box.y} ${box.w} ${box.h}`}
+      data-sheet-box={`${box.x} ${box.y} ${box.w} ${box.h}`}
+      viewBox={`${box.x + box.w / 2 - vw / 2} ${box.y + box.h / 2 - vh / 2} ${vw} ${vh}`}
       preserveAspectRatio="xMidYMid meet"
       className="absolute inset-0 h-full w-full"
       role="img"

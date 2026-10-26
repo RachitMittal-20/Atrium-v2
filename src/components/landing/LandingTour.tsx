@@ -8,20 +8,31 @@
  *  - One pinned, full-screen stage holds every photo stacked on top of each
  *    other (first scene at the bottom).
  *  - A single GSAP timeline is scrubbed by ScrollTrigger (which reads the
- *    Lenis-smoothed scroll set up in SmoothScrollProvider). For each next
- *    room, its layer opens from a narrow arch in the centre to full screen,
- *    echoing the arched windows in the photos, while the previous photo
- *    slowly pushes in so the move feels like walking forward.
+ *    Lenis-smoothed scroll set up in SmoothScrollProvider). Two versions of it,
+ *    chosen by gsap.matchMedia (step L.2):
+ *      from 640 px: for each next room, its layer opens from a narrow arch in the
+ *      centre to full screen, echoing the arched windows in the photos, while
+ *      the previous photo slowly pushes in so the move feels like walking forward;
+ *      under 640 px (a phone): a plain crossfade. No clip-path, no photo scaling, and the
+ *      layers carry will-change: opacity (and nothing else), so each fade is a compositor blend of two layers instead of a
+ *      main-thread repaint of a full-screen photo (measured: without it, 5 to 11 frames over 50 ms through the tour at
+ *      390; with it 0 or 1). A faded-out layer is visibility: hidden, which GSAP's autoAlpha sets.
  *  - Titles cross-fade with their rooms. The last room reveals the call to
  *    action that leads into the app (/studio).
  *  - "Step inside" on the mansion glides the scroll to the lobby reveal via
  *    scrollToOffset (Lenis), instead of jumping.
+ *  - Photos (step L.2): the five are 0.7 to 1.2 MB each, so only the first has a
+ *    real src at load (eager, high priority). Native loading="lazy" is not enough: the tour starts one screen
+ *    below the fold, which is inside the browser's lazy-load distance, so all five were fetched before the first
+ *    scroll. The others hold a 1 px placeholder until `allowed` says they are near: the lobby once the tour
+ *    section enters the viewport (or "Step inside" is pressed), then one room ahead of the scroll's progress.
+ *    Every photo has its real width and height.
  * BlueprintScene (step 8.1) sits above this and overlaps its first screen: its pin starts exactly where the
  * blueprint stage, faded out, stops sticking. The construction scene (8.2) is deferred.
  */
 "use client";
 
-import { useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
@@ -38,9 +49,27 @@ gsap.registerPlugin(ScrollTrigger, useGSAP);
 const ARCH_CLOSED = "inset(100% 38% 0% 38% round 40vw 40vw 0vw 0vw)";
 const ARCH_OPEN = "inset(0% 0% 0% 0% round 0vw 0vw 0vw 0vw)";
 
+/** A transparent 1 px GIF (a data: URL, so no request) standing in for a photo that is not yet near. */
+const BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+/** The photographs' real size, set as attributes so the browser knows their shape before they load. */
+const PHOTO_W = 2560;
+const PHOTO_H = 1440;
+
 export function LandingTour() {
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<ScrollTrigger | null>(null);
+  const [allowed, setAllowed] = useState(1); // how many photos (from the first) may load; only ever grows
+  const allow = useCallback((n: number) => setAllowed((a) => Math.max(a, Math.min(n, LANDING_SCENES.length))), []);
+
+  // The lobby loads as soon as the tour section is a screen or less from view (it is, from the first scroll of the build).
+  useEffect(() => {
+    if (!root.current) return;
+    const io = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) allow(2);
+    });
+    io.observe(root.current);
+    return () => io.disconnect();
+  }, [allow]);
 
   useGSAP(
     () => {
@@ -48,39 +77,66 @@ export function LandingTour() {
       const photos = gsap.utils.toArray<HTMLElement>("[data-photo]");
       const texts = gsap.utils.toArray<HTMLElement>("[data-text]");
       const steps = layers.length - 1; // number of room-to-room transitions
-
-      // Every layer after the first starts closed; every text after the first hidden.
-      gsap.set(layers.slice(1), { clipPath: ARCH_CLOSED });
-      gsap.set(texts.slice(1), { autoAlpha: 0, y: 24 });
-
-      const tl = gsap.timeline({
-        defaults: { ease: "none" }, // scroll itself provides the easing feel via Lenis
-        scrollTrigger: {
-          trigger: root.current,
-          start: "top top",
-          end: `+=${steps * 140}%`, // ~1.4 screens of scrolling per room
-          pin: true,
-          scrub: true,
-          onRefresh: (self) => (trigger.current = self),
-        },
+      // One room ahead of the scroll: at room-to-room progress t (0 to steps), photos up to ceil(t) + 2 may load.
+      const scroll = (per: number) => ({
+        trigger: root.current,
+        start: "top top",
+        end: `+=${steps * per}%`,
+        pin: true,
+        scrub: true,
+        onRefresh: (self: ScrollTrigger) => (trigger.current = self),
+        onUpdate: (self: ScrollTrigger) => allow(2 + Math.ceil(self.progress * steps)),
       });
 
-      for (let i = 1; i <= steps; i++) {
-        const at = i - 1; // each transition occupies one unit of timeline time
-        tl.to(photos[i - 1], { scale: 1.12, duration: 1 }, at) // push into the current room
-          .to(texts[i - 1], { autoAlpha: 0, y: -24, duration: 0.3 }, at)
-          .to(layers[i], { clipPath: ARCH_OPEN, duration: 0.8 }, at + 0.1) // next room opens through the arch
-          .fromTo(photos[i], { scale: 1.25 }, { scale: 1, duration: 0.9 }, at + 0.1)
-          .to(texts[i], { autoAlpha: 1, y: 0, duration: 0.3 }, at + 0.65);
-      }
+      const mm = gsap.matchMedia();
+
+      // From 640 px: the arches, with the photo pushing in.
+      mm.add("(min-width: 640px)", () => {
+        // Every layer after the first starts closed; every text after the first hidden.
+        gsap.set(layers.slice(1), { clipPath: ARCH_CLOSED });
+        gsap.set(texts.slice(1), { autoAlpha: 0, y: 24 });
+
+        const tl = gsap.timeline({
+          defaults: { ease: "none" }, // scroll itself provides the easing feel via Lenis
+          scrollTrigger: scroll(140), // ~1.4 screens of scrolling per room
+        });
+
+        for (let i = 1; i <= steps; i++) {
+          const at = i - 1; // each transition occupies one unit of timeline time
+          tl.to(photos[i - 1], { scale: 1.12, duration: 1 }, at) // push into the current room
+            .to(texts[i - 1], { autoAlpha: 0, y: -24, duration: 0.3 }, at)
+            .to(layers[i], { clipPath: ARCH_OPEN, duration: 0.8 }, at + 0.1) // next room opens through the arch
+            .fromTo(photos[i], { scale: 1.25 }, { scale: 1, duration: 0.9 }, at + 0.1)
+            .to(texts[i], { autoAlpha: 1, y: 0, duration: 0.3 }, at + 0.65);
+        }
+      });
+
+      // Under 640 px: a crossfade. Opacity only; a layer that has been covered is hidden, so two are painted at most.
+      mm.add("(max-width: 639px)", () => {
+        gsap.set(layers.slice(1), { autoAlpha: 0 });
+        gsap.set(texts.slice(1), { autoAlpha: 0 });
+
+        const tl = gsap.timeline({ defaults: { ease: "none" }, scrollTrigger: scroll(100) });
+
+        for (let i = 1; i <= steps; i++) {
+          const at = i - 1;
+          tl.to(texts[i - 1], { autoAlpha: 0, duration: 0.3 }, at)
+            .to(layers[i], { autoAlpha: 1, duration: 0.6 }, at + 0.2)
+            .set(layers[i - 1], { autoAlpha: 0 }, at + 0.8) // fully covered by now
+            .to(texts[i], { autoAlpha: 1, duration: 0.3 }, at + 0.7);
+        }
+      });
+
+      return () => mm.revert();
     },
-    { scope: root },
+    { scope: root, dependencies: [allow] },
   );
 
   // Glide to the moment the lobby has fully opened (end of transition 1).
   const stepInside = () => {
     const st = trigger.current;
     if (!st) return;
+    allow(3); // the lobby, and the living room it opens onto next
     const steps = LANDING_SCENES.length - 1;
     scrollToOffset(st.start + ((st.end - st.start) * 0.9) / steps);
   };
@@ -90,14 +146,16 @@ export function LandingTour() {
   return (
     <section ref={root} aria-label="A walk through the house" className="relative h-svh w-full overflow-hidden bg-iron">
       {LANDING_SCENES.map((scene, i) => (
-        <div key={scene.id} data-layer className="absolute inset-0 will-change-[clip-path]">
+        <div key={scene.id} data-layer className="absolute inset-0 max-sm:will-change-[opacity] sm:will-change-[clip-path]">
           {/* eslint-disable-next-line @next/next/no-img-element -- full-bleed scroll art; next/image adds no value under a transform */}
           <img
             data-photo
-            src={scene.image}
+            src={i < allowed ? scene.image : BLANK}
             alt={scene.alt}
-            className="h-full w-full object-cover will-change-transform"
-            loading={i < 2 ? "eager" : "lazy"}
+            width={PHOTO_W}
+            height={PHOTO_H}
+            className="h-full w-full object-cover sm:will-change-transform"
+            loading={i === 0 ? "eager" : "lazy"}
             fetchPriority={i === 0 ? "high" : "auto"}
           />
           {/* Warm dusk wash at the bottom so white type stays readable on bright photos */}

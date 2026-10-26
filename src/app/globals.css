@@ -67,3 +67,13 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* The landing preloader (step L.2, BlueprintScene). The guard hides it after --preloader-max even if no script ever
+   runs, so a failed load can never leave the page covered; the bar is time-based (it is not a byte count). Both animate
+   main-thread properties (visibility, width), not transform or opacity: a compositor animation on a full-screen layer
+   made the first paint wait for the GPU path (about 100 to 300 ms later in headless Chromium). */
+@keyframes preloader-guard { to { visibility: hidden; } }
+@keyframes preloader-bar { from { width: 0; } to { width: 90%; } }
+.preloader { animation: preloader-guard 1ms linear var(--preloader-max) forwards; }
+.preloader-bar { animation: preloader-bar var(--preloader-max) cubic-bezier(0.2, 0.8, 0.2, 1) forwards; }
+.preloader-bar.is-done { animation: none; width: 100%; }
