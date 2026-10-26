@@ -13,6 +13,7 @@ Direct dependencies from `package.json`. Versions and licences are read from eac
 | immer | 10.2.0 | MIT |
 | lenis | 1.3.26 | MIT |
 | next | 16.3.4 | MIT |
+| pdf-lib | 1.17.1 | MIT |
 | pdfjs-dist | 6.4.299 | Apache-2.0 |
 | react | 19.2.8 | MIT |
 | react-dom | 19.2.8 | MIT |
@@ -31,7 +32,6 @@ Direct dependencies from `package.json`. Versions and licences are read from eac
 | @types/three | 0.185.4 | MIT |
 | eslint | 9.39.5 | MIT |
 | eslint-config-next | 16.3.4 | MIT |
-| pdf-lib | 1.17.1 | MIT |
 | playwright | 1.63.0 | Apache-2.0 |
 | sharp | 0.35.5 | Apache-2.0 |
 | tailwindcss | 4.3.3 | MIT |

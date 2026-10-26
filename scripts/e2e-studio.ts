@@ -2512,8 +2512,13 @@ async function run(width: number, height: number) {
 
   // ---- menus
   // Step E.1: the five "Coming soon" export items are gone; every menu item does something.
+  // Step X.2: the schedule, report and 3D exports exist now (scripts/e2e-export.ts downloads each one).
   await tid(page, "export-menu").click();
-  assert.deepEqual(await page.locator('[data-testid="export-menu"] ~ div button').allInnerTexts(), ["Save project…"], `${tag}: the Export menu holds only what exists`);
+  assert.deepEqual(
+    await page.locator('[data-testid="export-menu"] ~ div button').allInnerTexts(),
+    ["Save project…", "Area schedule (CSV)", "Report (PDF)…", "3D model (GLB)…", "3D model (OBJ)…"],
+    `${tag}: the Export menu holds only what exists`,
+  );
   assert.equal(await page.getByText(/Coming soon/).count(), 0, `${tag}: no "Coming soon" anywhere in the top bar`);
   await page.screenshot({ path: `${OUT}/studio-${tag}-export.png` });
   await page.keyboard.press("Escape");

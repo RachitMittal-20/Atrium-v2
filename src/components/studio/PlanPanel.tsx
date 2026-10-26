@@ -12,7 +12,8 @@
  * setting (src/store/unitsStore.ts, step U.1) through useUnitFormat; the area switch below
  * the summary is a view of that setting (m², mm², sq ft). Room rows are rounded for display
  * and the total is summed from the exact areas, which the note under the list says. The
- * Takeoff section (TakeoffPanel.tsx, step M.2a) sits at the bottom, under Rooms. When the plan
+ * Takeoff section (TakeoffPanel.tsx, step M.2a) sits under Rooms, and the Schedule (SchedulePanel.tsx, step
+ * X.2: rooms and openings, the same derived rooms as the list above) at the bottom. When the plan
  * has an imported drawing (step M.2c) and the 2D plan is showing, a "Drawing" section holds the
  * same toggle and opacity slider as the 2D pane, says when the file is not in this browser
  * ("Import it again to see the background"), and removes the drawing from the plan (one undo
@@ -28,6 +29,7 @@ import { useUnitsStore } from "@/store/unitsStore";
 import { EditableText } from "./EditableText";
 import { ItemPanel } from "./ItemPanel";
 import { OpeningPanel } from "./OpeningPanel";
+import { SchedulePanel } from "./SchedulePanel";
 import { TakeoffPanel } from "./TakeoffPanel";
 import { useUnitFormat } from "./useUnitFormat";
 import { WallPanel } from "./WallPanel";
@@ -157,6 +159,7 @@ export function PlanPanel({ view2d = true }: { view2d?: boolean }) {
         </section>
 
         <TakeoffPanel />
+        <SchedulePanel />
       </div>
     </aside>
   );

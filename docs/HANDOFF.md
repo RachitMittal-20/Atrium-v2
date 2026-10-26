@@ -12,7 +12,7 @@ Tick each active item (`[x]`) as its step finishes.
 - [x] N.1 Studio polish: a way back from the autosaved plan, first-run hints, empty states, OCR room-name noise fix
 - [x] 5.2 and 5.3 Bird's-eye view and Recenter
 - [x] 8.4 Landing polish: preloader, lazy photos, simple mobile tour (step L.2, section 43)
-- [ ] 7.1, 7.3, 7.2 Area schedule, PDF takeoff report, GLB and OBJ export
+- [x] 7.1, 7.3, 7.2 Area schedule, PDF takeoff report, GLB and OBJ export (step X.2, section 44)
 - [ ] 9.2 and 9.3 Lighthouse audit, performance and accessibility, Safari and Firefox checks
 - [ ] Reader fixes for doors and windows, proven on a fresh real plan
 
@@ -82,7 +82,7 @@ Read this before sections 18-22, which still describe the old order.
     - The dev-hook grep (now also `__importPdf`) prints `clean`.
     - `scripts/e2e-pdf-import.ts` (new), `scripts/e2e-studio.ts`, `scripts/e2e-walk.ts` and `scripts/e2e-import3d.ts`: each exit 0.
   - **What M.1a added:**
-    - `pdfjs-dist` 6.4.299 (Apache-2.0). Dev only: `pdf-lib` 1.17.1 (MIT); `@napi-rs/canvas` comes in as pdf.js's optional dependency and is used only by the Node scripts.
+    - `pdfjs-dist` 6.4.299 (Apache-2.0). Dev only (a runtime dependency since step X.2, for the report): `pdf-lib` 1.17.1 (MIT); `@napi-rs/canvas` comes in as pdf.js's optional dependency and is used only by the Node scripts.
     - `public/pdfjs/wasm/`: pdf.js's JBIG2/CCITT, JPEG 2000 and ICC decoders with their licences, served from our own origin. Nothing else is fetched.
     - `src/lib/pdf/{open,extract,scale,dimensions,analysePdf,render}.ts`, `src/types/pdf.ts` and `src/types/pdfjs-worker.d.ts`.
     - The import screen: `PdfPanels.tsx` (page picker, badge, scale sources) and `DimensionCheck.tsx`, plus PDF handling in `importFile.ts` (`isPdf`, `runPdf`) and `page.tsx`.
@@ -884,7 +884,7 @@ Atrium 2.0 now has the editable Plan pipeline, 2D/3D studio shell, wall selectio
 - Clear the lint errors (PlanViewer.tsx, PlanModel geometry cache) before deploying.
 - Import screen: setting the scale needs mouse or touch points; add a keyboard path (pick a wall from a list, type its length). Faint dark squares appear where translucent wall pieces overlap in the overlay.
 - Test pinch zoom on a real phone after deployment, and test the import worker in Safari and Firefox.
-- Room list rounds each area to one decimal, so the rows can add to 0.1 less than the total. Fix with the schedules in 7.1.
+- Room list rounds each area to one decimal, so the rows can add to 0.1 less than the total. Kept as is (the note under the list says so); step X.2's schedule, its CSV and the report sum totals from exact values too.
 - Flake hunt: DONE, step F.1 (2026-10-14). Each of the eight logged one-off failures, its verdict and what changed are in section 23. `scripts/flake-hunt.ts` reproduces them on demand.
 - A dev flag that opens 3D door leaves wide (for screenshots). `LEAF_OPEN` is a fixed 0.3 rad, so a 3D screenshot shows a leaf barely open.
 - Decide the order after 5.3: landing page (Phase 8) before or after the catalog (Phase 6). The core editor, walkthrough, bird's-eye and recenter will be demoable by then.
@@ -2004,3 +2004,55 @@ No reading rule, geometry, detection or existing assertion changed. Nothing was 
 
 **Not covered:** a real phone, Safari, Firefox; Linux CI (the Node test uses only committed code); Lighthouse (9.2).
 
+
+## 44. X.2 — exports: area schedule, takeoff report PDF, GLB and OBJ (roadmap 7.1, 7.3, 7.2; 2026-10-26; not committed)
+
+**Library choice.** `pdfjs-dist` reads; for writing, pdf-lib 1.17.1 (MIT, read from its package.json) was already installed as a devDependency (it makes every PDF fixture). It moved to `dependencies`; no new package. About 206 kB gzip as one minified bundle, 174 kB gzip as the on-demand chunk Turbopack makes. jsPDF 4.2.1 (MIT, measured with `npm pack`) is about 110 kB gzip but would be a new package bringing fflate, fast-png and @babel/runtime, plus optional html2canvas, dompurify and canvg. pdf-lib won on: nothing new to install; the path from pdf-lib output to pdf.js text extraction in Node is already proven by the fixtures; and `drawSvgPath` takes y-down paths, as the plan is. The report uses the PDF standard fonts Helvetica and Helvetica-Bold, which are built into every reader, so nothing is embedded or fetched.
+
+**What was built** (details in CLAUDE.md "Exports"):
+- `src/lib/export/schedule.ts`: the rooms come from `deriveRooms`, the same source as the Summary and the room list. Openings are grouped by kind and size. Totals are summed from exact values. The CSV has two sections.
+- `src/lib/export/report.ts`: an A4 landscape report, built with pdf-lib.
+- `src/lib/export/model3d.ts`: GLB and OBJ through three's exporters.
+- `src/components/studio/ExportDialog.tsx`: one dialog for the report, GLB and OBJ, plus the schedule's CSV download.
+- `src/components/studio/SchedulePanel.tsx`: a collapsible section in the right panel.
+- The Export menu holds exactly: Save project…, Area schedule (CSV), Report (PDF)…, 3D model (GLB)…, 3D model (OBJ)….
+
+**Changed assertion (one).** `scripts/e2e-studio.ts`, the Export menu's item list: it was `["Save project…"]` and is now the five items above. Nothing else existing was changed.
+
+**Failing first.** `scripts/test-exports.ts` was written before the modules. Its first run failed with `Cannot find module '../src/lib/export/schedule'`, which covers the schedule-equals-summary and GLB round-trip checks. Once the schedule existed, the GLB check failed twice before passing:
+1. GLTFLoader strips ":" and "." from node names when it loads a file. The test now reads the names from the GLB's JSON chunk.
+2. The floor triangles' area was 5.9e-6 m² off the Summary's 74.695 m². glTF positions are float32, about 7 significant digits, so a 1e-6 m² bound on the triangles cannot hold. The exact net areas now travel as extras and are checked to 1e-6 m²; the triangles are checked to 1e-6 relative.
+
+**Logged one-off failure.** The first run of `e2e-export` timed out waiting for the CSV download at 1440. This was a test bug, not a flake: the suite pressed the menu item before it began listening for the download, so the download fired first and was missed. The suite now listens first, and it passed on every run after.
+
+**Fixed after a screenshot.** The Schedule panel's openings table was wider than the 320 px panel at 1440, so its Count column was cut. The length unit now appears once, in the table's caption, and the cells show bare numbers.
+
+**Bundle** (`scripts/bundle-report.ts`; the baseline was built from this tree with the three wiring files stashed):
+- `/studio`: 1926 kB raw, 569 kB gzip before; 1935 kB raw, 571 kB gzip after. That is +9 kB raw, about +2 kB gzip, for the schedule panel, the dialog shell and the schedule maths.
+- pdf-lib: an on-demand chunk of 421 kB raw, 174 kB gzip.
+- GLTFExporter and OBJExporter: an on-demand chunk of 40 kB raw, 11.5 kB gzip.
+- `/` 195 kB, `/limits` 187 kB, `/studio/import` 386 kB gzip: unchanged.
+
+**Verified (macOS, Node 24.14.0), on the final tree:**
+- `npm test` exit 0, with `test-exports` in it.
+- `npx tsc --noEmit` exit 0.
+- Cold build: dev server stopped, `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`, exit 0 (compiled in 4.8 s).
+- Dev-hook grep (including `__background`) and CDN grep: both clean.
+- Dev server restarted, then one at a time: `e2e-export` (exit 0 after the test fix), `e2e-studio`, `e2e-takeoff` and `e2e-project-file`, each exit 0. These four ran before the last Schedule panel edit, and `e2e-export` was run again after it (exit 0). The cold build above is from after it.
+
+**Screenshots** (`/tmp/studio/`):
+- `export-menu-1440.png`: the Export menu open under its button with the five items, the 3D sample behind it, and the panel showing Takeoffs (2) in mm.
+- `export-schedule-1440.png`: the right panel scrolled to Schedule.
+  - Rooms: Bedroom 1 14.8 m² / 15400 mm, Living room 36.9 / 27300, Bathroom 8.1 / 11400, Bedroom 2 14.8 / 15400, Total 74.7 m² / 69500 mm.
+  - "Openings, sizes in mm": three door rows (900, 800, 1000 × 2100) and two window rows (1200 and 600 × 1200 on a 900 sill), "Total: 4 doors, 5 windows" with 9.
+  - The note and Download CSV below. Everything fits.
+- `export-menu-390.png`: the same five items in a popover under the icon row, nothing clipped.
+- `export-schedule-390.png`: the Plan details sheet open on the Schedule; both tables fit the 390 width.
+- `export-dialog-390.png` and `-1440`: the Report dialog with what the file holds and the units (mm, m²), Cancel and Download, inside the viewport.
+- A Node render of the sample report: page 1 has the title block, "Verdict: Good" with its two reasons, the scale source, the counts, and the plan drawing (walls black, door swings, window lines, room names and areas). Page 2 has the schedules and the takeoff table with Measured 3000 mm, Reference 3050 mm, Difference -50 mm, Flagged and Override 3100 mm side by side.
+
+**Not covered:**
+- a real phone, Safari, Firefox; Linux CI (the Node test reads only committed files and generates nothing time-dependent);
+- opening the GLB or OBJ in Blender, SketchUp or another viewer: only three's own loader and a line count were used;
+- printing the PDF on paper;
+- the report's verdict judges the plan alone, because the import's coverage is not in the plan.

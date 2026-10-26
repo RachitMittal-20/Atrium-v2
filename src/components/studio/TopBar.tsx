@@ -6,8 +6,9 @@
  * switch, a view-options popover (ceilings), an Import menu ("Floor plan image…"
  * goes to /studio/import; "3D model…" opens a file picker whose files go to
  * src/store/importStore.ts, step I.1; "Open project…" opens a .atrium.json, step E.1),
- * an Export menu with "Save project…" (the only export that exists; the GLB, OBJ, PDF, DXF
- * and CSV items that said "Coming soon" were removed in step E.1), and a quiet autosave status (src/store/persistence.ts). Split is hidden below 640 px.
+ * an Export menu holding only exports that work: "Save project…" (step E.1), and since step X.2 "Area
+ * schedule (CSV)" (a direct download), "Report (PDF)…", "3D model (GLB)…" and "3D model (OBJ)…" (ExportDialog.tsx),
+ * and a quiet autosave status (src/store/persistence.ts). Split is hidden below 640 px.
  * The Units menu (step U.1) holds the one display setting, a Length and an Area radio
  * group over src/store/unitsStore.ts: real radios, so the arrow keys move within a group.
  * Import's first item, "New plan…" (step N.1), is the way back from an autosaved plan: sample or empty, one undo step (ProjectDialog.tsx).
@@ -25,6 +26,7 @@ import { useCanRedo, useCanUndo, usePlanStore } from "@/store/planStore";
 import { useSaveStatus } from "@/store/persistence";
 import { useUnitsStore } from "@/store/unitsStore";
 import { EditableText } from "./EditableText";
+import { downloadSchedule, startExport } from "./ExportDialog";
 import { startNew, startOpen, startSave } from "./ProjectDialog";
 
 export type View = "3d" | "2d" | "split";
@@ -34,6 +36,15 @@ const icon = (d: ReactNode) => (
     {d}
   </svg>
 );
+
+/** The Export menu: only exports that work (test id, label, what it does). */
+const EXPORTS: [string, string, () => void][] = [
+  ["save-project", "Save project…", startSave],
+  ["export-schedule", "Area schedule (CSV)", downloadSchedule],
+  ["export-pdf", "Report (PDF)…", () => startExport("pdf")],
+  ["export-glb", "3D model (GLB)…", () => startExport("glb")],
+  ["export-obj", "3D model (OBJ)…", () => startExport("obj")],
+];
 
 const BTN = "inline-flex min-h-10 items-center gap-1.5 rounded px-2.5 text-sm hover:bg-vellum/10";
 
@@ -216,19 +227,21 @@ export function TopBar({ view, setView, showCeiling, setShowCeiling }: { view: V
         <Popover label="Export" shortLabel="Export" testId="export-menu" glyph={icon(<path d="M12 4v11M7 10l5 5 5-5M5 20h14" />)}>
           {(close) => (
             <ul>
-              <li>
-                <button
-                  type="button"
-                  data-testid="save-project"
-                  onClick={() => {
-                    close();
-                    startSave();
-                  }}
-                  className="flex min-h-10 w-full items-center rounded px-2 text-left hover:bg-limestone"
-                >
-                  Save project…
-                </button>
-              </li>
+              {EXPORTS.map(([id, label, run]) => (
+                <li key={id}>
+                  <button
+                    type="button"
+                    data-testid={id}
+                    onClick={() => {
+                      close();
+                      run();
+                    }}
+                    className="flex min-h-10 w-full items-center rounded px-2 text-left hover:bg-limestone"
+                  >
+                    {label}
+                  </button>
+                </li>
+              ))}
             </ul>
           )}
         </Popover>

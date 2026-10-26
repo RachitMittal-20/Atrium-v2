@@ -17,7 +17,7 @@
  * pane (2D only) ends the walk. The 3D tools (Push/Pull, Move) step back to
  * Select when the 3D pane goes away and when a walk starts. Tool keys come from
  * toolStore.TOOL_SHORTCUTS (P, V). Mounts the "Import a 3D model" dialog
- * (ImportModelDialog, step I.1) once, and the Save, Open or New plan dialog (ProjectDialog, steps E.1 and N.1). The first-run
+ * (ImportModelDialog, step I.1) once, and the Save, Open or New plan dialog (ProjectDialog, steps E.1 and N.1), the Export menu's file exports (ExportDialog, step X.2). The first-run
  * hint and the empty-plan card (StudioHints.tsx, step N.1) are laid over the canvas area, so they move nothing.
  * Connects to src/components/studio/*, src/components/plan2d/* and
  * src/store/toolStore.ts.
@@ -25,6 +25,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { PlanCanvas } from "@/components/plan2d/PlanCanvas";
 import { ImportModelDialog } from "@/components/studio/ImportModelDialog";
+import { ExportDialog } from "@/components/studio/ExportDialog";
 import { ProjectDialog } from "@/components/studio/ProjectDialog";
 import { EmptyPlanCard, StudioHint } from "@/components/studio/StudioHints";
 import { PlanPanel } from "@/components/studio/PlanPanel";
@@ -145,6 +146,7 @@ export default function Studio() {
       </div>
       <ImportModelDialog />
       <ProjectDialog />
+      <ExportDialog />
     </div>
   );
 }
