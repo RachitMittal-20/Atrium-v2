@@ -16,7 +16,8 @@
  *    action that leads into the app (/studio).
  *  - "Step inside" on the mansion glides the scroll to the lobby reveal via
  *    scrollToOffset (Lenis), instead of jumping.
- * The blueprint and construction 3D scenes (Phase 8) will mount above this.
+ * BlueprintScene (step 8.1) sits above this and overlaps its first screen: its pin starts exactly where the
+ * blueprint stage, faded out, stops sticking. The construction scene (8.2) is deferred.
  */
 "use client";
 

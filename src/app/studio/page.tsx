@@ -17,7 +17,8 @@
  * pane (2D only) ends the walk. The 3D tools (Push/Pull, Move) step back to
  * Select when the 3D pane goes away and when a walk starts. Tool keys come from
  * toolStore.TOOL_SHORTCUTS (P, V). Mounts the "Import a 3D model" dialog
- * (ImportModelDialog, step I.1) once, and the Save or Open project dialog (ProjectDialog, step E.1).
+ * (ImportModelDialog, step I.1) once, and the Save, Open or New plan dialog (ProjectDialog, steps E.1 and N.1). The first-run
+ * hint and the empty-plan card (StudioHints.tsx, step N.1) are laid over the canvas area, so they move nothing.
  * Connects to src/components/studio/*, src/components/plan2d/* and
  * src/store/toolStore.ts.
  */
@@ -25,6 +26,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { PlanCanvas } from "@/components/plan2d/PlanCanvas";
 import { ImportModelDialog } from "@/components/studio/ImportModelDialog";
 import { ProjectDialog } from "@/components/studio/ProjectDialog";
+import { EmptyPlanCard, StudioHint } from "@/components/studio/StudioHints";
 import { PlanPanel } from "@/components/studio/PlanPanel";
 import { Scene3D } from "@/components/studio/Scene3D";
 import { ToolRail } from "@/components/studio/ToolRail";
@@ -125,7 +127,7 @@ export default function Studio() {
       <TopBar view={shown} setView={setView} showCeiling={ceiling} setShowCeiling={setCeiling} />
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <ToolRail view3d={shown !== "2d"} view2d={shown !== "3d"} />
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
+        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
           {shown !== "2d" && (
             <div className="relative min-h-0 min-w-0 flex-1" data-testid="pane-3d" key={`3d-${epoch}`}>
               <Scene3D showCeiling={ceiling} />
@@ -136,6 +138,8 @@ export default function Studio() {
               <PlanCanvas />
             </div>
           )}
+          <EmptyPlanCard />
+          <StudioHint />
         </main>
         <PlanPanel view2d={shown !== "3d"} />
       </div>

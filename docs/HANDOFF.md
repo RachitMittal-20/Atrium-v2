@@ -2,6 +2,39 @@
 
 This is the consolidated handoff for continuing Atrium 2.0. It combines the original Claude handoff, the completed implementation reports, the real browser failures we encountered, the fixes that were made, and the current Git/branch state.
 
+## Roadmap
+
+Tick each active item (`[x]`) as its step finishes.
+
+### Active, in order
+
+- [x] 8.1 Blueprint scene
+- [x] N.1 Studio polish: a way back from the autosaved plan, first-run hints, empty states, OCR room-name noise fix
+- [ ] 5.2 and 5.3 Bird's-eye view and Recenter
+- [ ] 8.4 Landing polish: preloader, lazy photos, simple mobile tour
+- [ ] 7.1, 7.3, 7.2 Area schedule, PDF takeoff report, GLB and OBJ export
+- [ ] 9.2 and 9.3 Lighthouse audit, performance and accessibility, Safari and Firefox checks
+- [ ] Reader fixes for doors and windows, proven on a fresh real plan
+
+### Deferred on purpose
+
+Revisit after the active list is done, and remind the user when it is.
+
+- 8.2 Construction site
+- 8.3 Depth-parallax mansion and driveway car
+- Furniture catalog and auto-furnish
+- Realistic rendering, R.1 to R.3
+- .skp and .max via Autodesk (I.2)
+- Design options
+- Share links and co-editing
+
+### Pending, not code
+
+- [ ] Font licence texts in `src/app/fonts`
+- [ ] Demo video link in the README
+- [ ] Case study on the 7 percent arrowhead scale bug
+- [ ] A fresh real plan, kept outside git, for testing
+
 ## Priority change (2026-10-01): 3D editing first
 
 Read this before sections 18-22, which still describe the old order.
@@ -1733,3 +1766,107 @@ No reading rule, geometry, detection or existing assertion changed. Nothing was 
 **One-off failure, logged:** the first `e2e-pdf-import` run died at its first step with `page.evaluate: ReferenceError: __name is not defined`. My new `readOverlay` had a named inner arrow (`const num = …`), the F.1 keepNames trap. Fixed by inlining it; the rerun passed.
 
 **Not covered:** the keyboard walk hint at 390 px wide was not looked at: its `<p>` wraps as before and touch devices keep their own hint, but `e2e-walk` at 390 uses touch and checks neither text; no real phone, Safari or Firefox; Linux CI not run (the new test uses only committed fixtures); a build that keeps a traced wall or opening still shows the tracing's possibly wrong boxes.
+
+## 39. 8.1 — the blueprint scene on the landing page (2026-10-23; not committed)
+**Report first (before any code).** Landing first load was 10 chunks, 603 kB raw / 192 kB gzip (fresh `next build` of HEAD, `scripts/bundle-report.ts`). LandingTour pins one `h-svh` section with ScrollTrigger (`pin`, `scrub: true`, `start: "top top"`, `end: +=560%`, one timeline of arch clip-paths and text fades), reading Lenis through `scrollerProxy`. react-three-fiber and three.js were NOT on the landing page: no first-load chunk held `WebGLRenderer`, `react-three` or `useFrame`.
+
+**Done.** CLAUDE.md "The blueprint scene on the landing page (step 8.1)" has the rules. New: `src/lib/landing/{blueprint,blueprintMeshes,timeline}.ts`, `src/components/landing/{BlueprintScene,BlueprintCanvas,BlueprintDrawings}.tsx`, `scripts/test-landing-scene.ts` (in `npm test`), `scripts/e2e-landing.ts`. Changed: `src/app/page.tsx` (the scene before the tour, `<main className="bg-iron">`), LandingTour's header comment only, `package.json` (the new test). No studio code, reading rule or existing assertion changed.
+
+**Bundle.** `/` first load: 11 chunks, 609 kB raw / **194 kB gzip (+2 kB)**. On a production server (`next start`, Playwright): reduced motion fetches 11 JS files, 197 kB compressed; 3D mode 14 files, 448 kB. The three extra (2.8, 146 and 101 kB) are the scene code, three.js and react-three-fiber, fetched only after the browser chose 3D. No console errors in either. A first build gave 196 kB because BlueprintScene imported two constants from `blueprint.ts` and Turbopack shipped that module with geometry.ts and plan2d/openings.ts; they now live in `timeline.ts`.
+
+**Failing first.** `test-landing-scene.ts` was written before `src/lib/landing` existed and stopped at "Cannot find module '../src/lib/landing/blueprint'".
+
+**Tests.**
+- `test-landing-scene.ts`: 14 extruded walls = the plan's 14, each vertex-identical to `buildWallMeshData`; 9 openings cut (both jambs on their wall, a lintel, a sill for windows); the sheet = `wallOutline` / `openingFrame` / `doorSwing` per wall, opening and door; the end-state picture has every wall and every opening's jambs, painted far to near; the camera fits the sheet box exactly at the start at three aspects and ends tilted over 40° and not nearer; the sources import the shared helpers and define none of their own.
+- `e2e-landing.ts`, on the final tree. Pixel thresholds:
+  - not blank: no colour (within 40 summed RGB) over 95% of the frame, and at least 3 colours with 0.5% each;
+  - "differs": a pixel's RGB moved more than 60, summed; 50% must differ from 0% in at least 5% of pixels, and 100% in at least 15%.
+
+  Measured:
+  - 1440: dominant colour 53.6 / 57.9 / 72.7%; 50% vs 0% 32.6%, 100% vs 0% 51.1%.
+  - 390: dominant colour 50.5 / 64.9 / 78.3%; 27.0% and 43.1%.
+  - Hiding the DOM sheet under the canvas at 50% changed 0.0% of pixels at both widths.
+  - Mid-fade: stage opacity 0.50, tour top 135 px (1440); 0.49 and 125 px (390). At the end the tour is pinned at 0 and the stage hidden.
+  - Pixel ratio 1.50 on the 390 phone (device 3).
+  - No renders at rest (600 ms) or after scrolling past.
+  - Reduced motion: the end state differs from the sheet in 53.0% (1440) and 43.7% (390) of pixels. No WebGL: 52.9%. No canvas and no three.js or react-three-fiber fetched in either.
+- **Frame times** (test-injected rAF loop during a scripted scroll through the build; headless Chromium, WebGL on SwiftShader, i.e. on the CPU):
+  - 1440: median 16.7 ms, p95 33.3 ms, max 49.9 ms, none over 50 ms.
+  - 390: median 16.7, p95 16.7, max 16.8 ms.
+  - Reported, not asserted: they are not a phone's numbers.
+
+**One-off failures, logged before fixing (none were flakes):**
+1. e2e: the static runs' "3D chunk never fetched" check matched next/dynamic's 1.2 kB `BlueprintCanvas` loader stub, which is fetched in every mode. A dev-network comparison showed three.js and react-three-fiber arrive only in 3D mode, so the check now looks for those (test bug).
+2. e2e at 390 reduced: the two steps differed in only 13.1% of pixels, against the 15% threshold. The screenshot showed a real bug: the end-state layer was transparent, so the plan showed through it. It now has an opaque ground (43.7% after). The threshold was not changed.
+3. Screenshots, not a test: the headline was `text-3xl sm:text-5xl` = 54 / 96 px in this project's scale and ran over the plan, and the finished model sat under it. Now `text-2xl sm:text-4xl`, 3.6 m of paper above the plan, and the end camera aims `END_DROP` high.
+4. Lint: reading `progress.current` during render (react-hooks/refs). The ref itself is passed now; new files lint clean.
+
+**Verified (macOS, Node 24.14.0):**
+- `npm test` exit 0.
+- `npx tsc --noEmit` exit 0.
+- Cold build exit 0 in 13 s (dev server stopped, `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`; compiled in 4.9 s, every route static).
+- Dev-hook grep (incl. `__background`) and CDN grep: both clean.
+- Dev server restarted, then one at a time: `e2e-landing`, `e2e-feedback` and `e2e-studio` (181 s), all exit 0.
+
+**Screenshots** (`/tmp/studio/`):
+- `landing-scene-0-1440.png`: the cyanotype sheet with a 1 m grid on the dark ground. The plan (walls, gaps, four door swings, five windows) sits below the one-line headline and caption. The sheet is narrower than the screen, so dark bands show either side.
+- `landing-scene-50-1440.png`: the sheet tilted, the walls about half risen. Door swings show on the floor and windows as holes. Here the model is still partly under the headline (the drop grows with the build).
+- `landing-scene-100-1440.png`: the finished model from the south-south-east, every opening a hole, clear of the text. The sheet runs off the bottom-right corner.
+- `landing-scene-390.png` (50%): the tilted sheet with low walls under a two-line headline; the sheet's left corner is cut off.
+- `landing-scene-100-390.png`: the model spans almost the full width, with an empty band of dark ground below it.
+- `landing-scene-reduced-*.png`: the flat end-state drawing (vellum and stone faces, cyanotype edges); at 390 it sits low, with empty ground under the caption.
+- `landing-scene-handover-1440.png`: the mansion pinned at the top with its own headline.
+
+**Decisions to confirm.**
+- The mansion's h2 still reads "From one drawing, a whole house", so the headline appears twice: on the drawing (the page's h1) and on the photo after the hand-over. Change `landingScenes.ts` if you want the mansion to say something else.
+- The caption "This is the studio's own sample plan. Scroll to raise its walls." is new copy.
+- The static end state is a server-rendered axonometric SVG, not an image file, so it can never go stale against the plan.
+
+**Not covered:** a real phone, Safari, Firefox; frame times on real hardware; Linux CI (the Node test uses only committed code and no fixtures); the Lighthouse pass (9.2).
+
+
+
+## 40. N.1 — studio polish: a way back, first-run hint, empty states, OCR name noise (2026-10-24; not committed)
+
+**What a visitor with an old autosave could do before.** `startPersistence` restores the autosave on every load and undo history is not saved, so the shipped sample was unreachable. The only "sample" was the import screen's "Try a sample plan", which runs `/samples/sample-plan.png` through the image import (a re-traced PNG, not `samplePlan`) and replaces the plan with no choice and no confirmation. Clearing site data was the only other way.
+
+**Built.**
+- **New plan** (Import menu, first item, `data-testid="new-plan"`): one dialog (`ProjectDialog` mode `new`) always asks, "Start from the sample plan" or "Empty plan". With unsaved changes (`isDirty()`) it says so and offers "Save first…". `projectStore.newPlan(kind)` is one `replacePlan` (one undo step, nothing marked Edited), sets the saved baseline and bumps `epoch`. The autosave sees an ordinary plan change. `src/data/emptyPlan.ts` is the empty plan.
+- **First-run hint** (`StudioHints.tsx`, `hintStore.ts`, `src/lib/studioHint.ts`): shown for the untouched sample (compared by `planSignature`, so a sample that went through the autosave still counts) or an empty plan, until dismissed ("Got it", key `atrium.studioHint`, a view setting). It is an overlay at the bottom of `<main>`: click-through except its 44 px button, hidden while walking, so nothing moves when it goes.
+- **Empty state** (`EmptyPlanCard`): no walls and the Select tool gives a card with "Import a floor plan" (link) and "Draw a wall" (Wall tool). The Rooms ("No closed rooms yet…") and Takeoff ("No takeoffs of your own yet…") one-liners already existed and were kept.
+- **A real bug found by it:** `Scene3D.planBounds` of zero walls gave Infinity/NaN bounds and the tab froze when the 3D pane mounted on an empty plan. It now frames a 10 × 10 m patch, the same fallback the 2D plan has.
+- **OCR name noise** (`cleanRoomLabels` in `nameRooms.ts`, called only from `buildFromAnalysis`, so images and scanned pages): drops labels under 55% confidence (`MIN_LABEL_CONFIDENCE`, now shared with `ocr.ts`), labels with more symbols and digits than letters, and labels of 3 letters or fewer unless a known short name (WC, Den, Bed, BR…); strips symbol-only words at either end ("| Safa" gives "Safa"). `nameRooms` itself and the PDF text path are unchanged.
+
+**Decisions to confirm.**
+- "Lal" has 3 letters, so "under 3 letters" alone would not drop it. The rule is "3 letters or fewer and not a known short name". A real 3-letter name not in `KNOWN_SHORT` is lost (the room keeps "Room N").
+- The 55% rule was already applied per OCR line before `nameRooms`, so the noise labels passed it; the rule in `cleanRoomLabels` matters only for labels handed in with a lower confidence.
+- "Safa / Carpet / Living Room" becomes "Safa / Carpet / Living Room": Safa and Carpet are real words, so they stay.
+
+**Tests.** `scripts/test-name-noise.ts` (in `npm test`, failing first: the four live-site names came out as "Oo) / Primary Bedroom / Lal" and so on; it also caught my first version stripping the "/" in "Bath / Kitchen"). `scripts/test-new-plan.ts` (in `npm test`): one undo step, redo, autosave through the real `startPersistence` wiring, baseline, hint flag logic and dismissal. `scripts/e2e-newplan.ts` (not in `npm test`; dev server) at 1440 and 390. No existing assertion was changed.
+
+**Not covered:** a real phone, Safari, Firefox; Escape back to Select from the Wall tool needs 2D canvas focus (the e2e uses the tool rail).
+
+**One-off failures, logged before rerunning:**
+1. `tsc` / `next build`: `e2e-newplan.ts` used the regex `s` flag, which this tsconfig target refuses (TS1501). Replaced with `[\s\S]`.
+2. `e2e-newplan` first runs: the tab FROZE on "Empty plan" (the `Scene3D.planBounds` NaN above; fixed, the e2e now waits for the empty 3D scene to frame itself); then a test-only slip (Escape back to Select needs 2D canvas focus; the test uses the tool rail); then the Next dev badge covering a tap at 390 after a second reload (the test hides it again).
+3. **(Fixed in section 41: G.1's "Walk through walls" button covered the model.)** **`e2e-import3d` FAILS at 390, and did before N.1.** The assertion is "390: a click on the model in 3D selects it" (`e2e-import3d.ts:284`; 1440 passes). It failed on four runs with N.1 on, with the two overlays removed, with `relative` also removed from `<main>`, and with every N.1 source change reverted to HEAD (the new files left unused), so N.1 did not cause it. Not diagnosed further; the uncommitted 8.1 landing files do not touch the studio, but the clean-HEAD run was not possible (a symlinked `node_modules` is refused by Turbopack in a worktree).
+
+**Verified (macOS, Node 24.14.0):** `npm test` exit 0; `npx tsc --noEmit` exit 0; cold build (dev server stopped, `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`) compiled in 5.1 s, every route static; dev-hook grep and CDN grep both clean; dev server restarted; then one at a time `e2e-newplan` exit 0 (26 s), `e2e-studio` exit 0 (159 s), `e2e-pdf-import` exit 0 (137 s), `e2e-import3d` exit 1 (see 3).
+
+**Screenshots** (`/tmp/studio/`):
+- `newplan-menu-1440.png`: the studio on the edited plan "My flat" with the Import menu open: New plan…, Floor plan image…, 3D model…, Open project…. The menu opens over the top of the right panel and hides part of its Summary.
+- `hint-390.png`: the sample at 390 in 3D with the hint along the bottom of the 3D pane, three lines and a "Got it" button, above the Plan details bar. It covers a strip of ground under the model, not the model. (The first version of this shot was taken before the scene had drawn and showed an empty pane; the test now waits for the scene.)
+- `empty-state-1440.png` and `-390.png`: a bare ground grid in 3D with the "This plan is empty" card in the middle (Import a floor plan filled, Draw a wall outlined); the panel says 0 walls, "No closed rooms yet…" and "No takeoffs of your own yet…". At 1440 the top bar still says "Saving…".
+
+## 41. G.1-fix — the 390 tap on an imported model (2026-10-26; not committed)
+**Symptom.** `e2e-import3d` failed at 390 (real touch) on "390: a click on the model in 3D selects it" (`e2e-import3d.ts:284`): `itemId` stayed null. 1440 passed. Section 40 item 3 showed N.1 did not cause it.
+
+**Culprit: `4424991` (G.1, "feat(walk): add an optional walk-through-walls mode").** Found by checking out commits in a scratch clone with its own `npm ci` (no symlinked `node_modules`), with its own `next dev -p 3100` and `E2E_URL=http://localhost:3100 E2E_WIDTH=390 npx tsx scripts/e2e-import3d.ts`. Its parent `4371097` exits 0 (the whole 390 run, tools included). `4424991` fails on exactly this assertion. E.1 (`8bb5adf`) had passed in section 34, and nothing in between touches the studio.
+
+**Cause: a test-visible product bug, not timing or a changed hit target.** G.1 added the "Walk through walls" button to WalkOverlay's top row, always shown and disabled outside walk. At 390 it sits beside Orbit | Walk at page y ≈ 100–144, x ≈ 136–285. The test lifts the cube to 3 m and taps the middle of its top face, at (172, 120). At that moment `document.elementsFromPoint` gave `button[data-testid=walk-ghost]` (disabled), then the row's `pointer-events-auto` div, then the canvas. The screenshot shows the button drawn over the cube. A disabled button swallows the tap, so it never reaches the canvas: on a phone, a model (or anything else) behind that button could not be tapped. At 1440 the 3D pane is wide and the model is not under the row.
+
+**Fix** (`WalkOverlay.tsx`): below `sm` (640 px, the e2e's touch line) the button is `max-sm:hidden` while not walking. On a phone the disabled button did nothing and its tooltip can't show without hover. It appears the moment Walk starts, where 3D picking is off anyway. It stays in the DOM, so `e2e-walk`'s "disabled before Walk" still holds. From `sm` up nothing changed. No test was changed. CLAUDE.md's G.1 UI line says so.
+
+**Verified (macOS, Node 24.14.0), first time, no one-off failures:** `npm test` exit 0; `npx tsc --noEmit` exit 0; cold build (dev server stopped, `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`) compiled in 5.6 s, 14.7 s wall clock; dev-hook grep and CDN grep (fonts included) both clean; dev server restarted; then one at a time `e2e-import3d` exit 0 (1440 and 390, 169 s), `e2e-studio` exit 0 (182 s), `e2e-newplan` exit 0 (24 s), `e2e-walk` exit 0 (70 s; it uses this button at 390 mid-walk).
+
+**Not covered:** a real phone. A model behind the Orbit | Walk toggle itself, or behind Exit while walking, is still covered at any width, as before G.1.

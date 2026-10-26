@@ -11,18 +11,21 @@
  *     downloads <plan name>.atrium.json. Save is off when the file would be over what Open accepts.
  *   - Open: with unsaved changes it first asks; then the file picker; the result (opened, or why not) is
  *     said in the dialog. Opening is one undo step, so Undo takes the previous plan back.
+ *   - New plan (step N.1): the way back from an autosaved plan. One dialog offers "Start from the sample plan"
+ *     and "Empty plan"; with unsaved changes it says so and offers "Save first…". It is ONE undo step
+ *     (projectStore.newPlan), and says so.
  * Files are read and written in this browser and never uploaded. Mounted by src/app/studio/page.tsx.
  */
 import { useEffect, useRef, useState } from "react";
 import { create } from "zustand";
 import { formatBytes, MAX_PROJECT_BYTES } from "@/lib/persist/projectFile";
-import { isDirty, openProject, projectSizes, saveProject } from "@/store/projectStore";
+import { isDirty, newPlan, openProject, projectSizes, saveProject } from "@/store/projectStore";
 import { usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
 import { useToolStore } from "@/store/toolStore";
 import { useViewStore } from "@/store/viewStore";
 
-type Mode = "save" | "confirm" | "busy" | "result";
+type Mode = "save" | "confirm" | "new" | "busy" | "result";
 const useDialog = create<{ mode: Mode | null; message: string; ok: boolean }>(() => ({ mode: null, message: "", ok: true }));
 const close = () => useDialog.setState({ mode: null });
 
@@ -30,6 +33,15 @@ let picker: HTMLInputElement | null = null; // the hidden file input, set by the
 const choose = () => picker?.click();
 
 export const startSave = () => useDialog.setState({ mode: "save" });
+/** New plan: always asks which to start from; the text warns when there is unsaved work. */
+export const startNew = () => useDialog.setState({ mode: "new" });
+
+/** A different plan is in: leave a walk or a half-made tool, drop any selection of the old one. */
+function leavePlan() {
+  useViewStore.getState().exitWalk();
+  useToolStore.getState().setTool("select");
+  useSelectionStore.getState().select(null);
+}
 /** Open: ask first when the plan has changes that were never saved to a file, else go straight to the picker. */
 export function startOpen() {
   if (isDirty()) useDialog.setState({ mode: "confirm" });
@@ -91,10 +103,7 @@ export function ProjectDialog() {
     useDialog.setState({ mode: "busy", ok: true, message: `Opening ${file.name}…` });
     const out = await openProject(file);
     if (out.ok) {
-      // A new plan: leave a walk or a half-made tool, drop any selection of the old one.
-      useViewStore.getState().exitWalk();
-      useToolStore.getState().setTool("select");
-      useSelectionStore.getState().select(null);
+      leavePlan();
       useDialog.setState({ mode: "result", ok: true, message: `Opened ${file.name}. Undo goes back to the previous plan.` });
     } else useDialog.setState({ mode: "result", ok: false, message: out.error });
   };
@@ -145,6 +154,43 @@ export function ProjectDialog() {
                 <button type="button" data-testid="project-save" disabled={size === null || tooBig || saving} onClick={() => void save()} className={PRIMARY}>
                   Save
                 </button>
+              </div>
+            </>
+          )}
+          {mode === "new" && (
+            <>
+              <h2 id="project-h" className="font-display text-lg">
+                New plan
+              </h2>
+              <p className="text-sm" data-testid="new-plan-text" data-dirty={isDirty()}>
+                {isDirty()
+                  ? "The plan you have open has changes that aren't saved to a project file. A new plan replaces it. You can undo this afterwards."
+                  : "Choose what to start from. You can undo this afterwards."}
+              </p>
+              <div className="mt-1 flex flex-wrap justify-end gap-2">
+                <button type="button" data-testid="project-cancel" onClick={close} className={BTN}>
+                  Cancel
+                </button>
+                {isDirty() && (
+                  <button type="button" data-testid="project-save-first" onClick={startSave} className={BTN}>
+                    Save first…
+                  </button>
+                )}
+                {(["empty", "sample"] as const).map((kind) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    data-testid={`new-plan-${kind}`}
+                    onClick={() => {
+                      newPlan(kind);
+                      leavePlan();
+                      close();
+                    }}
+                    className={kind === "sample" ? PRIMARY : BTN}
+                  >
+                    {kind === "sample" ? "Start from the sample plan" : "Empty plan"}
+                  </button>
+                ))}
               </div>
             </>
           )}

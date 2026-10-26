@@ -4,7 +4,8 @@
  * src/components/studio/Scene3D.tsx — the 3D canvas of the editor: lights, grid,
  * FitCamera, orbit controls and PlanModel (a derived view of the plan). Framed
  * once from the plan's bounds when it mounts. Clicking a wall selects it (see
- * PlanModel); clicking past everything clears the selection. Mounted by
+ * PlanModel); clicking past everything clears the selection. An empty plan (step N.1) is
+ * framed on a 10 x 10 m patch of ground instead of NaN bounds. Mounted by
  * src/app/studio/page.tsx.
  *
  * Walking (src/store/viewStore.ts): the canvas sits in a focusable host div
@@ -57,6 +58,9 @@ interface Bounds {
 }
 
 function planBounds(walls: { a: { x: number; y: number }; b: { x: number; y: number }; height: number }[]): Bounds {
+  // No walls (an empty plan, step N.1): Math.min() of nothing is Infinity and the centre is NaN, which froze the tab.
+  // Frame a 10 x 10 m patch of ground, the same box the 2D plan falls back to (PlanCanvas outlinesOf).
+  if (walls.length === 0) return { x0: 0, x1: 10, z0: 0, z1: 10, height: 2.7, cx: 5, cz: 5, size: 10 };
   const xs = walls.flatMap((w) => [w.a.x, w.b.x]);
   const zs = walls.flatMap((w) => [w.a.y, w.b.y]);
   const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];

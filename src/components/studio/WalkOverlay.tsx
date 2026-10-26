@@ -4,7 +4,8 @@
  * WalkOverlay.tsx — the 3D pane's own controls, top-left of the pane (not the
  * top bar, so they fit at 390 px): the Orbit | Walk toggle, the "Walk through
  * walls" toggle (viewStore.ghost, step G.1; disabled outside walk, key G, with a
- * status line while on), and while walking a one-line hint, an Exit button and,
+ * status line while on; under the sm breakpoint it is hidden outside walk, so a
+ * dead button never covers the model on a phone), and while walking a one-line hint, an Exit button and,
  * on touch screens, a joystick bottom-left (move and strafe) while a drag
  * anywhere else on the canvas looks. The top row wraps on a phone, so nothing
  * there reaches the joystick at the bottom. Also shows
@@ -121,7 +122,8 @@ export function WalkOverlay({ host }: { host: RefObject<HTMLDivElement | null> }
               useViewStore.getState().setGhost(!ghost);
               host.current?.focus({ preventScroll: true }); // W A S D keep working
             }}
-            className={`min-h-11 rounded border border-stone px-3 shadow-sm disabled:cursor-not-allowed disabled:bg-vellum disabled:opacity-60 ${ghost ? "bg-cyanotype text-vellum" : "bg-vellum hover:bg-limestone"}`}
+            // Under sm it shows only while walking: disabled, it swallowed taps on the model behind it at 390.
+            className={`min-h-11 rounded border border-stone px-3 shadow-sm disabled:cursor-not-allowed disabled:bg-vellum disabled:opacity-60 ${walking ? "" : "max-sm:hidden"} ${ghost ? "bg-cyanotype text-vellum" : "bg-vellum hover:bg-limestone"}`}
           >
             Walk through walls
           </button>

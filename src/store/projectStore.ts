@@ -12,10 +12,14 @@
  *   - `openProject`: read, then write assets to the store by content hash, then replace the plan
  *     as one undo step. The assets are written only after the whole file has checked out, and the
  *     plan only after they are in, so a refusal or a full disk changes nothing.
- * View settings are never touched. Connects to: planStore, src/lib/import/assetCache.ts (the
+ * `newPlan` (step N.1) is the way back from an autosaved plan: it replaces the plan with the sample
+ * or an empty one as one undo step, and counts as the saved baseline (there is nothing to lose in
+ * a fresh plan). View settings are never touched. Connects to: planStore, src/lib/import/assetCache.ts (the
  * store and the model cache), backgroundStore; used by src/components/studio/ProjectDialog.tsx.
  */
 import { create } from "zustand";
+import { emptyPlan } from "@/data/emptyPlan";
+import { samplePlan } from "@/data/samplePlan";
 import { assetStore, useAssetCache } from "@/lib/import/assetCache";
 import type { StoredAsset } from "@/lib/import/assetStore";
 import { buildProject, checkProjectSize, estimateProjectBytes, readProject, referencedAssetIds } from "@/lib/persist/projectFile";
@@ -97,4 +101,14 @@ export async function openProject(file: PickedFile): Promise<OpenResult> {
   usePlanStore.getState().replacePlan(read.plan);
   useProjectStore.setState((s) => ({ saved: usePlanStore.getState().plan, epoch: s.epoch + 1 }));
   return { ok: true };
+}
+
+/**
+ * Start again from the sample plan or an empty plan (step N.1): one undo step through replacePlan,
+ * so Undo brings the previous plan back, and the autosave sees an ordinary plan change. The new plan
+ * is the saved baseline (the dialog has already asked about unsaved work) and both panes remount to fit it.
+ */
+export function newPlan(kind: "sample" | "empty"): void {
+  usePlanStore.getState().replacePlan(kind === "sample" ? structuredClone(samplePlan) : emptyPlan(new Date().toISOString()));
+  useProjectStore.setState((s) => ({ saved: usePlanStore.getState().plan, epoch: s.epoch + 1 }));
 }

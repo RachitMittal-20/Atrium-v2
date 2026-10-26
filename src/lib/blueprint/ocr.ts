@@ -34,11 +34,11 @@
  */
 
 import type { OcrWord, PixelRect, PlanPixels } from "@/types/blueprint";
-import type { PlanLabel } from "./roomLabels";
+import { MIN_LABEL_CONFIDENCE, type PlanLabel } from "./roomLabels";
 import { missingOcrFile, OcrLoadError, ocrOptions } from "./ocrAssets";
 
 /** Below this, a line is treated as noise rather than a room name. */
-const MIN_CONFIDENCE = 55;
+const MIN_CONFIDENCE = MIN_LABEL_CONFIDENCE;
 const WHOLE_IMAGE_TARGET_PX = 3600;
 const CROP_TARGET_PX = 900;
 // Second read of size labels: text is scaled to about this height, single line,

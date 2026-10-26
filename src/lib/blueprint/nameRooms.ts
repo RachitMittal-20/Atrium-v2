@@ -22,6 +22,11 @@
  *   - Names are title-cased: "BEDROOM 1" -> "Bedroom 1", "BATH / KITCHEN" ->
  *     "Bath / Kitchen". Rooms with no label keep deriveRooms' "Room N".
  *
+ * `cleanRoomLabels` (step N.1) is NOT part of nameRooms: image and scanned-page imports run it
+ * first (analyse.ts buildFromAnalysis) because OCR leaves fragments ("Oo)", "Lal", "| Safa")
+ * that this function would join into the name. The PDF text path (pdf/snap.ts) calls nameRooms
+ * directly, on text the PDF itself holds, and is unchanged.
+ *
  * The returned plan's `rooms` holds the derived rooms (their wall loops) with
  * these names, so the plan store's loadPlan, which matches stored rooms by
  * wall loop, keeps them.
@@ -33,7 +38,7 @@
  */
 import { deriveRooms, pointInPolygon, toStoredRoom } from "@/lib/plan/rooms";
 import type { Plan, Vec2 } from "@/types/plan";
-import type { PlanLabel } from "./roomLabels";
+import { MIN_LABEL_CONFIDENCE, type PlanLabel } from "./roomLabels";
 import { parseLength, parseSizeLabel } from "./scale";
 
 /** Label centres closer than this vertically (metres) are on one row: about one
@@ -52,6 +57,34 @@ const SIZE_LIKE = /\d[^\p{L}\d]*[x×][^\p{L}\d]*\d/iu;
 
 /** True for text that is a size or length rather than a name. */
 const notAName = (t: string) => parseSizeLabel(t) !== null || parseLength(t) !== null || SIZE_LIKE.test(t) || !/\p{L}/u.test(t);
+
+/** Names of three letters or fewer that are real (abbreviations on plans too). Longer words need no list. */
+const KNOWN_SHORT = new Set(["wc", "wic", "tv", "br", "ba", "lr", "dr", "kit", "den", "spa", "gym", "bar", "lab", "mud", "bed", "rec", "fam", "off"]);
+
+/**
+ * Drops OCR noise from room-name labels before they are joined (step N.1):
+ *   - a label under MIN_LABEL_CONFIDENCE (the reader's own 55% rule);
+ *   - symbol-only words at either end of a label are removed ("| Safa" -> "Safa"); one between words stays ("Bath / Kitchen");
+ *   - then a label with more symbols and digits than letters, or with 3 letters or fewer that
+ *     contain no known short name (WC, Den, Bed, BR…), is dropped: "O", "We", "Oo)", "Lal".
+ * Four or more letters always pass, so Bath, Hall and Study need no list. Position and confidence
+ * are untouched. Known gap: a 3-letter real name not in KNOWN_SHORT is lost (the room keeps "Room N").
+ */
+export function cleanRoomLabels(labels: PlanLabel[]): PlanLabel[] {
+  const out: PlanLabel[] = [];
+  for (const l of labels) {
+    if (l.confidence < MIN_LABEL_CONFIDENCE) continue;
+    const words = l.text.split(/\s+/).filter(Boolean);
+    while (words.length && !/[\p{L}\d]/u.test(words[0])) words.shift(); // a stray "|" at either end, never the "/" inside "Bath / Kitchen"
+    while (words.length && !/[\p{L}\d]/u.test(words[words.length - 1])) words.pop();
+    const text = words.join(" ");
+    const letters = (text.match(/\p{L}/gu) ?? []).length;
+    if (letters * 2 < text.replace(/\s/g, "").length) continue; // mostly symbols and digits
+    if (letters <= 3 && !words.some((w) => KNOWN_SHORT.has(w.replace(/[^\p{L}]/gu, "").toLowerCase()))) continue;
+    out.push(text === l.text ? l : { ...l, text });
+  }
+  return out;
+}
 
 /** "BATH / KITCHEN" -> "Bath / Kitchen": each word's first letter upper case, the rest lower. */
 export const titleCase = (t: string) =>

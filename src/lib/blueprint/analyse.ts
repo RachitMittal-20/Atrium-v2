@@ -33,7 +33,7 @@ import { BlueprintError, type BuildReport, type OcrWord, type OpeningCandidate, 
 import type { Plan, Vec2 } from "@/types/plan";
 import { deskew } from "./deskew";
 import { detectWalls } from "./hollowWalls";
-import { nameRooms, type NamingReport } from "./nameRooms";
+import { cleanRoomLabels, nameRooms, type NamingReport } from "./nameRooms";
 import { ocrPlan, type PlanOcr } from "./ocr";
 import { detectOpenings } from "./openings";
 import type { PlanLabel } from "./roomLabels";
@@ -195,7 +195,7 @@ export function buildFromAnalysis(
     throw new BlueprintError(`The plan scale must be a positive number of pixels per metre, not ${scale.pxPerM}.`);
   const { width, height } = analysis.pixels;
   const built = buildPlan({ walls: analysis.walls, openings: analysis.openings, unpaired: analysis.unpaired, imageSize: { width, height }, name }, scale, edits);
-  const { plan, report: naming } = nameRooms(built.plan, analysis.labels, built.report.origin, scale.pxPerM);
+  const { plan, report: naming } = nameRooms(built.plan, cleanRoomLabels(analysis.labels), built.report.origin, scale.pxPerM); // OCR fragments are not names (N.1); the PDF path does not come here
   const now = new Date().toISOString();
   return { plan: { ...plan, meta: { ...plan.meta, createdAt: now, updatedAt: now } }, report: built.report, naming };
 }

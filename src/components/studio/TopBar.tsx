@@ -10,6 +10,7 @@
  * and CSV items that said "Coming soon" were removed in step E.1), and a quiet autosave status (src/store/persistence.ts). Split is hidden below 640 px.
  * The Units menu (step U.1) holds the one display setting, a Length and an Area radio
  * group over src/store/unitsStore.ts: real radios, so the arrow keys move within a group.
+ * Import's first item, "New plan…" (step N.1), is the way back from an autosaved plan: sample or empty, one undo step (ProjectDialog.tsx).
  * "Report a problem" (step D.1) opens src/components/feedback/ReportDialog.tsx with the plan's counts and verdict only.
  * Mounted by src/app/studio/page.tsx.
  */
@@ -24,7 +25,7 @@ import { useCanRedo, useCanUndo, usePlanStore } from "@/store/planStore";
 import { useSaveStatus } from "@/store/persistence";
 import { useUnitsStore } from "@/store/unitsStore";
 import { EditableText } from "./EditableText";
-import { startOpen, startSave } from "./ProjectDialog";
+import { startNew, startOpen, startSave } from "./ProjectDialog";
 
 export type View = "3d" | "2d" | "split";
 
@@ -150,6 +151,19 @@ export function TopBar({ view, setView, showCeiling, setShowCeiling }: { view: V
         <Popover label="Import" shortLabel="Import" testId="import-menu" glyph={icon(<path d="M12 15V4M7 9l5-5 5 5M5 20h14" />)}>
           {(close) => (
             <ul>
+              <li>
+                <button
+                  type="button"
+                  data-testid="new-plan"
+                  onClick={() => {
+                    close();
+                    startNew();
+                  }}
+                  className="flex min-h-10 w-full items-center rounded px-2 text-left hover:bg-limestone"
+                >
+                  New plan…
+                </button>
+              </li>
               <li>
                 <Link href="/studio/import" data-testid="import-link" className="flex min-h-10 items-center rounded px-2 hover:bg-limestone">
                   Floor plan image…

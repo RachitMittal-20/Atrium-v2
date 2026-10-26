@@ -23,6 +23,10 @@
 
 import type { RoomMap } from "@/types/blueprint";
 
+/** Below this OCR confidence (percent) a text line is noise, not a room name. ocr.ts drops such lines
+ *  when it reads, and nameRooms.ts's cleanRoomLabels applies the same rule to labels it is handed. */
+export const MIN_LABEL_CONFIDENCE = 55;
+
 export interface PlanLabel {
   /** Text as OCR read it, e.g. "Bathroom 1" — used as the room's name
    *  more or less verbatim (only whitespace is cleaned up). */
