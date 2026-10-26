@@ -149,6 +149,8 @@ const EXPECTED: Record<string, string> = {
   "plan-dims-close.pdf": "good",
   "plan-dims-one-wrong.pdf": "good",
   "plan-dims-disagree.pdf": "good",
+  "plan-door-frame.pdf": "good",
+  "plan-door-return.pdf": "good",
   "plan-doors-rect.pdf": "good",
   "plan-doors.pdf": "good",
   "plan-filled.pdf": "good",
@@ -183,6 +185,7 @@ const EXPECTED: Record<string, string> = {
   "plan-traced-wall.pdf": "good",
   "plan-two-pages.pdf": "good",
   "plan-window-board.pdf": "good",
+  "plan-window-faces.pdf": "good",
   "plan-window-sill.pdf": "good",
 };
 

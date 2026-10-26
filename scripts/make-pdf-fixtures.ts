@@ -66,6 +66,17 @@
  *                      plus a real 0.30 m gap and a 0.10 m gap away from any T
  *   plan-flush-jamb.pdf (step Q.4a, SYNTHETIC) the imperial house with A–C drawn as one wall and a
  *                      window on it whose jamb is flush with partition B–I's east face
+ *   plan-window-faces.pdf (step Q.5, SYNTHETIC) poche walls whose fill stops at both jambs of every
+ *                      window, the two face strokes carried straight across the gap, two inner lines
+ *                      at a third and two thirds of the thickness and a short end line at each jamb;
+ *                      and a sliding door drawn the same way with two track lines and two staggered
+ *                      panels (it must not read as a window)
+ *   plan-door-frame.pdf (step Q.5, SYNTHETIC) every leaf a thin rectangle drawn as THREE paths, set
+ *                      back 75 mm from its arc's centre by a door-frame return, the arc ending at its
+ *                      far corner: left and right swings, hinged at both ends
+ *   plan-door-return.pdf (step Q.5, SYNTHETIC) plan-door-frame with a real 0.8 m return wall (100 mm)
+ *                      10 mm off the front door's hinge jamb, its far corner within the arc's 2% of its
+ *                      end: a wall that must be kept, never taken for the leaf
  *   plan-outlined.pdf  plan-filled with NO text items: room names and the title block
  *                      "converted to outlines" (each string drawn by @napi-rs/canvas in
  *                      Arial and its ink turned into filled rectangles, row runs merged
@@ -270,6 +281,11 @@ class Pen {
     this.ops.push(...(mode === "stroke" ? [setLineWidth(w)] : []), moveTo(pts[0][0], pts[0][1]), ...pts.slice(1).map((p) => lineTo(p[0], p[1])), closePath(), mode === "fill" ? fill() : stroke());
     pts.forEach((p, i) => this.seg(p, pts[(i + 1) % pts.length], mode === "fill" ? 0 : w, mode === "fill"));
   }
+  /** Step Q.5: an open polyline, one path (a leaf drawn in pieces). */
+  polyline(pts: number[][], w: number) {
+    this.ops.push(setLineWidth(w), moveTo(pts[0][0], pts[0][1]), ...pts.slice(1).map((p) => lineTo(p[0], p[1])), stroke());
+    pts.slice(1).forEach((p, i) => this.seg(pts[i], p, w, false));
+  }
   /** Step Q.2: a dash-dot line (5, 2, 0.8, 2 pt), as CAD draws a centre or setting-out line. */
   dashed(p: number[], q: number[], w: number) {
     this.ops.push(pushGraphicsState(), setDashPattern([5, 2, 0.8, 2], 0), setLineWidth(w), moveTo(p[0], p[1]), lineTo(q[0], q[1]), stroke(), popGraphicsState());
@@ -468,6 +484,9 @@ interface Options {
   faceLines?: boolean;
   /** Step Q.4a (plan-flush-jamb): A–B and B–C drawn as one wall, w-AC (FLUSH_WALLS). */
   flushJamb?: boolean;
+  /** Step Q.5 (plan-door-return): a 0.1 m return wall from the north wall's inner face (y 0.1) to y 0.9
+   *  at x 6.49, 10 mm off the front door's hinge jamb (x 6.55), drawn like the other walls. */
+  returnWall?: boolean;
 }
 
 /**
@@ -483,13 +502,18 @@ interface FixtureOpening {
   /** "oddgap" (step M.1d) is a bare gap drawn OUTSIDE 0.45–4 m: never an opening, only reported. */
   /** "sill2" (step Q.2): two glazing lines 28 mm either side of the centre line, a jamb line across
    *  the wall at each end and a sill line 35 mm inside the room's face, as a generated poche plan draws a window. */
-  style: "door" | "double" | "sliding" | "window3" | "window2" | "gap" | "oddgap" | "glass3" | "sill2";
+  /** "faces4" (step Q.5): both face strokes carried across the gap, two inner lines at a third and two
+   *  thirds of the thickness and an end line at each jamb; "tracks" the same faces and end lines with two
+   *  track lines and the sliding style's staggered panels: a sliding door, never a window. */
+  style: "door" | "double" | "sliding" | "window3" | "window2" | "gap" | "oddgap" | "glass3" | "sill2" | "faces4" | "tracks";
   hinge?: "a" | "b";
   side?: 1 | -1;
   /** Step M.1d: how the swing arc is drawn (default a polyline), and the leaf as a thin
    *  closed rectangle 60 mm across instead of one line (plan-doors-rect). */
   arc?: "poly" | "bezier";
-  leaf?: "line" | "rect";
+  /** "frame" (step Q.5): a thin rectangle in THREE paths, set back FRAME_RETURN from the arc's centre
+   *  (a door-frame return, drawn as a line from the centre to it), the arc ending at its far corner. */
+  leaf?: "line" | "rect" | "frame";
   /** Step Q.1 (plan-strike-jamb), as a generated plan draws a swing: the hinge on the FACE on the
    *  leaf's side, the arc (a Bézier) ending exactly at the strike jamb's face corner, where the
    *  wall's face goes on. "open": the leaf drawn open, square to the wall; "closed": the leaf
@@ -511,7 +535,9 @@ const DOOR_FIXTURE: FixtureOpening[] = [
   { id: "gap-bed2", wallId: "w-GH", offset: 2, width: 1, style: "gap" },
   { id: "win-bath", wallId: "w-EL", offset: 1.5, width: 0.6, style: "window3" },
 ];
-const CLASS_OF = { door: "door", double: "double", sliding: "sliding", window3: "window", window2: "window", glass3: "window", sill2: "window", gap: "unclassified", oddgap: "unclassified" } as const;
+const CLASS_OF = { door: "door", double: "double", sliding: "sliding", window3: "window", window2: "window", glass3: "window", sill2: "window", faces4: "window", tracks: "unclassified", gap: "unclassified", oddgap: "unclassified" } as const;
+/** The window styles (kind "window" in the truth). */
+const WINDOW_STYLES: FixtureOpening["style"][] = ["window3", "window2", "glass3", "sill2", "faces4"];
 /** plan-doors-rect (step M.1d): the same house with every leaf drawn as a thin closed
  *  rectangle, Bézier arcs on some doors and polyline arcs on others, and TWO doors on the
  *  north wall (w-BC) hinged at opposite jambs and opening to opposite sides. */
@@ -608,6 +634,25 @@ const FLUSH_FIXTURE: FixtureOpening[] = [
   ...STROKE_FIXTURE.map((op) => (op.wallId === "w-BC" ? { ...op, wallId: "w-AC", offset: op.offset + 4 } : op)),
   { id: "win-flush", wallId: "w-AC", offset: 4.65, width: 1.2, style: "window3" },
 ];
+/** plan-window-faces (step Q.5): plan-centre-lines' openings with every window drawn "faces4" and the
+ *  sliding door "tracks". The sliding door with track lines reads as UNCLASSIFIED (kept as a door,
+ *  flagged): its panels stop it being a window, and the sliding rule needs no full-length lines. */
+const FACES_FIXTURE: FixtureOpening[] = CENTRE_FIXTURE.map((op) => (op.style === "window3" ? { ...op, style: "faces4" as const } : op.style === "sliding" ? { ...op, style: "tracks" as const } : op));
+/** plan-door-frame (step Q.5): four single doors with framed leaves in all four hinge / side combinations
+ *  (two arcs as Béziers, two as polylines), the front door 0.9 m wide, and the sample's windows. */
+const FRAME_FIXTURE: FixtureOpening[] = [
+  { id: "df-front", wallId: "w-BC", offset: 3, width: 0.9, style: "door", hinge: "a", side: 1, arc: "bezier", leaf: "frame" },
+  { id: "df-bed1", wallId: "w-BI", offset: 2.9, width: 0.9, style: "door", hinge: "b", side: 1, arc: "poly", leaf: "frame" },
+  { id: "df-bed2", wallId: "w-IF", offset: 2, width: 0.9, style: "door", hinge: "a", side: -1, arc: "bezier", leaf: "frame" },
+  { id: "df-bath", wallId: "w-KL", offset: 1.5, width: 0.8, style: "door", hinge: "b", side: -1, arc: "poly", leaf: "frame" },
+  { id: "win-bed1", wallId: "w-HA", offset: 2, width: 1.2, style: "window3" },
+  { id: "win-bed2", wallId: "w-GH", offset: 2, width: 1.2, style: "window3" },
+  { id: "win-living-n", wallId: "w-BC", offset: 5, width: 1.2, style: "window3" },
+  { id: "win-living-e", wallId: "w-CM", offset: 2.5, width: 1.2, style: "window3" },
+  { id: "win-bath", wallId: "w-EL", offset: 1.5, width: 0.6, style: "window3" },
+];
+/** A framed leaf's set-back from the arc's centre (m): the door frame's return. */
+const FRAME_RETURN = 0.075;
 /** A rectangle leaf's thickness (m). Inside walls.ts's 0.05–0.6 m pairing range on purpose:
  *  it would pair into a thin 0.9 m "wall" if openings.ts did not keep all four sides out. */
 const LEAF_T = 0.06;
@@ -682,7 +727,15 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
         pen.bezArc(c, r * s, a0, sweep, 0.35);
         return;
       }
-      if (fo?.leaf === "rect") {
+      if (fo?.leaf === "frame") {
+        // Three paths: the near end and the radial side; the far end; the other side. The far corner on
+        // the radial line is where the arc starts; the leaf's thickness lies towards the strike jamb.
+        const k = Math.sign(to - h) * LEAF_T;
+        pen.line(at(h, 0), at(h, sd * FRAME_RETURN), 0.25); // the frame's return
+        pen.polyline([at(h + k, sd * FRAME_RETURN), at(h, sd * FRAME_RETURN), at(h, sd * r)], 0.35);
+        pen.line(at(h, sd * r), at(h + k, sd * r), 0.35);
+        pen.line(at(h + k, sd * r), at(h + k, sd * FRAME_RETURN), 0.35);
+      } else if (fo?.leaf === "rect") {
         // The hinge end's midpoint is the arc's centre and the far end's its tip, as openings.ts needs.
         pen.poly([at(h - LEAF_T / 2, 0), at(h + LEAF_T / 2, 0), at(h + LEAF_T / 2, sd * r), at(h - LEAF_T / 2, sd * r)], "stroke", 0.35);
       } else pen.line(at(h, 0), at(h, sd * r), 0.35);
@@ -706,13 +759,23 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
       from = g1;
       const style = styleOf(op);
       const fo = "style" in op ? op : null;
-      if (o.masks && (style === "window3" || style === "window2" || style === "glass3" || style === "sill2")) pen.mask([at(g0 - 0.006, -t / 2 - 0.015), at(g1 + 0.006, -t / 2 - 0.015), at(g1 + 0.006, t / 2 + 0.015), at(g0 - 0.006, t / 2 + 0.015)]);
+      if (o.masks && WINDOW_STYLES.includes(style)) pen.mask([at(g0 - 0.006, -t / 2 - 0.015), at(g1 + 0.006, -t / 2 - 0.015), at(g1 + 0.006, t / 2 + 0.015), at(g0 - 0.006, t / 2 + 0.015)]);
       if (style === "window3") for (const v of [-t / 2, 0, t / 2]) pen.line(at(g0, v), at(g1, v), 0.35);
       else if (style === "window2") for (const v of [-t / 4, t / 4]) pen.line(at(g0, v), at(g1, v), 0.35);
       else if (style === "sill2") {
         for (const v of [-0.028, 0.028]) pen.line(at(g0, v), at(g1, v), 0.22); // glazing
         pen.line(at(g0, t / 2 + 0.035), at(g1, t / 2 + 0.035), 0.28); // the sill, inside the room (+n is inside on the sample's exterior walls)
         for (const u of [g0, g1]) pen.line(at(u, -t / 2), at(u, t / 2), 0.18); // jambs
+      } else if (style === "faces4" || style === "tracks") {
+        for (const v of [-t / 2, t / 2]) pen.line(at(g0, v), at(g1, v), 0.35); // the faces, carried across
+        for (const u of [g0, g1]) pen.line(at(u, -t / 2), at(u, t / 2), 0.25); // an end line at each jamb
+        if (style === "faces4") for (const v of [-t / 6, t / 6]) pen.line(at(g0, v), at(g1, v), 0.25); // inner lines at a third and two thirds
+        else {
+          for (const v of [-0.04, 0.04]) pen.line(at(g0, v), at(g1, v), 0.25); // two track lines
+          const pw = 0.55 * (g1 - g0); // and the sliding style's two staggered panels
+          pen.poly([at(g0, -0.06), at(g0 + pw, -0.06), at(g0 + pw, -0.02), at(g0, -0.02)], "stroke", 0.35);
+          pen.poly([at(g1 - pw, 0.02), at(g1, 0.02), at(g1, 0.06), at(g1 - pw, 0.06)], "stroke", 0.35);
+        }
       } else if (style === "glass3") for (const v of [-t / 3, 0, t / 3]) pen.line(at(g0, v), at(g1, v), 0.25); // step Q.1: glazing inside a real gap
       else if (style === "sliding") {
         // Two 0.04 m panels, each 55% of the gap, one from each jamb, staggered across the wall.
@@ -823,6 +886,7 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
   }
   if (o.centreLines) pen.line(P(0.1, 4.08), P(3.95, 4.08), 0.18); // a finish line 30 mm off w-HI's face
   if (o.stairs) for (let i = 0; i < 12; i++) pen.line(P(4.3 + 0.22 * i, 6.885), P(4.3 + 0.22 * i, 7.885), 0.25); // treads on w-LF's face
+  if (o.returnWall) pen.poly([P(6.44, 0.1), P(6.54, 0.1), P(6.54, 0.9), P(6.44, 0.9)], o.walls, 0.5);
   if (o.nib) pen.poly([P(7.95, 0.1), P(8.05, 0.1), P(8.05, 1.1), P(7.95, 1.1)], o.walls, 0.5);
   if (o.diagonal) {
     pen.poly([P(1.95, 3.95), P(2.05, 3.95), P(2.05, 6.55), P(1.95, 6.55)], "fill");
@@ -1089,7 +1153,7 @@ async function drawPlan(doc: PDFDocument, font: PDFFont, o: Options): Promise<Om
     planOpenings: (o.doors ?? sourceOpenings).filter((op) => !("style" in op) || op.style !== "oddgap").map((op) => {
       const style = "style" in op ? op.style : op.kind === "window" ? "window3" : "door";
       const fo = "style" in op ? op : null;
-      const kind = style === "window3" || style === "window2" || style === "glass3" || style === "sill2" ? ("window" as const) : ("door" as const);
+      const kind = WINDOW_STYLES.includes(style) ? ("window" as const) : ("door" as const);
       const [s0, s1] = [op.offset - op.width / 2, op.offset + op.width / 2];
       // The leaf's side as a unit vector in the page's frame: the sample wall's (-dy, dx) normal times the side, mapped.
       const w = sourceWalls.find((x) => x.id === op.wallId)!;
@@ -1269,6 +1333,20 @@ export async function writePdfFixtures(): Promise<Truth[]> {
       const atB = { x: ac.a.x + (ac.b.x - ac.a.x) * 0.4, y: ac.a.y + (ac.b.y - ac.a.y) * 0.4 }; // B is 4 of A–C's 10 sample metres
       const split = [{ ...ac, id: "w-AC.1", b: atB }, { ...ac, id: "w-AC.2", a: atB }];
       return { ...plain, expectedScale: "good" as const, ...r, planWalls: [...r.planWalls.filter((w) => w.id !== "w-AC"), ...split] };
+    }),
+  );
+  // Step Q.5, all SYNTHETIC. plan-window-faces: windows with the face strokes carried across (FACES_FIXTURE).
+  truths.push(await make("plan-window-faces.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "fill", dims: "mm", doors: FACES_FIXTURE, decoys: false })) })));
+  // plan-door-frame: framed three-path leaves (FRAME_FIXTURE).
+  truths.push(await make("plan-door-frame.pdf", async (d, f) => ({ ...plain, expectedScale: "good", ...(await drawPlan(d, f, { walls: "stroke", dims: "mm", doors: FRAME_FIXTURE, decoys: false })) })));
+  // plan-door-return: plan-door-frame with a real return wall at the front door's hinge (returnWall). The
+  // truth splits w-BC at it, as the reader does.
+  truths.push(
+    await make("plan-door-return.pdf", async (d, f) => {
+      const r = await drawPlan(d, f, { walls: "stroke", dims: "mm", doors: FRAME_FIXTURE, decoys: false, returnWall: true });
+      const w = (id: string, a: [number, number], b: [number, number], thickness: number) => ({ id, a: { x: a[0], y: a[1] }, b: { x: b[0], y: b[1] }, thickness });
+      const extra = [w("w-BC.1", [4, 0], [6.49, 0], 0.2), w("w-BC.2", [6.49, 0], [10, 0], 0.2), w("w-return", [6.49, 0], [6.49, 0.9], 0.1)];
+      return { ...plain, expectedScale: "good" as const, ...r, planWalls: [...r.planWalls.filter((x) => x.id !== "w-BC"), ...extra] };
     }),
   );
   truths.push(await make("plan-no-dims.pdf", async (d, f) => ({ ...plain, expectedScale: "check", ...await drawPlan(d, f, { walls: "fill", dims: null }), dims: [] })));

@@ -14,7 +14,8 @@ Tick each active item (`[x]`) as its step finishes.
 - [x] 8.4 Landing polish: preloader, lazy photos, simple mobile tour (step L.2, section 43)
 - [x] 7.1, 7.3, 7.2 Area schedule, PDF takeoff report, GLB and OBJ export (step X.2, section 44)
 - [x] 9.2 and 9.3 Lighthouse audit, performance and accessibility, Safari and Firefox checks (step A.1, section 45; Firefox did not launch in that session, so it is still unchecked)
-- [ ] Reader fixes for doors and windows, proven on a fresh real plan
+- [x] Reader fixes for doors and windows: windows with face strokes, leaves in a door frame (step Q.5, section 46; proven on synthetic fixtures only)
+- [ ] Prove the Q.5 door and window fixes on a fresh real plan (none has been read)
 
 ### Deferred on purpose
 
@@ -1011,6 +1012,12 @@ After the last fix every suite was rerun on the final tree, the whole sweep, one
 - **Fix (in the fixture generator, no product change, no assertion changed):** the marking runs only when there are openings on w-BC. Regenerating left every PDF byte-identical (md5). Two truth entries changed, only in `dims[].spans`:
   - plan-flush-jamb.
   - **plan-gaps**, which had the same latent bug since M.1d. Its only w-BC opening is the out-of-range 4.6 m gap, which `onBC` leaves out, so the committed truth called all 11 of its dimensions opening widths. Nothing ever read that: the e2e's model check skips plan-gaps (its 4.6 m gap leaves the room open), and no Node test reads `spans`. So the correction changes no test's outcome.
+
+### Logged during Q.5 (2026-10-27): `e2e-pdf-import` timed out opening the studio on its first run (before any new fixture was reached)
+
+- **Failure.** First run of the suite after the Q.5 fixes, 1440 fixture loop, the very first file (plan-filled.pdf, an unchanged fixture): its review row passed in full (scale, 11 dimensions, 14 of 14 walls, overlay boxes, studio checks of an earlier step), then the next `buildAndOpen` (`e2e-pdf-import.ts:262`, called from `:821`) failed `page.waitForURL: Timeout 30000ms exceeded … waiting for navigation until "load"` after pressing Open in studio.
+- **Server state.** `npm run dev` started seconds earlier, right after the cold build (`.next` deleted, build exit 0 in 14 s, `.next` deleted again), so Turbopack's dev cache was empty; `/studio/import` and `/studio` probed 200 (HTML only); the dev log shows `GET /studio 200` for the navigation, no error. The first suite on that server; no source edited while it ran. The Q.5 change touches only `src/lib/pdf/openings.ts` (a pure module run by the PDF worker), not the import page or the studio.
+- **Verdict before the rerun:** a cold dev server compiling the studio's client chunks (three.js, react-three-fiber) for the first time, past the 30 s `load` wait. Not a product regression. Rerun on the same server, unchanged.
 
 ### Logged during W.1 (2026-10-21): `e2e-pdf-watchdog` failed on its first run on the new code (a bug in the new test, not a flake)
 
@@ -2077,3 +2084,73 @@ No reading rule, geometry, detection or existing assertion changed. Nothing was 
 
 **Not covered:** a screen reader (VoiceOver, NVDA); a real phone; Firefox; contrast of text over the photographs and the 3D view; Apple's 44 px target size (axe checks 24 px); the first-run hint overlapping the lowest zoom button in a very short 2D pane (CLAUDE.md lists it); Lighthouse on a throttled real device.
 
+
+## 46. Q.5 — windows with face strokes, leaves in a door frame (2026-10-27; not committed)
+
+**No real plan was read.** Nothing under `~/holdout`, `~/holdout2`, `~/holdout3` or `test-plans/` was opened for this step (the e2e still reads the two existing `test-plans/` files for its baseline, as before). Both rules are drawing conventions proven failing-first on new SYNTHETIC fixtures (`scripts/test-pdf-q5.ts`, in `npm test`, `Q5_ONLY=1|2`). CLAUDE.md has the rules ("Windows with face strokes, leaves in a door frame (step Q.5)"). Only `src/lib/pdf/openings.ts` changed in the product.
+
+### 1. Fixtures (`make-pdf-fixtures.ts`; new opening styles `faces4` / `tracks`, leaf `"frame"`, option `returnWall`, all unused by older fixtures)
+
+| Fixture | What it draws |
+| --- | --- |
+| plan-window-faces | Poche walls whose fill stops at both jambs; every window has the two face strokes carried across, inner lines at a third and two thirds of the thickness and an end line at each jamb. The living room's sliding door is drawn the same way with two track lines and two staggered 55% panels. |
+| plan-door-frame | Stroked walls. Four single doors (hinge a / b, both sides, two Bézier and two polyline arcs), each leaf a 60 mm rectangle in THREE paths, set back 75 mm from the arc's centre (the frame's return, drawn as a line), the arc ending at its far corner. The sample's windows. |
+| plan-door-return | plan-door-frame plus a real 0.8 m return wall (100 mm), 10 mm off the front door's hinge jamb: its far corner is 10 mm from the arc's end, inside the 2% (18 mm) tolerance. The truth splits w-BC at it. |
+
+All 47 older PDFs regenerate byte-identical (md5), and all 43 older truth entries are identical; truth.json gained the three entries.
+
+### 2. Failing first (on the code before each fix)
+
+- **Synthetic, section 1:** `classifyOpening` on faces + two inner lines: `'unclassified' !== 'window'`.
+- **plan-window-faces:** all five windows `door/unclassified, not window/window` (four full-gap lines); walls 14 of 14 exact; Good, but with five "doors".
+- **Synthetic, section 2:** the framed three-path leaf not found (`false !== true`).
+- **plan-door-frame:** 0 of 4 arcs used, each "no leaf (a line from its centre to its end)"; every door "not read". Each leaf's two long sides paired into a 0.06 m "wall" (e.g. (6.58, 0)–(6.58, 0.9)) that split its host: 22 walls built, w-BC, w-BI, w-IF, w-KL missing. "Check: 4 free wall ends and 4 openings the PDF draws were left out."
+- **plan-door-return:** the same, with 5 free ends.
+
+### 3. The rules, and what could go wrong
+
+1. **Face strokes are the wall's.** With both faces carried across (lines at ±t/2, each covering 90%), two or three lines between them make a window, but only if every parallel line in the gap runs jamb to jamb (slivers of 5% or less ignored). M.1c's rule (2–3 lines in all) is unchanged and checked first.
+   - The sliding door with tracks becomes **unclassified** (a door, flagged "Opening type not drawn; assumed door"): its panels stop part-way. It is not sliding, because the sliding rule still refuses full-length lines.
+   - Could misread: a sliding or folding door drawn with only full-length lines between carried-across faces reads as a window. Three glazing lines plus a sill line between the faces (four) stay unclassified.
+2. **A leaf in a door frame** (`framedLeaf`, after the line leaf and `rectLeaf`):
+   - a rectangle 20–100 mm thick, its sides in any paths (one segment each, ends within 1 mm);
+   - near end within 120 mm of the arc's centre, 80–100% of r long;
+   - one long side on the radial line through an arc end with the far corner there (2% of r);
+   - and inside the swept quarter.
+
+   The last rule keeps walls. With it switched off for a probe, a return-wall rectangle beside the hinge jamb was "TAKEN AS THE LEAF (4 sides)"; with it on, "no leaf". A rectangle without an arc is still not a door (asserted).
+   - Could misread: an object 20–100 mm thick drawn inside a door's swing with a corner on the arc's end (a shelf) would be taken for the leaf and kept out of the walls. A leaf whose side is drawn in two collinear pieces is not found.
+
+### 4. Results
+
+- **test-pdf-q5:** every assertion passes.
+  - plan-window-faces: 5 windows, the sliding door `door/unclassified`, 14 walls and 10 openings exact, Good.
+  - plan-door-frame: 4 framed doors with hinge jamb and side, 4 of 4 arcs used, 14 walls exact, Good.
+  - plan-door-return: every true wall read from the PDF within 0.5 mm, the return wall included, and nothing else; the front door beside it read exactly; Good with 1 free end.
+- **The return wall is BUILT from the tracing.** Its free end makes M.1b's validator round keep the traced copy (0.12 m, 0.916 m), exactly as plan-free-end's nib is today (frozen in the snapshot). So the e2e treats it as plan-free-end ("rule 8b not applied (the merge ties): 15 of 16 exact, 1 traced"). Fixing that merge rule is not part of this step.
+- **Snapshot:** all 38 frozen fixtures read and build exactly as frozen, with the same two `CHANGED` entries as before. Nothing re-frozen.
+- **plan-chatgpt-flat:** 16 of 16 walls, 10 of 10 openings, unchanged.
+- **plan-chatgpt-poche:** identical (33 walls, 13 of 13 openings, same wrong types).
+- **test-pdf-verdict:** 50 fixtures, 44 Good, 3 Check, 1 Not usable, 2 nothing to judge (the three new ones are Good).
+- **Baseline:** e2e "no number worse than its baseline" for both files, and the numbers are equal, none better:
+  - plan-test.pdf: 16/0/10/0/1/9/0/0/5, good.
+  - plan-test-2.pdf: 33/0/13/0/2/12/0/0/8, check.
+
+### 5. Assertions and test data changed, as stated
+
+- **No existing assertion was changed.**
+- `test-pdf-verdict.ts`: EXPECTED gains the three new fixtures, all Good.
+- `e2e-pdf-import.ts`: `FREE_END_FILE` became `FREE_END_FILES` = plan-free-end + plan-door-return. It is the same check (no PDF-only line; every wall but at most one exact; built and opened), now applied to the new file too. Header comment added.
+- `package.json`: `test-pdf-q5.ts` runs after `test-pdf-q4.ts`, before the snapshot.
+- `truth.json`: three new entries.
+
+### 6. Verification
+
+- `npm test`: exit 0. `npx tsc --noEmit`: exit 0.
+- Cold build: no dev server running (`lsof -iTCP:3000` empty), `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`: exit 0 in 14 s. Dev-hook grep and CDN grep after it: both clean.
+- `.next` deleted again, `npm run dev` started, `/studio/import` and `/studio` 200.
+- `e2e-pdf-import`:
+  - First run: failed on plan-filled's Open in studio (a 30 s `load` timeout on a cold dev server), logged in §23 before the rerun.
+  - Rerun on the same server, nothing edited: exit 0.
+- `e2e-studio`: exit 0, first run.
+- Not run: the other e2e suites. Not covered: any real CAD PDF; Linux CI for the new Node test (it reads only committed fixtures and generates nothing time-dependent).

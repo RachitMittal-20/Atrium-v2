@@ -107,6 +107,9 @@
  * tips"; plan-t-breaks reports only its two real narrow gaps, none at its six T-junctions; plan-flush-jamb
  * places the window flush with a T's face (Good); plan-dims-disagree (not in truth.json) is "check" with
  * "Two readings disagree by 6.2%: …".
+ * Step Q.5 (SYNTHETIC fixtures, through every fixture check above): plan-window-faces' windows (face strokes
+ * carried across) and plan-door-frame's framed leaves are read exactly; plan-door-return goes the
+ * plan-free-end way (its 0.8 m return wall's free end keeps the traced copy; every other wall exact).
  * Step R.3 (the overlay draws the built plan's openings when nothing in the build is traced): at 1440
  * and 390, plan-filled and plan-chatgpt-flat (and any other fixture whose overlay says
  * data-openings-from="plan"): every door and window box in the rendered SVG is along its wall
@@ -180,7 +183,8 @@ const Q2: Record<string, { flagged?: string[]; offModel?: number; rooms?: number
   "plan-title-block.pdf": { detached: { kept: 0, dropped: 1 } },
 };
 /** Step Q.2 (rule 8b): the fixture whose merge ties with the PDF alone, so the merge stands. */
-const FREE_END_FILE = "plan-free-end.pdf";
+// Step Q.5: plan-door-return's 0.8 m return wall has a free end too, so its merge keeps the traced copy the same way.
+const FREE_END_FILES = ["plan-free-end.pdf", "plan-door-return.pdf"];
 const BASELINE = join(process.cwd(), "tests/fixtures/pdf/test-plans-baseline.json");
 /** The test-plans/ numbers compared with the baseline; for each, whether more is better. */
 const BASELINE_KEYS = { wallsExact: true, wallsTraced: false, openingsExact: true, openingsTraced: false, unclassified: false, dimensions: true, flagged: false, flaggedModel: false, rooms: true } as const;
@@ -758,7 +762,7 @@ async function session(browser: Browser, width: number, height: number, touch: b
       }
       // Step Q.2 (rule 8b): plan-free-end's tracing is as good as its PDF reading with the nib's real
       // free end (one problem each), so the merge stands, as the rule says; built and opened as it is.
-      if (file === FREE_END_FILE) {
+      if (FREE_END_FILES.includes(file)) {
         const cl = tid(page, "coverage-line");
         const [walls, exact, traced] = [Number(await cl.getAttribute("data-walls")), Number(await cl.getAttribute("data-exact")), Number(await cl.getAttribute("data-traced"))];
         assert.equal(await tid(page, "coverage-pdf-only").count(), 0, `${file}: a tie keeps the merge (no PDF-only line)`);

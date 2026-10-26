@@ -54,6 +54,19 @@
  * wall walls.ts reads, a = the smaller coordinate) tells snap.ts when to turn the
  * wall round.
  *
+ * Step Q.5, two more conventions (each proven on its own SYNTHETIC fixture, scripts/test-pdf-q5.ts):
+ *   - A window may be drawn with both wall-face lines carried straight across the gap and two or three
+ *     lines between them (the frame and glass), so four or five full-gap lines in all. The face lines
+ *     are the wall's, not the window's, so they don't count towards the 2–3 limit: with both faces
+ *     carried across, two or three lines between them make a window. Only when every parallel line in
+ *     the gap runs jamb to jamb (slivers of 5% or less ignored): a sliding door's panels stop part-way,
+ *     so a sliding door drawn with its track lines is never a window (it stays unclassified, a door).
+ *   - A leaf may hang in a door FRAME (framedLeaf): a thin rectangle whose sides are split across
+ *     several paths, set back from the arc's centre by the frame's return (at most 120 mm), 80–100% of
+ *     the radius long, the arc ending at its far corner, and lying INSIDE the swept quarter. That last
+ *     rule is what keeps a real wall: a door can't swing through a wall, so a return wall it opens
+ *     against lies outside the swing, however near its corner comes to the arc's end.
+ *
  * Connects to: walls.ts (calls findArcs and classifyOpening), src/types/pdf.ts
  * (VectorOpening, VectorWalls.arcs), snap.ts; tested by scripts/test-pdf-openings.ts.
  */
@@ -81,6 +94,10 @@ export const ARC_RULES = {
   minPieces: 3,
   /** A leaf drawn as a thin closed rectangle (step M.1d): how thick it may be, in metres. */
   rectLeaf: [0.02, 0.1] as const,
+  /** A leaf hanging in a door frame (step Q.5): set back from the arc's centre by at most this (m), and
+   *  this share of the radius long. */
+  frame: 0.12,
+  framedLength: [0.8, 1] as const,
 };
 /** Opening widths (m), as the spec gives them; walls.ts merges narrower gaps as solid wall. */
 export const OPENING_WIDTH = [0.45, 4] as const;
@@ -237,6 +254,62 @@ function rectLeaf(segs: Seg[], inChain: Set<number>, fit: Circle, ends: [Vec2, V
   return [];
 }
 
+/**
+ * A leaf hanging in a door FRAME (step Q.5, header): a thin rectangle whose four sides may be drawn in any
+ * paths, its near end set back from the arc's centre (the pivot) by the frame's return, at most
+ * ARC_RULES.frame, 80–100% of the radius long, one long side on the radial line through an arc end with
+ * the far corner there (within `tol`), and the other long side 20–100 mm towards the arc's other end:
+ * inside the swept quarter. A wall can't stand inside a door's swing, so a return wall the door opens
+ * against, however close its corner comes to the arc's end, lies on the far side of that line and is
+ * never taken for the leaf. Sides are matched end to end within 1 mm, as CAD draws them.
+ */
+function framedLeaf(segs: Seg[], inChain: Set<number>, fit: Circle, ends: [Vec2, Vec2], tol: number): number[] {
+  const [tMin, tMax] = ARC_RULES.rectLeaf;
+  const [lMin, lMax] = ARC_RULES.framedLength;
+  const c = fit.c;
+  const near: number[] = [];
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    if (!inChain.has(i) && !s.curve && segLen(s) > 0 && dist(start(s), c) <= fit.r + 2 * tol && dist(end(s), c) <= fit.r + 2 * tol) near.push(i);
+  }
+  for (const [k, e] of ends.entries()) {
+    // u along the radial line through e; v square to it, towards the other end (into the swing).
+    const re = dist(e, c);
+    const o = ends[1 - k];
+    if (re <= 0) continue;
+    const u = { x: (e.x - c.x) / re, y: (e.y - c.y) / re };
+    const ou = (o.x - c.x) * u.x + (o.y - c.y) * u.y;
+    const vx = o.x - c.x - ou * u.x;
+    const vy = o.y - c.y - ou * u.y;
+    const vl = Math.hypot(vx, vy);
+    if (vl <= 1e-9) continue;
+    const v = { x: vx / vl, y: vy / vl };
+    const uv = (p: Vec2) => ({ u: (p.x - c.x) * u.x + (p.y - c.y) * u.y, v: (p.x - c.x) * v.x + (p.y - c.y) * v.y });
+    // Each piece in (u, v), its ends ordered along u (radial sides) or v (ends).
+    const ps = near.map((i) => {
+      const [a, b] = [uv(start(segs[i])), uv(end(segs[i]))];
+      return { i, a, b, lo: a.u <= b.u ? a : b, hi: a.u <= b.u ? b : a };
+    });
+    const radial = ps.filter((p) => Math.abs(p.a.v - p.b.v) <= SAME);
+    const across = ps.filter((p) => Math.abs(p.a.u - p.b.u) <= SAME);
+    const joins = (p: (typeof ps)[number], q: { u: number; v: number }, r: { u: number; v: number }) =>
+      (Math.hypot(p.a.u - q.u, p.a.v - q.v) <= SAME && Math.hypot(p.b.u - r.u, p.b.v - r.v) <= SAME) || (Math.hypot(p.a.u - r.u, p.a.v - r.v) <= SAME && Math.hypot(p.b.u - q.u, p.b.v - q.v) <= SAME);
+    for (const A of radial) {
+      // The side on the radial line, its far corner at the arc's end, its near end within the frame's return.
+      const L = A.hi.u - A.lo.u;
+      if (Math.hypot(A.hi.u - re, A.hi.v) > tol || A.lo.u < -tol || A.lo.u > ARC_RULES.frame + 1e-9 || L < lMin * fit.r - 1e-9 || L > lMax * fit.r + tol) continue;
+      for (const B of radial) {
+        const w = B.lo.v - A.lo.v; // positive: towards the swing
+        if (B === A || w < tMin - 1e-9 || w > tMax + 1e-9 || Math.abs(B.lo.u - A.lo.u) > SAME || Math.abs(B.hi.u - A.hi.u) > SAME) continue;
+        const nearEnd = across.find((p) => joins(p, A.lo, B.lo));
+        const farEnd = across.find((p) => joins(p, A.hi, B.hi));
+        if (nearEnd && farEnd) return [A.i, B.i, nearEnd.i, farEnd.i];
+      }
+    }
+  }
+  return [];
+}
+
 /** Every arc among the segments (header): fitted, its leaf found, and whether it can be a swing. */
 export function findArcs(segs: Seg[]): Arc[] {
   const arcs: Arc[] = [];
@@ -260,6 +333,8 @@ export function findArcs(segs: Seg[]): Arc[] {
     }
     // Or (step M.1d) a leaf drawn as a thin closed rectangle, which is how most CAD draws one.
     if (!leaf.length) leaf = rectLeaf(segs, inChain, fit, ends, tol);
+    // Or (step Q.5) a rectangle in any paths, hanging in a door frame.
+    if (!leaf.length) leaf = framedLeaf(segs, inChain, fit, ends, tol);
     const [rMin, rMax] = ARC_RULES.radius;
     const [sMin, sMax] = ARC_RULES.sweep;
     const why =
@@ -374,6 +449,14 @@ export function classifyOpening(sp: Span, lines: Seg[], arcs: Arc[], used: Set<n
   const covering = inside.filter((l) => l.cover >= 0.9 - 1e-9);
   const glazing = distinct(covering.map((l) => l.c));
   if (glazing >= 2 && glazing <= 3) return { kind: "window", class: "window", arcs: [] };
+  // Step Q.5 (header): both faces carried across and two or three lines between them, every line in the
+  // gap running jamb to jamb (a sliding door's panels stop part-way, so it never passes; slivers of 5% or
+  // less, a frame's stub or an overshoot, are ignored).
+  const onFace = (l: { c: number }) => Math.abs(Math.abs(l.c - sp.c) - sp.t / 2) <= SAME;
+  const faces = distinct(covering.filter(onFace).map((l) => sp.c + Math.sign(l.c - sp.c)));
+  const between = distinct(covering.filter((l) => !onFace(l)).map((l) => l.c));
+  const jambToJamb = inside.every((l) => l.cover >= 0.9 - 1e-9 || l.cover <= 0.05);
+  if (faces === 2 && between >= 2 && between <= 3 && jambToJamb) return { kind: "window", class: "window", arcs: [] };
   // A sliding door: staggered panels, each part of the gap, together jamb to jamb.
   const panels = inside.filter((l) => l.cover >= 0.3 - 1e-9 && l.cover <= 0.8 + 1e-9);
   const reach = 0.02 * w;
