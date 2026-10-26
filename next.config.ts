@@ -27,11 +27,12 @@ const nextConfig: NextConfig = {
   },
   async headers() {
     return [
-      // Landing photos and 3D assets in /public are large and rarely change, so let browsers cache them for a day.
-      ...["/images/:path*", "/models/:path*", "/hdri/:path*"].map((source) => ({ source, headers: [{ key: "Cache-Control", value: DAY }] })),
-      // The OCR worker, cores and language data (about 11 MB, /tesseract/) and pdf.js's image-decoder wasm (/pdfjs/).
-      // The hashed worker chunks under /_next/static already get a year and immutable from Next itself.
-      ...["/tesseract/:path*", "/pdfjs/:path*"].map((source) => ({ source, headers: [{ key: "Cache-Control", value: FOREVER }] })),
+      // 3D assets in /public are large and rarely change, so let browsers cache them for a day. (/samples is the import page's sample plan; /models and /hdri are
+      // reserved for the deferred 8.x steps.)
+      ...["/models/:path*", "/hdri/:path*", "/samples/:path*"].map((source) => ({ source, headers: [{ key: "Cache-Control", value: DAY }] })),
+      // The landing photos (/images, WebP, step A.1), the OCR worker, cores and language data (about 11 MB, /tesseract/) and pdf.js's
+      // image-decoder wasm (/pdfjs/). The hashed worker chunks under /_next/static already get a year and immutable from Next itself.
+      ...["/images/:path*", "/tesseract/:path*", "/pdfjs/:path*"].map((source) => ({ source, headers: [{ key: "Cache-Control", value: FOREVER }] })),
     ];
   },
 };

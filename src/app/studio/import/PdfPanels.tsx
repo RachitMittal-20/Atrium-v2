@@ -62,7 +62,7 @@ export function PagePicker({ count, listed, thumbs, onPick }: { count: number; l
               type="button"
               data-testid={`page-${p.number}`}
               onClick={() => onPick(p.number)}
-              className="flex w-full flex-col items-center gap-2 rounded border border-stone bg-vellum p-2 text-sm text-iron transition-colors hover:border-gilt focus-visible:outline-2 focus-visible:outline-gilt"
+              className="flex w-full flex-col items-center gap-2 rounded border border-stone bg-vellum p-2 text-sm text-iron transition-colors hover:border-gilt focus-visible:outline-2 focus-visible:outline-gilt-ink"
             >
               <span className="flex h-36 w-full items-center justify-center bg-limestone">
                 {thumbs[p.number] ? (

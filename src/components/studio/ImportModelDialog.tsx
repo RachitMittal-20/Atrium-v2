@@ -24,6 +24,7 @@
  * The body scrolls and the buttons stay in a footer, so it works at 390 px.
  * Mounted once by src/app/studio/page.tsx.
  */
+import { restoreFocus } from "@/lib/focusReturn";
 import { lenText, planExtentText } from "@/lib/units/current";
 import { OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
@@ -168,7 +169,7 @@ function ReviewForm({ review, busy, error }: { review: Review; busy: boolean; er
             </p>
           )}
           {guess.ambiguous && (
-            <p className="mt-1 text-gilt" role="note" data-testid="import-ambiguous">
+            <p className="mt-1 text-gilt-ink" role="note" data-testid="import-ambiguous">
               Several sizes are possible. Compare with the {lenText(1.8)} figure.
             </p>
           )}
@@ -202,7 +203,7 @@ function ReviewForm({ review, busy, error }: { review: Review; busy: boolean; er
 
         {model.warnings.length > 0 && (
           <section aria-labelledby="import-warn-h" data-testid="import-warnings">
-            <h3 id="import-warn-h" className="mb-1 font-medium text-gilt">
+            <h3 id="import-warn-h" className="mb-1 font-medium text-gilt-ink">
               Worth knowing
             </h3>
             <ul className="flex list-disc flex-col gap-1 pl-5 text-xs text-smoke">
@@ -259,6 +260,7 @@ export function ImportModelDialog() {
       aria-labelledby="import-h"
       data-testid="import-dialog"
       data-kind={dialog.kind}
+      onClose={restoreFocus}
       onCancel={(e) => {
         e.preventDefault(); // Escape: the store decides (it waits while the model is being stored)
         close();

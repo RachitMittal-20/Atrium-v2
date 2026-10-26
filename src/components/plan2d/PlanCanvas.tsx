@@ -1452,8 +1452,10 @@ export function PlanCanvas() {
         </div>
       )}
 
-      {/* Fit, +, − : a column at the top right, outside the plan's fitted area */}
-      <div data-plan-obstacle="zoom" className="absolute right-2 top-2 flex flex-col gap-1">
+      {/* Fit, +, − : a column at the top right, outside the plan's fitted area. In a pane too short for three buttons
+          (a phone with the details sheet open and a Takeoff bar) the column wraps to a second column on its left, so no
+          button is cut off by the pane's edge (axe target-size, step A.1). */}
+      <div data-plan-obstacle="zoom" className="absolute right-2 top-2 flex max-h-[calc(100%-1rem)] flex-col flex-wrap-reverse gap-1">
         {[
           { id: "fit", label: "Fit plan to view", on: refit, glyph: <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /> },
           { id: "zoom-in", label: "Zoom in", on: () => zoomBy(KEY_ZOOM), glyph: <path d="M12 5v14M5 12h14" /> },

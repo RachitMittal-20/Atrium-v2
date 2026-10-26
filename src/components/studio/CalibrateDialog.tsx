@@ -125,7 +125,7 @@ export function CalibrateDialog({ onApplied }: { onApplied: () => void }) {
           </p>
         )}
         {error && (
-          <p role="alert" data-testid="calibrate-error" className="text-sm text-gilt">
+          <p role="alert" data-testid="calibrate-error" className="text-sm text-gilt-ink">
             {error}
           </p>
         )}

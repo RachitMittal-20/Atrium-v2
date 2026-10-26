@@ -17,7 +17,10 @@ import "./globals.css";
 
 // Display face: Roman inscriptional letterforms, echoing carved stone. Headlines only.
 // adjustFontFallback matches what next/font/google generated, so text doesn't jump when the face loads.
-const marcellus = localFont({ src: "./fonts/marcellus-latin.woff2", variable: "--font-marcellus", weight: "400", display: "swap", adjustFontFallback: "Times New Roman" });
+// preload: false (step A.1): only Figtree is preloaded. It is the face of every route's first paint and of all the interface;
+// Marcellus is headlines, loads when one is drawn (display: swap, with a metric-matched fallback so nothing shifts), and a
+// second preload would compete with the first for the same early bandwidth.
+const marcellus = localFont({ src: "./fonts/marcellus-latin.woff2", variable: "--font-marcellus", weight: "400", display: "swap", preload: false, adjustFontFallback: "Times New Roman" });
 
 // Interface face: clean, humanist sans for body copy and all editor UI. One variable file covers 400 to 600.
 const figtree = localFont({ src: "./fonts/figtree-latin.woff2", variable: "--font-figtree", weight: "400 600", display: "swap", adjustFontFallback: "Arial" });

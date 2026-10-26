@@ -120,7 +120,7 @@ export function WallPanel() {
         <h2 id="wall-h" className="text-sm font-medium">
           Selected wall
         </h2>
-        <button type="button" data-testid="back-to-summary" onClick={() => select(null)} className="min-h-9 rounded px-1 text-sm text-gilt underline hover:bg-limestone">
+        <button type="button" data-testid="back-to-summary" onClick={() => select(null)} className="min-h-9 rounded px-1 text-sm text-gilt-ink underline hover:bg-limestone">
           Back to summary
         </button>
       </div>

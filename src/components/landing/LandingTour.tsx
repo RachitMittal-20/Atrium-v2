@@ -13,7 +13,7 @@
  *      from 640 px: for each next room, its layer opens from a narrow arch in the
  *      centre to full screen, echoing the arched windows in the photos, while
  *      the previous photo slowly pushes in so the move feels like walking forward;
- *      under 640 px (a phone): a plain crossfade. No clip-path, no photo scaling, and the
+ *      under 640 px (a phone), or with prefers-reduced-motion at any width (step A.1): a plain crossfade. No clip-path, no photo scaling, and the
  *      layers carry will-change: opacity (and nothing else), so each fade is a compositor blend of two layers instead of a
  *      main-thread repaint of a full-screen photo (measured: without it, 5 to 11 frames over 50 ms through the tour at
  *      390; with it 0 or 1). A faded-out layer is visibility: hidden, which GSAP's autoAlpha sets.
@@ -52,8 +52,8 @@ const ARCH_OPEN = "inset(0% 0% 0% 0% round 0vw 0vw 0vw 0vw)";
 /** A transparent 1 px GIF (a data: URL, so no request) standing in for a photo that is not yet near. */
 const BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 /** The photographs' real size, set as attributes so the browser knows their shape before they load. */
-const PHOTO_W = 2560;
-const PHOTO_H = 1440;
+const PHOTO_W = 1600;
+const PHOTO_H = 900;
 
 export function LandingTour() {
   const root = useRef<HTMLDivElement>(null);
@@ -90,8 +90,9 @@ export function LandingTour() {
 
       const mm = gsap.matchMedia();
 
-      // From 640 px: the arches, with the photo pushing in.
-      mm.add("(min-width: 640px)", () => {
+      // From 640 px: the arches, with the photo pushing in. Not under prefers-reduced-motion (step A.1): the scroll-linked
+      // zoom and the growing arch are exactly the motion that setting asks to be spared, so that case takes the crossfade.
+      mm.add("(min-width: 640px) and (prefers-reduced-motion: no-preference)", () => {
         // Every layer after the first starts closed; every text after the first hidden.
         gsap.set(layers.slice(1), { clipPath: ARCH_CLOSED });
         gsap.set(texts.slice(1), { autoAlpha: 0, y: 24 });
@@ -111,8 +112,9 @@ export function LandingTour() {
         }
       });
 
-      // Under 640 px: a crossfade. Opacity only; a layer that has been covered is hidden, so two are painted at most.
-      mm.add("(max-width: 639px)", () => {
+      // Under 640 px, or with reduced motion at any width: a crossfade. Opacity only; a layer that has been covered is
+      // hidden, so two are painted at most.
+      mm.add("(max-width: 639px), (prefers-reduced-motion: reduce)", () => {
         gsap.set(layers.slice(1), { autoAlpha: 0 });
         gsap.set(texts.slice(1), { autoAlpha: 0 });
 
@@ -156,7 +158,9 @@ export function LandingTour() {
             height={PHOTO_H}
             className="h-full w-full object-cover sm:will-change-transform"
             loading={i === 0 ? "eager" : "lazy"}
-            fetchPriority={i === 0 ? "high" : "auto"}
+            // The first photo is three screens below the hero (a drawing, not a photograph), so it must not outrank the hero's own
+            // script and font on a slow link (step A.1). Still eager: it is requested at once, just after what the first screen needs.
+            fetchPriority={i === 0 ? "low" : "auto"}
           />
           {/* Warm dusk wash at the bottom so white type stays readable on bright photos */}
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-iron/70 via-iron/10 to-transparent" />
@@ -193,7 +197,7 @@ export function LandingTour() {
           {i === last && (
             <Link
               href="/studio"
-              className="pointer-events-auto mt-8 inline-block rounded-full bg-gilt px-8 py-3.5 text-base font-medium text-vellum transition-colors hover:bg-vellum hover:text-iron"
+              className="pointer-events-auto mt-8 inline-block rounded-full bg-gilt-ink px-8 py-3.5 text-base font-medium text-vellum transition-colors hover:bg-vellum hover:text-iron"
             >
               Upload a blueprint
             </Link>

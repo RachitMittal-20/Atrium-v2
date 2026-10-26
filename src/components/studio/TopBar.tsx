@@ -19,6 +19,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ReportProblem } from "@/components/feedback/ReportDialog";
 import { studioFacts } from "@/lib/feedback/report";
+import { rememberOpener } from "@/lib/focusReturn";
 import { ACCEPT } from "@/lib/import/loadModel";
 import { AREA_LABEL, AREA_UNITS, LENGTH_LABEL, LENGTH_UNITS } from "@/lib/units/format";
 import { useImportStore } from "@/store/importStore";
@@ -76,7 +77,7 @@ function Popover({ label, shortLabel, glyph, testId, children }: { label: string
         {glyph}
         <span className="max-sm:sr-only">{shortLabel}</span>
       </button>
-      {open && <div className="absolute right-0 top-full z-30 mt-2 w-56 rounded border border-stone bg-vellum p-2 text-sm text-iron shadow-lg">{typeof children === "function" ? children(() => setOpen(false)) : children}</div>}
+      {open && <div className="absolute right-0 top-full z-30 mt-2 w-56 rounded border border-stone bg-vellum p-2 text-sm text-iron shadow-lg">{typeof children === "function" ? children(() => (rememberOpener(button.current), setOpen(false))) : children}</div>}
     </div>
   );
 }
@@ -88,7 +89,7 @@ function UnitGroup<T extends string>({ legend, name, values, labels, value, set 
       <legend className="px-1 text-xs text-smoke">{legend}</legend>
       <div className="flex flex-wrap gap-x-1">
         {values.map((u) => (
-          <label key={u} className="flex min-h-10 cursor-pointer items-center gap-1.5 rounded px-2 hover:bg-limestone has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-gilt">
+          <label key={u} className="flex min-h-10 cursor-pointer items-center gap-1.5 rounded px-2 hover:bg-limestone has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-gilt-ink">
             <input type="radio" name={name} data-testid={`${name}-${u}`} checked={value === u} onChange={() => set(u)} className="h-4 w-4 accent-cyanotype" />
             {labels[u]}
           </label>

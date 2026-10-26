@@ -284,7 +284,7 @@ export function ItemPanel() {
         <h2 id="item-h" className="text-sm font-medium">
           Selected model
         </h2>
-        <button type="button" onClick={() => select(null)} className="min-h-9 rounded px-1 text-sm text-gilt underline hover:bg-limestone">
+        <button type="button" onClick={() => select(null)} className="min-h-9 rounded px-1 text-sm text-gilt-ink underline hover:bg-limestone">
           Back to summary
         </button>
       </div>

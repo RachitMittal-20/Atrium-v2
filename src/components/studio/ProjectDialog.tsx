@@ -18,6 +18,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { create } from "zustand";
+import { restoreFocus } from "@/lib/focusReturn";
 import { formatBytes, MAX_PROJECT_BYTES } from "@/lib/persist/projectFile";
 import { isDirty, newPlan, openProject, projectSizes, saveProject } from "@/store/projectStore";
 import { usePlanStore } from "@/store/planStore";
@@ -127,7 +128,10 @@ export function ProjectDialog() {
         aria-labelledby="project-h"
         data-testid="project-dialog"
         data-mode={mode ?? ""}
-        onClose={() => mode !== "busy" && close()}
+        onClose={() => {
+          if (mode !== "busy") close();
+          restoreFocus(); // the menu item that opened this is gone: focus goes back to its menu button
+        }}
         className="m-auto max-h-[90svh] w-[min(28rem,calc(100vw-1rem))] rounded border border-stone bg-vellum p-0 text-iron shadow-xl backdrop:bg-iron/40"
       >
         <div className="flex flex-col gap-3 p-4">
@@ -145,8 +149,8 @@ export function ProjectDialog() {
                 {size === null ? "Working out the size…" : `File size: about ${formatBytes(size)}`}
                 {sizes && include && sizes.count === 0 && sizes.missing === 0 ? ". This plan has no imported models or drawing." : ""}
               </p>
-              {sizes && include && sizes.missing > 0 && <p className="text-sm text-gilt">{sizes.missing} imported file{sizes.missing === 1 ? " isn't" : "s aren't"} in this browser's storage, so {sizes.missing === 1 ? "it" : "they"} can't be included.</p>}
-              {tooBig && <p role="alert" className="text-sm text-gilt">This would be over 200 MB, more than Open accepts. Untick the box to save the plan alone.</p>}
+              {sizes && include && sizes.missing > 0 && <p className="text-sm text-gilt-ink">{sizes.missing} imported file{sizes.missing === 1 ? " isn't" : "s aren't"} in this browser's storage, so {sizes.missing === 1 ? "it" : "they"} can't be included.</p>}
+              {tooBig && <p role="alert" className="text-sm text-gilt-ink">This would be over 200 MB, more than Open accepts. Untick the box to save the plan alone.</p>}
               <div className="mt-1 flex flex-wrap justify-end gap-2">
                 <button type="button" data-testid="project-cancel" onClick={close} className={BTN}>
                   Cancel

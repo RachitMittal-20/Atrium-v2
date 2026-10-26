@@ -42,7 +42,7 @@ const SOURCE_TEXT: Record<PlanScale["source"], string> = {
 };
 
 const btn = "min-h-11 rounded-full px-5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50";
-export const primaryBtn = `${btn} bg-gilt text-vellum hover:bg-iron`;
+export const primaryBtn = `${btn} bg-gilt-ink text-vellum hover:bg-iron`;
 export const secondaryBtn = `${btn} border border-iron/40 text-iron hover:bg-vellum`;
 
 interface Props {

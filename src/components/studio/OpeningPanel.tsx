@@ -104,7 +104,7 @@ export function OpeningPanel() {
         <h2 id="opening-h" className="text-sm font-medium">
           Selected {name}
         </h2>
-        <button type="button" data-testid="opening-back" onClick={() => select(null)} className="min-h-9 rounded px-1 text-sm text-gilt underline hover:bg-limestone">
+        <button type="button" data-testid="opening-back" onClick={() => select(null)} className="min-h-9 rounded px-1 text-sm text-gilt-ink underline hover:bg-limestone">
           Back to summary
         </button>
       </div>
@@ -117,7 +117,7 @@ export function OpeningPanel() {
         <dt className="text-smoke">On wall</dt>
         <dd className="text-right">
           {/* Selecting the wall swaps this panel for the wall's own. */}
-          <button type="button" data-testid="opening-wall" onClick={() => select(wall.id)} className="min-h-9 rounded px-1 text-gilt underline hover:bg-limestone">
+          <button type="button" data-testid="opening-wall" onClick={() => select(wall.id)} className="min-h-9 rounded px-1 text-gilt-ink underline hover:bg-limestone">
             {fmt.len(wallLength(wall))} wall
           </button>
         </dd>

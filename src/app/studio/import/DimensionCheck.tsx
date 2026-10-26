@@ -130,7 +130,7 @@ export function DimensionCheck({ kind, rows, measuredAt, overrides, setOverrides
       </p>
 
       {/* relative: the sr-only header label is absolutely positioned and would otherwise escape the scroller and widen the page */}
-      <div className="relative overflow-x-auto" data-testid={tid.table("scroll")}>
+      <div className="relative overflow-x-auto" role="region" tabIndex={0} aria-label={model ? "Model against printed dimensions" : "Printed dimensions"} data-testid={tid.table("scroll")}>
         <table className={`w-full text-left text-sm ${model ? "min-w-160" : "min-w-136"}`} data-testid={tid.table("table")}>
           <thead className="text-smoke">
             <tr className="border-b border-stone">
@@ -172,7 +172,7 @@ export function DimensionCheck({ kind, rows, measuredAt, overrides, setOverrides
                       {fmt(r.measuredM - r.printedM, true)}
                     </td>
                     <td className="whitespace-nowrap py-2 pr-3">{fixed(r.diffPct, 2, true)}%</td>
-                    <td className={`whitespace-nowrap py-2 pr-3 ${r.status === "flagged" ? "font-medium text-gilt" : r.status === "ok" ? "text-cyanotype" : "text-iron"}`} data-testid={tid.cell("status")}>
+                    <td className={`whitespace-nowrap py-2 pr-3 ${r.status === "flagged" ? "font-medium text-gilt-ink" : r.status === "ok" ? "text-cyanotype" : "text-iron"}`} data-testid={tid.cell("status")}>
                       {statusText(r.status)}
                       {r.approximate && <span className="block text-xs text-smoke">approximate</span>}
                     </td>

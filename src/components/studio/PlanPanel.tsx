@@ -100,7 +100,7 @@ export function PlanPanel({ view2d = true }: { view2d?: boolean }) {
         {/* What the last edit broke, in the validator's own words. */}
         {warnings.length > 0 && (
           <section aria-labelledby="warnings-h" data-testid="plan-warnings">
-            <h2 id="warnings-h" className="mb-1 text-sm font-medium text-gilt">
+            <h2 id="warnings-h" className="mb-1 text-sm font-medium text-gilt-ink">
               Worth a look
             </h2>
             <ul className="flex flex-col gap-1 text-xs text-smoke">

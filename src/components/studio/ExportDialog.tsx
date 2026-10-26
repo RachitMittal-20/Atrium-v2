@@ -15,6 +15,7 @@
  */
 import { useEffect, useRef } from "react";
 import { create } from "zustand";
+import { restoreFocus } from "@/lib/focusReturn";
 import { buildSchedule, exportFileName, scheduleCells } from "@/lib/export/schedule";
 import { toCsv } from "@/lib/takeoff/rows";
 import { AREA_LABEL, LENGTH_LABEL } from "@/lib/units/format";
@@ -96,7 +97,10 @@ export function ExportDialog() {
       data-testid="export-dialog"
       data-kind={kind ?? ""}
       data-busy={busy}
-      onClose={close}
+      onClose={() => {
+        close();
+        restoreFocus(); // the menu item that opened this is gone: focus goes back to its menu button
+      }}
       className="m-auto max-h-[90svh] w-[min(28rem,calc(100vw-1rem))] rounded border border-stone bg-vellum p-0 text-iron shadow-xl backdrop:bg-iron/40"
     >
       {kind && (
@@ -121,7 +125,7 @@ export function ExportDialog() {
           )}
           <p className="text-xs text-smoke">The file is made in this browser and stays on your device.</p>
           {error && (
-            <p role="alert" className="text-sm text-gilt" data-testid="export-error">
+            <p role="alert" className="text-sm text-gilt-ink" data-testid="export-error">
               {error}
             </p>
           )}

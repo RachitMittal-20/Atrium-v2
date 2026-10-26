@@ -121,7 +121,12 @@ export default function Studio() {
     return () => window.removeEventListener("keydown", onKey);
   }, [shown]);
 
-  if (!ready) return <div className="h-svh bg-limestone" aria-busy="true" />; // after every hook
+  // After every hook. The page's one h1 is in both branches, so it is there while the saved plan loads too (step A.1).
+  if (!ready) return (
+    <div className="h-svh bg-limestone" aria-busy="true">
+      <h1 className="sr-only">Atrium studio</h1>
+    </div>
+  );
 
   return (
     <div className="flex h-svh flex-col overflow-hidden bg-limestone">
@@ -129,6 +134,7 @@ export default function Studio() {
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <ToolRail view3d={shown !== "2d"} view2d={shown !== "3d"} />
         <main className="relative flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
+          <h1 className="sr-only">Atrium studio</h1>
           {shown !== "2d" && (
             <div className="relative min-h-0 min-w-0 flex-1" data-testid="pane-3d" key={`3d-${epoch}`}>
               <Scene3D showCeiling={ceiling} />

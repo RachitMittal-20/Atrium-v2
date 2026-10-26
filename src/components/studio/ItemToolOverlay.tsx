@@ -85,7 +85,7 @@ export function ItemToolOverlay() {
           style={{ left: pointer.x + (flipX ? -OFFSET : OFFSET), top: pointer.y + (flipY ? -OFFSET : OFFSET), transform: `translate(${flipX ? "-100%" : "0"}, ${flipY ? "-100%" : "0"})` }}
         >
           {lines.map((l) => (
-            <p key={l.id} data-testid={`item-label-${l.id}`} className={l.id === "distance" ? "text-sm font-medium" : l.tone === "note" ? "text-gilt" : l.tone === "soft" ? "text-smoke" : ""}>
+            <p key={l.id} data-testid={`item-label-${l.id}`} className={l.id === "distance" ? "text-sm font-medium" : l.tone === "note" ? "text-gilt-ink" : l.tone === "soft" ? "text-smoke" : ""}>
               {l.text}
             </p>
           ))}

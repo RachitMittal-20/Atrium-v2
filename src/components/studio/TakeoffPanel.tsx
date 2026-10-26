@@ -90,7 +90,7 @@ function ValueField({ value, parse, onCommit, label, testId, placeholder, width 
         className={`${width} min-h-8 rounded border border-stone bg-limestone/60 px-1.5 text-xs`}
       />
       {error && (
-        <span role="alert" className="text-[11px] text-gilt">
+        <span role="alert" className="text-[11px] text-gilt-ink">
           {error}
         </span>
       )}
@@ -203,7 +203,7 @@ function RowsTable({ list, group, units, selectedId, select, rescaled }: { list:
                   <td className="px-2 py-1.5">
                     {r.stale ? (
                       <div className="flex w-40 flex-col gap-1" data-testid="takeoff-stale">
-                        <span className="text-gilt">Walls have moved since this was measured</span>
+                        <span className="text-gilt-ink">Walls have moved since this was measured</span>
                         <button type="button" data-testid="takeoff-mark-current" onClick={() => store.markTakeoffCurrent(t.id)} className="min-h-8 w-fit rounded border border-stone px-2 hover:bg-limestone">
                           Mark as current
                         </button>

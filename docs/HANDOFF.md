@@ -13,7 +13,7 @@ Tick each active item (`[x]`) as its step finishes.
 - [x] 5.2 and 5.3 Bird's-eye view and Recenter
 - [x] 8.4 Landing polish: preloader, lazy photos, simple mobile tour (step L.2, section 43)
 - [x] 7.1, 7.3, 7.2 Area schedule, PDF takeoff report, GLB and OBJ export (step X.2, section 44)
-- [ ] 9.2 and 9.3 Lighthouse audit, performance and accessibility, Safari and Firefox checks
+- [x] 9.2 and 9.3 Lighthouse audit, performance and accessibility, Safari and Firefox checks (step A.1, section 45; Firefox did not launch in that session, so it is still unchecked)
 - [ ] Reader fixes for doors and windows, proven on a fresh real plan
 
 ### Deferred on purpose
@@ -2056,3 +2056,24 @@ No reading rule, geometry, detection or existing assertion changed. Nothing was 
 - opening the GLB or OBJ in Blender, SketchUp or another viewer: only three's own loader and a line count were used;
 - printing the PDF on paper;
 - the report's verdict judges the plan alone, because the import's coverage is not in the plan.
+
+## 45. A.1 — accessibility and performance audit (roadmap 9.2 and 9.3; 2026-10-26; not committed)
+
+**Measured first** (numbers in `docs/PERFORMANCE.md`; headless Chromium on one loaded Mac, not a phone). Lighthouse (`scripts/lighthouse-report.ts`, plain `node`, three runs, production build): accessibility 95 or 96 on `/`, `/limits` and `/studio/import` before (one failing audit, color-contrast), 100 on every route and profile after. axe-core (`scripts/e2e-a11y.ts`): 49 serious and 15 moderate violations before (color-contrast 46, scrollable-region-focusable 2, target-size 1, page-has-heading-one 15), none after.
+
+**Failing first.** `e2e-a11y.ts` and `test-a11y-static.ts` were written before any fix. On the committed tree the axe part reported the 64 violations above; its keyboard walk then failed in two steps, both fixed: the first was a bug in the test (it read a radio's `value`, which is "on" for every radio), the second was real ("Escape did not return focus to import-menu (it is on the page)": the menu item that opened the dialog was gone). `test-a11y-static.ts` first reported four hits, two real (the studio had no h1; `LandingTour` never mentioned reduced motion) and two that were the test's own false positives (a tag named in a comment, a hidden file input), fixed in the test, not in the code.
+
+**Fixes** (details in CLAUDE.md "Accessibility and performance audit"): `smoke` darkened (4.3 to 5.4:1) and a `gilt-ink` token for the accent as text and as the fill under vellum text; a focus ring that holds 3:1 on limestone and vellum (dark gilt with a vellum halo); focus returned to the menu button after a dialog opened from a menu closes (`src/lib/focusReturn.ts`); an sr-only h1 on `/studio`; the import review's scrolling tables made keyboard-scrollable regions; the zoom column wraps in a short pane; the landing tour takes the crossfade under prefers-reduced-motion at any width.
+
+**Performance changes:** the five photos are 1600 px WebP (4.7 MB to 1.0 MB; originals moved to `assets/landing-originals/`, `scripts/make-landing-images.ts` makes the served files, the Open Graph JPEG is byte-identical); only Figtree is preloaded; `/images` is immutable for a year and `/samples` a day; the first photo is `fetchPriority="low"`. Not changed, and why: the WebGL probe and canvas (the cost is SwiftShader's), the Lenis and gsap provider on every route (about 55 kB gzip; moving it would change scrolling on the other routes), AVIF (needs a `<picture>` per photo; would halve the photos again).
+
+**Changed assertions:** none. No existing test was edited. The tour under reduced motion changed (crossfade at every width), and `e2e-landing` still passed.
+
+**Added:** `scripts/e2e-a11y.ts`, `scripts/test-a11y-static.ts` (in `npm test`), `scripts/lighthouse-report.ts`, `scripts/e2e-browsers.ts`, `scripts/make-landing-images.ts`, `src/lib/focusReturn.ts`, `docs/PERFORMANCE.md`; devDependencies `lighthouse` and `axe-core`.
+
+**Safari and Firefox:** WebKit 26.6 passed `e2e-browsers.ts` twice (landing in 3D mode, `/limits`, the sample plan to the studio, a vector PDF, no console errors). Firefox 155 does not start in this environment ("Could not find profile folder", also with an existing profile directory); a retry with the sandbox lifted was refused, so Firefox was not run. Not added to CI: Firefox is unverified, and WebKit has two passes.
+
+**Verified (macOS, Node 24.14.0), on the final tree:** `npm test` exit 0 (with `test-a11y-static`); `npx tsc --noEmit` exit 0; cold build (dev server stopped, `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`) exit 0 in 28 s; dev-hook grep and CDN grep both clean; first-load JS unchanged (`/` 195, `/limits` 187, `/studio` 571, `/studio/import` 386 kB gzip); with the dev server restarted, `e2e-a11y`, `e2e-landing`, `e2e-studio`, `e2e-feedback`, `e2e-newplan` and `e2e-views` each exit 0 on their first run. No one-off failure to log. Lighthouse was run against a separate build of the committed tree, in a git worktree that has been removed.
+
+**Not covered:** a screen reader (VoiceOver, NVDA); a real phone; Firefox; contrast of text over the photographs and the 3D view; Apple's 44 px target size (axe checks 24 px); the first-run hint overlapping the lowest zoom button in a very short 2D pane (CLAUDE.md lists it); Lighthouse on a throttled real device.
+

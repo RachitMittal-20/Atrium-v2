@@ -19,8 +19,9 @@
   --color-vellum: #f4efe5;    /* raised panels, paper */
   --color-stone: #cfc5b3;     /* hairlines, dividers */
   --color-iron: #1c1916;      /* primary text and linework */
-  --color-smoke: #6f675c;     /* secondary text */
-  --color-gilt: #a9823f;      /* the one accent: calls to action, focus */
+  --color-smoke: #5f584d;     /* secondary text: 5.4:1 on limestone, 6.1:1 on vellum (step A.1; was #6f675c, 4.3:1) */
+  --color-gilt: #a9823f;      /* the one accent, for fills, lines and rings: never for text (2.7:1 on limestone) */
+  --color-gilt-ink: #7a5a1c;  /* the accent as TEXT, and as the fill under vellum text: 4.9:1 on limestone, 5.5:1 on vellum (step A.1) */
   --color-cyanotype: #1f3a5c; /* blueprint ink, editor chrome */
   --color-dusk: #f0b25e;      /* sunset light, used only inside imagery overlays */
   /* Detection overlay on the import screen only (studio/import/PlanViewer.tsx) */
@@ -52,10 +53,12 @@ body {
   line-height: 1.6;
 }
 
-/* Visible keyboard focus everywhere, in the accent colour. */
+/* Visible keyboard focus everywhere (step A.1). A dark gilt ring with a light halo under it, so it stands out from
+   the limestone and vellum panels (ring 3:1 or better) and from the cyanotype chrome (the halo) alike. */
 :focus-visible {
-  outline: 2px solid var(--color-gilt);
-  outline-offset: 3px;
+  outline: 2px solid var(--color-gilt-ink);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--color-vellum) 90%, transparent);
 }
 
 /* Respect the OS reduced-motion setting from day one. */

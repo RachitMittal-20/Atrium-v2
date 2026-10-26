@@ -63,9 +63,10 @@ Then in a browser, with DevTools → Network open and "Disable cache" off:
 | `/_next/static/*` (hashed chunks, the PDF and OCR worker chunks, fonts) | `public, max-age=31536000, immutable` | Set by Next itself; the file name changes with its content. |
 | `/tesseract/*` (about 11 MB: worker, two cores, English data, licences) | `public, max-age=31536000, immutable` | Big and never changes. |
 | `/pdfjs/*` (pdf.js image-decoder wasm) | `public, max-age=31536000, immutable` | Same. |
-| `/images/*`, `/models/*`, `/hdri/*` | `public, max-age=86400` | Landing photos; a day. |
+| `/images/*` (the five landing photos, WebP, about 1 MB in all) | `public, max-age=31536000, immutable` | Since step A.1. They are made by `scripts/make-landing-images.ts` from the originals in `assets/landing-originals/` (not served). |
+| `/samples/*`, `/models/*`, `/hdri/*` | `public, max-age=86400` | The import page's sample plan; `/models` and `/hdri` are reserved. A day. |
 
-**These files keep their names.** If you ever replace one (a new tesseract.js, a new pdf.js), give the new file a NEW NAME (and change `src/lib/blueprint/ocrAssets.ts` or `src/lib/pdf/open.ts` to match); otherwise returning visitors keep the old bytes for a year. Content types come from the file extension. Checked here on `npm run start` (not on Vercel; the curl checks above are how to confirm Vercel serves the same): `.wasm` is `application/wasm`, `.js` is `application/javascript`, `.gz` is `application/gzip` with no `Content-Encoding`, which matters because tesseract.js gunzips the data itself.
+**These files keep their names.** If you ever replace one (a new tesseract.js, a new pdf.js, a new landing photo), give the new file a NEW NAME (and change `src/lib/blueprint/ocrAssets.ts` or `src/lib/pdf/open.ts` to match); otherwise returning visitors keep the old bytes for a year. Content types come from the file extension. Checked here on `npm run start` (not on Vercel; the curl checks above are how to confirm Vercel serves the same): `.wasm` is `application/wasm`, `.js` is `application/javascript`, `.gz` is `application/gzip` with no `Content-Encoding`, which matters because tesseract.js gunzips the data itself.
 
 ## Bundle sizes (production build on this Mac, 2026-10-21)
 
@@ -82,7 +83,7 @@ Loaded later, only when used: the PDF reader (pdf.js, a single 1.6 MB raw / 489 
 
 ## Limits of the free tier to know about
 
-Hobby projects are for non-commercial use and have monthly bandwidth and build-minute limits; the biggest transfers are the landing photos (4.5 MB) and, per OCR user, 11 MB of `/tesseract/` once (cached for a year after). Read Vercel's current limits page before sharing widely. There is no function usage because nothing runs on the server.
+Hobby projects are for non-commercial use and have monthly bandwidth and build-minute limits; the biggest transfers are the landing photos (about 1 MB in all since step A.1; they were 4.5 MB as JPEG) and, per OCR user, 11 MB of `/tesseract/` once (cached for a year after). Read Vercel's current limits page before sharing widely. There is no function usage because nothing runs on the server.
 
 ## Rolling back
 
