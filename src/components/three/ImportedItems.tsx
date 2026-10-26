@@ -335,7 +335,7 @@ export function ImportedItems() {
   // ---- Show in view: frame the requested item's world box (viewStore.frame), gliding there unless motion is reduced
   const glide = useRef<{ from: [THREE.Vector3, THREE.Vector3]; to: [THREE.Vector3, THREE.Vector3]; t0: number } | null>(null);
   // The box last framed, kept framed when the pane changes size (a phone's details sheet closing, a rotated phone)
-  // until the user orbits, pans or zooms, as Scene3D's FitCamera does for the plan.
+  // until the user orbits, pans or zooms, as ViewCamera does for the plan.
   const framed = useRef<THREE.Box3 | null>(null);
   const ownStart = useRef(false);
   const size = useThree((s) => s.size);
@@ -376,7 +376,7 @@ export function ImportedItems() {
           glide.current = { from: [camera.position.clone(), controls.target.clone()], to: placeFor(box, camera.aspect), t0: state.clock.elapsedTime };
           framed.current = box.clone();
           ownStart.current = true;
-          controls.dispatchEvent({ type: "start" }); // the camera is placed now: Scene3D's FitCamera must not refit the plan over it
+          controls.dispatchEvent({ type: "start" }); // the camera is placed now: ViewCamera must not refit the plan over it
           ownStart.current = false;
         }
       } // else: the model is still loading; try again next frame

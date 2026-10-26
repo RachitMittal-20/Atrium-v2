@@ -279,7 +279,7 @@ export function PlanCanvas() {
   /** The live drag read-out: the snap marker, the length and any limit message. */
   const [hud, setHud] = useState<{ at: Vec2; snap: Snap | null; text: string; message?: string } | null>(null);
   const root = useRef<HTMLDivElement>(null);
-  const userMoved = useRef(false); // once true, resizing no longer refits (same rule as the 3D FitCamera)
+  const userMoved = useRef(false); // once true, resizing no longer refits (same rule as the 3D ViewCamera)
   const stripH = useRef(0); // its height at the last commit
   const stripShifted = useRef(false); // the next resize is the strip's: the plan was moved with it, so do not refit
   const pointers = useRef(new Map<number, Vec2>()); // active touches / mouse, in canvas pixels

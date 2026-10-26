@@ -29,6 +29,10 @@
  *   arrow keys. Keys are released on blur and when the tab is hidden.
  * - Look: drag on the canvas (pointer capture, no pointer lock, so it works in
  *   Split). One pointer looks; another (the joystick's) can move at the same time.
+ * - Recenter (step V.1: the button or R, which bump viewStore.walkHome): back to the
+ *   start pose (collision.startPose of the plan as it is now), level and still, at
+ *   once rather than gliding, since a glide would pass through walls. The ghost
+ *   setting is left as it was.
  * - Dev only: window.__walkDebug for test setup and read-outs.
  *
  * Connects to: src/store/{viewStore,planStore,selectionStore}.ts, src/lib/keyboard.ts.
@@ -37,7 +41,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useRef, type RefObject } from "react";
 import * as THREE from "three";
 import { isTypingTarget } from "@/lib/keyboard";
-import { clearance, eyeHeight, getCollision, moveWithCollision, rescuePoint, type Collision } from "@/lib/walk/collision";
+import { clearance, eyeHeight, getCollision, moveWithCollision, rescuePoint, startPose, type Collision } from "@/lib/walk/collision";
 import { planToWorld, walkForward, walkStep } from "@/lib/walk/input";
 import { usePlanStore } from "@/store/planStore";
 import { useSelectionStore } from "@/store/selectionStore";
@@ -96,6 +100,22 @@ export function WalkControls({ host }: { host: RefObject<HTMLDivElement | null> 
     }
     return true;
   };
+  /** Recenter while walking (step V.1): back to the start pose of the plan as it is now, level, standing still, at once.
+   *  The walk ends with the no-room notice when the plan has no closed room any more. */
+  const home = () => {
+    const plan = usePlanStore.getState().plan;
+    const start = startPose(plan, getCollision(plan));
+    if (!start) {
+      useViewStore.getState().exitWalk();
+      useViewStore.getState().setNotice(NO_ROOM_NOTICE);
+      return;
+    }
+    const w = pose.current;
+    Object.assign(w, { x: start.position.x, y: start.position.y, heading: start.heading, pitch: 0, velocity: { x: 0, y: 0 }, eye: eyeHeight(plan, start.position) });
+    useViewStore.setState({ eyeHeight: w.eye });
+    placeCamera();
+    publish();
+  };
   /** The collision was rebuilt: new eye height, and (unless walls are ignored) step out from under a wall that moved onto us. */
   const settle = (plan: Plan, c: Collision): boolean => {
     const w = pose.current;
@@ -112,6 +132,10 @@ export function WalkControls({ host }: { host: RefObject<HTMLDivElement | null> 
       useViewStore.subscribe((s, prev) => {
         if (s.mode === "walk" && prev.mode === "walk" && prev.ghost && !s.ghost) {
           rescue(usePlanStore.getState().plan, getCollision(usePlanStore.getState().plan)); // walls count again: off any wall we are in
+          return;
+        }
+        if (s.mode === "walk" && prev.mode === "walk" && s.walkHome !== prev.walkHome) {
+          home(); // Recenter while walking (step V.1)
           return;
         }
         if (s.mode === prev.mode) return;

@@ -120,7 +120,7 @@ export const SCENE_HOOKS = ["__scene3d", "__studio3d", "__walkDebug", "__importD
 export async function waitForScene3d(page: Page, where: string, ms = HOOK_TIMEOUT_MS): Promise<void> {
   await page.waitForSelector("canvas", { timeout: ms });
   for (const hook of SCENE_HOOKS) await waitForHook(page, hook, where, ms);
-  // FitCamera frames the plan once the canvas has a size, which can be a commit later than the
+  // ViewCamera (FitCamera before step V.1) frames the plan once the canvas has a size, which can be a commit later than the
   // hooks. Until it has, the camera still sits where react-three-fiber put it: (0, 0, 5).
   await waitUntil(
     page,

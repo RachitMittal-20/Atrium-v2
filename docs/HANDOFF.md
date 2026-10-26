@@ -10,7 +10,7 @@ Tick each active item (`[x]`) as its step finishes.
 
 - [x] 8.1 Blueprint scene
 - [x] N.1 Studio polish: a way back from the autosaved plan, first-run hints, empty states, OCR room-name noise fix
-- [ ] 5.2 and 5.3 Bird's-eye view and Recenter
+- [x] 5.2 and 5.3 Bird's-eye view and Recenter
 - [ ] 8.4 Landing polish: preloader, lazy photos, simple mobile tour
 - [ ] 7.1, 7.3, 7.2 Area schedule, PDF takeoff report, GLB and OBJ export
 - [ ] 9.2 and 9.3 Lighthouse audit, performance and accessibility, Safari and Firefox checks
@@ -1870,3 +1870,80 @@ No reading rule, geometry, detection or existing assertion changed. Nothing was 
 **Verified (macOS, Node 24.14.0), first time, no one-off failures:** `npm test` exit 0; `npx tsc --noEmit` exit 0; cold build (dev server stopped, `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`) compiled in 5.6 s, 14.7 s wall clock; dev-hook grep and CDN grep (fonts included) both clean; dev server restarted; then one at a time `e2e-import3d` exit 0 (1440 and 390, 169 s), `e2e-studio` exit 0 (182 s), `e2e-newplan` exit 0 (24 s), `e2e-walk` exit 0 (70 s; it uses this button at 390 mid-walk).
 
 **Not covered:** a real phone. A model behind the Orbit | Walk toggle itself, or behind Exit while walking, is still covered at any width, as before G.1.
+
+## 42. V.1 — the bird's-eye Top view and Recenter (steps 5.2 and 5.3, 2026-10-26; not committed)
+**Report first: where the 3D controls sat, and what they covered (before any change).** Measured with `document.elementsFromPoint` over every wall's centre line (every 0.1 m at five heights, 2,770 points) and a 6 px grid over the convex hull of the plan's projected box, on the sample in the opening view (the coverage script is now part of `scripts/e2e-views.ts`):
+- 1440 × 900, orbit: Orbit | Walk at x 91–206, y 67–111; the disabled "Walk through walls" at 215–367; footprint y 171–814. Walking: Exit 215–266, the toggle 272–424, the hint line at y 120. **0 of 2,770 wall points and 0 of 9,707 footprint points covered.**
+- 390 × 844, orbit: Orbit 11–70, Walk 70–126 at y 111–155 (the ghost toggle hidden since G.1-fix); the first-run hint at y 642–716; footprint y 278–523. **0 of 2,770 and 0 of 1,452 covered.** Walking: Exit 135–186, the toggle 192–344 (y 111), the hint line at y 164, the joystick 16–112 × 612–708.
+- So in the opening view nothing covered the plan. The tight spot was the 390 top row. e2e-import3d's lifted cube (3 m up at plan (2, 2)) projects to (172, 120), right of the toggle and inside the area the G.1 button used to cover.
+
+**Done.** CLAUDE.md "Bird's-eye view and Recenter (step V.1)" has the rules.
+- New: `src/lib/view/camera.ts` (`planBounds`, moved from Scene3D; `homeView`; `topView` with the control-strip inset), `src/components/three/ViewCamera.tsx` (replaces Scene3D's FitCamera: the opening fit, refit on resize, the GSAP glides, R), `scripts/test-views.ts` (in `npm test`) and `scripts/e2e-views.ts`.
+- Changed:
+  - `viewStore.ts`: `top`, `request`, `walkHome`, `setTop`, `recenter`, `chooseOrbit`, `RECENTER_KEY`. `mode` is still orbit | walk, so no existing assertion moved.
+  - `WalkControls.tsx`: Recenter while walking means back to the start pose.
+  - `WalkOverlay.tsx`: Orbit | Top | Walk, Recenter top-right, the column 4.5rem short of the right edge.
+  - `Scene3D.tsx`: FitCamera out, ViewCamera in; the aria-label mentions R.
+  - `math.ts`: `fitDistance` factored out of frameBox, with an optional vertical padding.
+  - Comment-only: PlanCanvas, ImportedItems, e2e-helpers.
+  - `package.json`: the new test.
+
+**Failing first.** `test-views.ts` was written before `src/lib/view/camera.ts` existed and stopped at "Cannot find module '../src/lib/view/camera'". It checks the home view against a copy of the old FitCamera formula (to 1e-9 m) and frameBox against a copy of its old loop.
+
+**What the runs found (each fixed in the product, none a flake):**
+1. In development of `e2e-views` (before the final tree), Top at 1440 put the north wall under the toolbar row: 5 to 16 wall points under each of Orbit, Top, Walk and Walk through walls. The 1040 × 844 pane has nearly the plan's own 10:8 shape, so at 10 % padding the plan reached 38 px from the top. **Fix:** `topView`'s inset keeps the 60 px control strip clear at the top and bottom, with 10 % padding of what is left. After: 0 covered (1440: hull y 149–807; 390: y 270–554).
+2. In development, Move "did not find the corner E in Top". From above, only the top end of a corner's vertical line shows (the rest is inside the walls), and the test aimed at its middle. That is the existing, correct rule. The test now aims at the top end, and the attempted special case in PushPullTool was reverted, so PushPullTool is unchanged.
+3. In development at 390, Push/Pull on w-BC's top in Top changed nothing. The finger's 44 px reach picked the front door's jamb edge 0.5 m away (the 4.7b order). The test now uses w-AB, which has no openings.
+4. **Logged before rerunning: `e2e-import3d` failed at 390 on its first run on the then-final tree,** at "390: selected again with a click" (`e2e-import3d.ts:319`, itemId null). A diagnostic copy showed that, after the Push/Pull drag's small orbit, the tap landed at (155.5, 132.2) on the camera group's own box: Walk then ended at x 154, where before V.1 the group ended near 129. Reproduced twice, so a product regression from adding Top, not a flake. **Fix:** below `sm` the three camera buttons stack in a column at the left edge (x 8–62, y 108–246), so the top band to their right is free again. `e2e-views` now hit-tests that whole band (x 130 to Recenter, every 4 px, all canvas). The rerun of `e2e-import3d` passed, both sizes.
+
+**Changed assertions:** none existing. New tests only.
+
+**Tests.**
+- `scripts/test-views.ts` (in `npm test`):
+  - home and top for the sample, a 40 × 2 m plan, plan-chatgpt-flat.pdf's plan (read in Node) and an empty plan, at 1440 × 900, 390 × 844 and the panes' 1040 × 844 and 390 × 624: every number finite, every corner in front of the camera and inside the padded frame, the limiting corner at exactly 1/1.1;
+  - home equals the old FitCamera pose;
+  - top within 0.01° of straight down, above the tallest wall, north up, and with the inset no corner in the 60 px strip; NaN, negative and oversized insets clamped;
+  - frameBox's results unchanged;
+  - the store: no plan, history, payload or selection change, and Top kept through a walk;
+  - R is no tool, walking, ghost or typed-value key.
+- `scripts/e2e-views.ts` (not in `npm test`; dev server), 1440 with mouse and keyboard, 390 with real CDP touch:
+  - coverage in home and Top (0 covered at both sizes);
+  - 44 px targets, Tab order Orbit → Top → Walk → Recenter, no overlaps (walking at 390 too: group, Exit, Walk through walls, Recenter, hint line, joystick);
+  - the opening camera is the home view (1e-6 m);
+  - Top (Enter at 1440, tap at 390) glides and lands within 1 mm: measured 0.0000 mm;
+  - in Top: Select by a wall's top, Push/Pull a wall top (one undo step), Move the corner E (one undo step), with Top still on;
+  - an upward orbit drag leaves Top;
+  - Recenter by button and by R after an orbit drag: 0.0000 mm, still there 10 frames later;
+  - Orbit from Top goes back;
+  - walking from Top, Recenter returns to the start pose (1e-9) and Exit or Escape restores the Top camera within 0.000000 mm with Top pressed again; Orbit while walking restores it as exactly;
+  - under reduced motion Recenter lands at once;
+  - the empty plan: home, Top, Recenter, back;
+  - the lifted cube at (172, 120) at 390 is tapped and selected (at 1440 clicked).
+
+**Screenshots** (`/tmp/studio/`):
+- `views-top-1440.png`: the sample from straight above, filling the pane below the toolbar row. Every wall top is a pale band, the floors show (oak in both bedrooms, stone in the living room and bathroom), and the four door leaves and five window frames read as dark shapes. Perspective from 15 m up shows a little of the walls' inner faces towards the edges. Top is pressed, with the gilt focus ring from the keyboard; Recenter (a crosshair) is at the top right. Nothing of the plan is under a control.
+- `views-recenter-390.png`: the phone after Recenter. The three-quarter view of the house sits in the middle with empty ground above and below; Orbit (pressed), Top and Walk are stacked at the top left, and Recenter is alone at the top right.
+- `views-walk-390.png`: walking at 390, inside the living room facing a door. The stacked group (Walk pressed) has Exit and Walk through walls beside it in the top row, the touch hint below the group, Recenter top right and the joystick bottom left. Nothing overlaps.
+
+**Verified (macOS, Node 24.14.0), on the final tree:**
+- `npm test` exit 0; `npx tsc --noEmit` exit 0; eslint clean on every changed file.
+- Cold build: dev server stopped, `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`; exit 0, compiled in 5.0 s, 14 s wall clock.
+- Dev-hook grep (incl. `__background`) and CDN grep (fonts included): both clean. `/studio` first load 569 kB gzip (D.1 recorded 565); GSAP was already in every page through the root layout.
+- Dev server restarted from a fresh `.next`, then one at a time: `e2e-views` exit 0 (45 s), `e2e-walk` exit 0 (59 s), `e2e-newplan` exit 0 (22 s), `e2e-studio` exit 0 (168 s), `e2e-import3d` exit 0 (154 s).
+- The verification build ran after the e2e runs, so the dev server was restarted again afterwards.
+
+**Decisions to confirm.**
+- Top is always north-up, like the 2D plan, rather than keeping the current azimuth.
+- Orbit from Top glides back to the camera from before Top (the home view if there is none), instead of staying top-down.
+- Top is kept through a walk, so Exit returns to Top; the Orbit button while walking returns to Orbit with the same exact camera.
+- Recenter in a walk is instant (a glide would pass through walls).
+- Recenter is an icon-only button (crosshair, its name for screen readers, a tooltip), so it fits the corner at every width.
+- At 390 the camera buttons are a column, not a row.
+- Recenter frames the walls only, not imported models.
+
+**Not covered:**
+- A real phone, Safari, Firefox; Linux CI not run here (the new Node test uses committed fixtures only).
+- The home view keeps no strip clear, since it is the opening pose. A plan that fills the pane's height when tilted could reach the top row, as before V.1.
+- In Top, a corner near the middle of the view is hard to pick with Move: its line is a pixel or two long on screen and only its top tenth or so counts as visible.
+- The walk hint line does not mention R (the button's tooltip and `aria-keyshortcuts` do).
+

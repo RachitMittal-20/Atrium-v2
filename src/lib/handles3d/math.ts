@@ -12,6 +12,8 @@
  *                           a horizontal plane), or null when it never does.
  *   frameBox                where the orbit camera goes to frame a box from the way it
  *                           already looks (Show in view, step I.1b).
+ *   fitDistance             frameBox's corner fit on its own, shared with the plan's home and
+ *                           top views (src/lib/view/camera.ts, step V.1).
  * Points and directions are plain {x, y, z} objects in world metres (world up is +Y).
  * Connects to: src/types/plan.ts (Vec3); used by src/store/pushPullStore.ts and
  * src/components/three/PushPullTool.tsx; tested by scripts/test-handles3d.ts.
@@ -145,7 +147,7 @@ const cross = (a: Vec3, b: Vec3): Vec3 => ({ x: a.y * b.z - a.z * b.y, y: a.z * 
  * box's centre from the camera's CURRENT direction (position − target, as OrbitControls
  * holds it). For each of the box's 8 corners it finds how far back the camera must be for
  * that corner to land inside the frame in both fields of view, and takes the farthest
- * (Scene3D's FitCamera does the same for the plan). The camera stays above the ground:
+ * (the plan's home and top views do the same, through fitDistance). The camera stays above the ground:
  * the direction is raised to at least 5° above the horizontal and the position kept at
  * least 0.1 m up. `fovDeg` is vertical; `aspect` is width / height.
  */
@@ -156,20 +158,33 @@ export function frameBox(box: { min: Vec3; max: Vec3 }, camera: { position: Vec3
   const elevation = Math.min(FRAME_MAX_ELEVATION_DEG, Math.max(FRAME_MIN_ELEVATION_DEG, (Math.asin(Math.max(-1, Math.min(1, back.y))) * 180) / Math.PI)) * (Math.PI / 180);
   const flat = Math.hypot(back.x, back.z) > 1e-9 ? { x: back.x / Math.hypot(back.x, back.z), z: back.z / Math.hypot(back.x, back.z) } : { x: 0, z: 1 };
   back = { x: flat.x * Math.cos(elevation), y: Math.sin(elevation), z: flat.z * Math.cos(elevation) };
-  const forward = { x: -back.x, y: -back.y, z: -back.z };
-  const right = unit(cross(forward, { x: 0, y: 1, z: 0 }));
-  const up = cross(right, forward);
-  const tanV = Math.tan((camera.fovDeg * Math.PI) / 360);
-  const tanH = tanV * aspect;
-  // A corner at depth (distance + f) fits when |x| <= depth * tan / padding; and every corner stays in front of the camera.
-  let distance = 0;
-  for (const x of [box.min.x, box.max.x])
-    for (const y of [box.min.y, box.max.y])
-      for (const z of [box.min.z, box.max.z]) {
-        const rel = sub({ x, y, z }, target);
-        const f = dot(rel, forward);
-        distance = Math.max(distance, (padding * Math.abs(dot(rel, right))) / tanH - f, (padding * Math.abs(dot(rel, up))) / tanV - f, 0.2 - f);
-      }
+  const corners = [box.min.x, box.max.x].flatMap((x) => [box.min.y, box.max.y].flatMap((y) => [box.min.z, box.max.z].map((z) => ({ x, y, z }))));
+  const distance = fitDistance(corners, target, back, camera.fovDeg, aspect, padding, 0.2); // every corner at least 0.2 m in front
   const position = { x: target.x + back.x * distance, y: Math.max(FRAME_MIN_HEIGHT, target.y + back.y * distance), z: target.z + back.z * distance };
   return { position, target };
+}
+
+/**
+ * How far from `target`, along `back` (unit, from the target towards the camera), a perspective
+ * camera looking at `target` must stand for every point to land inside the frame with `padding`
+ * to spare (1.1: the points take at most 1/1.1 of the half-width and half-height; `paddingV`, when
+ * given, is the vertical one). For each point it finds the distance at which it fits in both fields
+ * of view and takes the farthest; with `minDepth` every point is also at least that far in front of
+ * the camera. Never negative. Shared by frameBox, Scene3D's home fit and the bird's-eye view
+ * (src/lib/view/camera.ts).
+ */
+export function fitDistance(points: Vec3[], target: Vec3, back: Vec3, fovDeg: number, aspect: number, padding: number, minDepth = -Infinity, paddingV = padding): number {
+  const forward = { x: -back.x, y: -back.y, z: -back.z };
+  const right = unit(cross(forward, { x: 0, y: 1, z: 0 })); // what three's lookAt makes of a camera whose up is +Y
+  const up = cross(right, forward);
+  const tanV = Math.tan((fovDeg * Math.PI) / 360);
+  const tanH = tanV * aspect;
+  // A point at depth (distance + f) fits when |x| <= depth * tan / padding.
+  let distance = 0;
+  for (const p of points) {
+    const rel = sub(p, target);
+    const f = dot(rel, forward);
+    distance = Math.max(distance, (padding * Math.abs(dot(rel, right))) / tanH - f, (paddingV * Math.abs(dot(rel, up))) / tanV - f, minDepth - f);
+  }
+  return distance;
 }
