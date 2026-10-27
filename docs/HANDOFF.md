@@ -32,9 +32,9 @@ Revisit after the active list is done, and remind the user when it is.
 
 ### Pending, not code
 
-- [ ] Font licence texts in `src/app/fonts`
+- [x] Font licence texts in `src/app/fonts` (OFL, 2026-10-27)
 - [ ] Demo video link in the README
-- [ ] Case study on the 7 percent arrowhead scale bug
+- [x] Case study on the 7 percent arrowhead scale bug (`docs/case-study-arrowhead-scale.md`)
 - [ ] A fresh real plan, kept outside git, for testing
 
 ## Priority change (2026-10-01): 3D editing first
