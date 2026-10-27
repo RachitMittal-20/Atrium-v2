@@ -5,13 +5,21 @@
 **Turn a floor plan into an editable 3D model, in your browser. Your files never leave it.**
 
 [![CI](https://github.com/RachitMittal-20/Atrium-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/RachitMittal-20/Atrium-v2/actions/workflows/ci.yml)
-![Next.js 16](https://img.shields.io/badge/Next.js-16-black)
-![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178c6)
+[![Live demo](https://img.shields.io/badge/demo-live-brightgreen)](https://atrium-v2-ashen.vercel.app/)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
+![Top language](https://img.shields.io/github/languages/top/RachitMittal-20/Atrium-v2)
+![Languages](https://img.shields.io/github/languages/count/RachitMittal-20/Atrium-v2?label=languages)
+![Last commit](https://img.shields.io/github/last-commit/RachitMittal-20/Atrium-v2)
+
+![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)
+![JavaScript](https://img.shields.io/badge/JavaScript-f7df1e?logo=javascript&logoColor=black)
+![CSS](https://img.shields.io/badge/CSS-Tailwind_4-06b6d4?logo=tailwindcss&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=nextdotjs)
+![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=black)
+![three.js](https://img.shields.io/badge/three.js-r186-black?logo=threedotjs)
+![WebAssembly](https://img.shields.io/badge/WebAssembly-pdf.js_+_OCR-654ff0?logo=webassembly&logoColor=white)
 
 [**Live demo**](https://atrium-v2-ashen.vercel.app/) · [Architecture](docs/ARCHITECTURE.md) · [Case study](docs/case-study-arrowhead-scale.md) · [What it can't do](src/app/limits/page.tsx)
-
-Demo video: coming soon
 
 ![Atrium's studio: an imported plan in 3D with the walls cut at 1.2 m and rooms named](docs/images/studio-3d-cutaway.png)
 
@@ -23,14 +31,22 @@ It is a portfolio project, built by one person with Claude Code. It is a working
 
 ## Screenshots
 
-| Import review | Studio, 2D and 3D side by side |
+| Import review | Studio, 3D and 2D side by side |
 | --- | --- |
 | ![Import review: plan verdict, scale found, walls read from the PDF](docs/images/import-review.png) | ![Split view: the 3D model next to the 2D plan with the original drawing underneath](docs/images/studio-split.png) |
-| The review judges the plan before you build it: scale, dimensions, the verdict (Good, Check or Not usable). | The original PDF sits under the 2D plan. Rooms, areas and takeoffs come from the same plan. |
+| The review judges the plan before you build it: scale, dimensions and a verdict (Good, Check or Not usable). | The original PDF sits under the 2D plan. Rooms, areas and takeoffs come from the same plan. |
 
-![The landing page's sample plan, drawn as a blueprint](docs/images/landing.png)
+| 2D plan with dimension takeoffs | Export menu |
+| --- | --- |
+| ![2D plan with the original drawing, room names, areas and takeoff dimensions](docs/images/studio-2d.png) | ![Export menu: project file, area schedule CSV, PDF report, GLB and OBJ](docs/images/export-menu.png) |
+| Printed dimensions from the PDF become checked takeoffs. | Everything is made in the browser and downloaded directly. |
 
-The screenshots show a **synthetic** two-bedroom plan (`tests/fixtures/pdf/plan-chatgpt-flat.pdf`, generated with ChatGPT, not a real CAD file) taken from the live site.
+| On a phone (390 px wide) | Landing page |
+| --- | --- |
+| ![The studio at phone width, with the 3D model and the tool bar](docs/images/studio-mobile.png) | ![The landing page's sample plan, drawn as a blueprint](docs/images/landing.png) |
+| The studio is built to stay usable at 390 px. | The sample plan rises into 3D as you scroll. |
+
+The screenshots show a **synthetic** two-bedroom plan (`tests/fixtures/pdf/plan-chatgpt-flat.pdf`, generated with ChatGPT, not a real CAD file), taken from the live site.
 
 ## What makes it different
 
