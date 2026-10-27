@@ -23,6 +23,7 @@ export const SCENE_COLORS = {
   wallHovered: "#e4d3b0", // the same tint, lighter (also a hovered door or window frame)
   wallRun: "#eee3c9", // lighter still: the rest of the straight wall the selection belongs to
   ceiling: "#f7f3ea",
+  cutSection: "#4a443c", // Cutaway (step V.2): a cut wall's section, dark like a plan's poche (iron lifted so its edges still read)
   frame: "#5b4a37",
   door: "#7d6446",
   glass: "#a9c8d8",

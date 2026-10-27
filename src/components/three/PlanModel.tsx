@@ -39,12 +39,18 @@
  * is +Y. Seen from above (+Y looking down) with -Z at screen-top, the model
  * reads exactly like the 2D plan: x to the right, y (south) downward.
  *
- * Connects to: src/store/{planStore,selectionStore,toolStore,viewStore,pushPullStore}.ts,
+ * Step V.2, Cutaway (src/lib/view/cutaway.ts): in Orbit and Top, when chosen, walls, doors, windows and ceilings
+ * are clipped at 1.2 m by a clipping plane on their materials (no mesh changes), each cut wall gets a dark
+ * BackSide copy that shows its section, and every wall and opening mesh's raycast (cutRaycast) drops what the plane
+ * clipped and counts the section, so nothing cut away is ever picked. Full height while walking and for Push/Pull
+ * and Move. __scene3d.cut() reports the cut in force (development only).
+ *
+ * Connects to: src/store/{planStore,selectionStore,toolStore,viewStore,pushPullStore,cutawayStore}.ts,
  * src/lib/plan/{geometry,meshBuilders}.ts, src/lib/handles3d/{edges,math}.ts,
  * src/data/materials.ts; mounted by src/components/studio/Scene3D.tsx inside a <Canvas>.
  */
 import type { ThreeEvent } from "@react-three/fiber";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { floorColor, SCENE_COLORS } from "@/data/materials";
 import { pickAlongRay, type RayHit } from "@/lib/handles3d/edges";
@@ -52,6 +58,8 @@ import { isClick, type PointerStamp } from "@/lib/handles3d/math";
 import { wallDirection } from "@/lib/plan/geometry";
 import { buildFloorGeometry, buildWallGeometry, doorLeaf3d, wallSignature } from "@/lib/plan/meshBuilders";
 import type { DerivedRoom } from "@/lib/plan/rooms";
+import { CUT_HEIGHT, CUT_PLANES, NO_PLANES, cutInForce, cutRaycast } from "@/lib/view/cutaway";
+import { cutawayOn, useCutawayStore } from "@/store/cutawayStore";
 import { useDerivedRooms, usePlanStore } from "@/store/planStore";
 import { usePushPullStore } from "@/store/pushPullStore";
 import { is3dTool, useToolStore } from "@/store/toolStore";
@@ -61,6 +69,7 @@ import type { Opening, Plan, Wall } from "@/types/plan";
 
 const FLOOR_Y = 0.01; // just above y = 0 so floors never z-fight the wall bottoms
 const FRAME = 0.05; // frame member width, metres
+const NEVER_PICKED = () => {}; // a raycast that finds nothing: the cut walls' section caps are drawn, never picked
 
 // ---------------------------------------------------------------- walls
 
@@ -96,12 +105,13 @@ function useWallGeometries(plan: Plan): Map<string, CachedGeometry> {
 
 // ---------------------------------------------------------------- openings
 
-/** One box of a door or window; `openingId` rides in userData so a raycast hit maps back to the opening. */
-function Box({ size, position, color, glass, openingId }: { size: [number, number, number]; position: [number, number, number]; color: string; glass?: boolean; openingId: string }) {
+/** One box of a door or window; `openingId` rides in userData so a raycast hit maps back to the opening.
+ *  With the cut on (step V.2) it is clipped at the cut height and its raycast ignores what was clipped. */
+function Box({ size, position, color, glass, openingId, cut }: { size: [number, number, number]; position: [number, number, number]; color: string; glass?: boolean; openingId: string; cut: boolean }) {
   return (
-    <mesh position={position} castShadow={!glass} userData={{ openingId }}>
+    <mesh position={position} castShadow={!glass} userData={{ openingId, cutY: cut ? CUT_HEIGHT : undefined }} raycast={cutRaycast}>
       <boxGeometry args={size} />
-      <meshStandardMaterial color={color} transparent={glass} opacity={glass ? 0.25 : 1} depthWrite={!glass} roughness={glass ? 0.1 : 0.7} />
+      <meshStandardMaterial color={color} transparent={glass} opacity={glass ? 0.25 : 1} depthWrite={!glass} roughness={glass ? 0.1 : 0.7} clippingPlanes={cut ? CUT_PLANES : NO_PLANES} clipShadows />
     </mesh>
   );
 }
@@ -115,7 +125,7 @@ const FRAME_TINT: Record<Exclude<Tint, null>, string> = { tool: SCENE_COLORS.too
  *  With that rotation local +z is the wall's left normal (plan (-dy, dx)). Where the
  *  leaf hangs and which way it turns is doorLeaf3d (step M.1d), which reads the same
  *  hinge jamb and swing side as the 2D plan, so the two can never disagree. */
-function OpeningMesh({ opening, wall, tint }: { opening: Opening; wall: Wall; tint: Tint }) {
+function OpeningMesh({ opening, wall, tint, cut }: { opening: Opening; wall: Wall; tint: Tint; cut: boolean }) {
   const d = wallDirection(wall);
   const { id, width: w, height: h, sillHeight: s } = opening;
   const depth = wall.thickness + 0.02; // frames stand a hair proud of the wall faces
@@ -128,18 +138,18 @@ function OpeningMesh({ opening, wall, tint }: { opening: Opening; wall: Wall; ti
       rotation={[0, Math.atan2(-d.y, d.x), 0]} // rotateY(θ) maps local +x to (cos θ, 0, -sin θ) = the wall direction
       userData={{ openingId: id, kind: opening.kind }}
     >
-      <Box openingId={id} size={[FRAME, h, depth]} position={[-w / 2 + FRAME / 2, midY, 0]} color={frame} />
-      <Box openingId={id} size={[FRAME, h, depth]} position={[w / 2 - FRAME / 2, midY, 0]} color={frame} />
-      <Box openingId={id} size={[w, FRAME, depth]} position={[0, s + h - FRAME / 2, 0]} color={frame} />
+      <Box cut={cut} openingId={id} size={[FRAME, h, depth]} position={[-w / 2 + FRAME / 2, midY, 0]} color={frame} />
+      <Box cut={cut} openingId={id} size={[FRAME, h, depth]} position={[w / 2 - FRAME / 2, midY, 0]} color={frame} />
+      <Box cut={cut} openingId={id} size={[w, FRAME, depth]} position={[0, s + h - FRAME / 2, 0]} color={frame} />
       {opening.kind === "window" ? (
         <>
-          <Box openingId={id} size={[w, FRAME, depth]} position={[0, s + FRAME / 2, 0]} color={frame} />
-          <Box openingId={id} size={[w - 2 * FRAME, h - 2 * FRAME, 0.01]} position={[0, midY, 0]} color={SCENE_COLORS.glass} glass />
+          <Box cut={cut} openingId={id} size={[w, FRAME, depth]} position={[0, s + FRAME / 2, 0]} color={frame} />
+          <Box cut={cut} openingId={id} size={[w - 2 * FRAME, h - 2 * FRAME, 0.01]} position={[0, midY, 0]} color={SCENE_COLORS.glass} glass />
         </>
       ) : (
         // Leaf hinged on its own jamb ("a" or "b"), standing open towards the swing side.
         <group position={[leaf.pivotX, 0, 0]} rotation={[0, leaf.turn, 0]} userData={{ leaf: true }}>
-          <Box openingId={id} size={[leaf.length, h - FRAME, 0.04]} position={[leaf.boxX, s + (h - FRAME) / 2, 0]} color={SCENE_COLORS.door} />
+          <Box cut={cut} openingId={id} size={[leaf.length, h - FRAME, 0.04]} position={[leaf.boxX, s + (h - FRAME) / 2, 0]} color={SCENE_COLORS.door} />
         </group>
       )}
     </group>
@@ -149,13 +159,13 @@ function OpeningMesh({ opening, wall, tint }: { opening: Opening; wall: Wall; ti
 // ---------------------------------------------------------------- rooms
 
 /** Flat polygon for a room's floor or ceiling, built once per polygon. */
-function RoomSurface({ room, y, color, ceiling }: { room: DerivedRoom; y: number; color: string; ceiling?: boolean }) {
+function RoomSurface({ room, y, color, ceiling, cut = false }: { room: DerivedRoom; y: number; color: string; ceiling?: boolean; cut?: boolean }) {
   const geometry = useMemo(() => buildFloorGeometry(room.polygon), [room.polygon]);
   useEffect(() => () => geometry.dispose(), [geometry]);
   return (
     <mesh geometry={geometry} position={[0, y, 0]} receiveShadow={!ceiling}>
       {/* The ceiling is the floor shape seen from below: BackSide hides it from above so the model stays viewable. */}
-      <meshStandardMaterial color={color} side={ceiling ? THREE.BackSide : THREE.FrontSide} />
+      <meshStandardMaterial color={color} side={ceiling ? THREE.BackSide : THREE.FrontSide} clippingPlanes={cut ? CUT_PLANES : NO_PLANES} />
     </mesh>
   );
 }
@@ -178,6 +188,9 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
   const walking = useViewStore((s) => s.mode === "walk");
   const tool = useToolStore((s) => s.tool);
   const picking = !walking && !is3dTool(tool); // a 3D tool's clicks and hovers belong to PushPullTool
+  // Step V.2: Cutaway clips walls, doors, windows and ceilings at CUT_HEIGHT (never in Walk, never for Push/Pull or Move)
+  const cut = cutInForce({ on: useCutawayStore(cutawayOn), walking, tool });
+  const cutY = cut ? CUT_HEIGHT : undefined;
   // the door or window the Move tool is over or moving
   const moveTarget = usePushPullStore((s) => (tool === "move" && !walking ? ((s.pull?.face ?? s.hover)?.openingId ?? null) : null));
   const [hoverOpening, setHoverOpening] = useState<string | null>(null);
@@ -208,6 +221,12 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
     const children = () => groupRef.current?.children ?? [];
     const hook = {
       wallIds: () => children().filter((c) => c.userData.wallId).map((c) => String(c.userData.wallId)),
+      // Step V.2: the cut in force on the wall meshes (null: full height) and how many walls carry it
+      cut: () => {
+        const walls = children().filter((c) => c.userData.wallId);
+        const ys = new Set(walls.map((c) => (typeof c.userData.cutY === "number" ? c.userData.cutY : null)));
+        return { y: ys.size === 1 ? [...ys][0] : "mixed", walls: walls.length, caps: children().filter((c) => c.userData.cutCap).length };
+      },
       // The leaf's real rotation, read back from the scene graph: which way the door stands open.
       // Step M.1d also reports where it PIVOTS, in world space (the leaf group's own position: the
       // hinge jamb), and the world box of its mesh, so a test can tell the two jambs apart.
@@ -253,28 +272,36 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
       }}
       onPointerOut={() => picking && setHovers(null)}
     >
-      {plan.walls.map((wall) => (
-        <mesh key={wall.id} geometry={wallGeometries.get(wall.id)!.geo} userData={{ wallId: wall.id, faces: wallGeometries.get(wall.id)!.geo.userData.faces }} castShadow receiveShadow>
-          <meshStandardMaterial
-            color={
-              walking
-                ? SCENE_COLORS.wall
-                : wall.id === selectedId
-                ? SCENE_COLORS.wallSelected
-                : picking && wall.id === hoveredId
-                  ? SCENE_COLORS.wallHovered
-                  : inRun.has(wall.id)
-                    ? SCENE_COLORS.wallRun
-                    : SCENE_COLORS.wall
-            }
-            roughness={0.9}
-          />
-        </mesh>
-      ))}
+      {plan.walls.map((wall) => {
+        const geo = wallGeometries.get(wall.id)!.geo;
+        const color = walking
+          ? SCENE_COLORS.wall
+          : wall.id === selectedId
+            ? SCENE_COLORS.wallSelected
+            : picking && wall.id === hoveredId
+              ? SCENE_COLORS.wallHovered
+              : inRun.has(wall.id)
+                ? SCENE_COLORS.wallRun
+                : SCENE_COLORS.wall;
+        return (
+          <Fragment key={wall.id}>
+            <mesh geometry={geo} userData={{ wallId: wall.id, faces: geo.userData.faces, cutY }} raycast={cutRaycast} castShadow receiveShadow>
+              <meshStandardMaterial color={color} roughness={0.9} clippingPlanes={cut ? CUT_PLANES : NO_PLANES} clipShadows />
+            </mesh>
+            {/* The cut wall's section: its inside faces, seen through the cut, drawn flat dark like a plan's poche, or
+                in the wall's tint when it is selected, hovered or in the selected run (the highlight follows the cut). */}
+            {cut && (
+              <mesh geometry={geo} userData={{ cutCap: true }} raycast={NEVER_PICKED}>
+                <meshBasicMaterial color={color === SCENE_COLORS.wall ? SCENE_COLORS.cutSection : color} side={THREE.BackSide} clippingPlanes={CUT_PLANES} />
+              </mesh>
+            )}
+          </Fragment>
+        );
+      })}
       {plan.openings.map((o) => {
         const wall = wallById.get(o.wallId);
         const tint: Tint = walking ? null : o.id === moveTarget ? "tool" : o.id === openingId ? "selected" : picking && o.id === hoverOpening ? "hovered" : null;
-        return wall ? <OpeningMesh key={o.id} opening={o} wall={wall} tint={tint} /> : null;
+        return wall ? <OpeningMesh key={o.id} opening={o} wall={wall} tint={tint} cut={cut} /> : null;
       })}
       {rooms.map((room) => (
         <RoomSurface key={room.id} room={room} y={FLOOR_Y} color={floorColor(room.floorMaterial)} />
@@ -282,7 +309,7 @@ export function PlanModel({ showCeiling = false }: { showCeiling?: boolean }) {
       {showCeiling &&
         rooms.map((room) => {
           const height = Math.max(0, ...room.wallIds.map((id) => wallById.get(id)?.height ?? 0));
-          return <RoomSurface key={`c-${room.id}`} room={room} y={height} color={SCENE_COLORS.ceiling} ceiling />;
+          return <RoomSurface key={`c-${room.id}`} room={room} y={height} color={SCENE_COLORS.ceiling} ceiling cut={cut} />;
         })}
     </group>
   );

@@ -16,6 +16,7 @@ Tick each active item (`[x]`) as its step finishes.
 - [x] 9.2 and 9.3 Lighthouse audit, performance and accessibility, Safari and Firefox checks (step A.1, section 45; Firefox did not launch in that session, so it is still unchecked)
 - [x] Reader fixes for doors and windows: windows with face strokes, leaves in a door frame (step Q.5, section 46; proven on synthetic fixtures only)
 - [ ] Prove the Q.5 door and window fixes on a fresh real plan (none has been read)
+- [x] V.2 A spacious look for imported plans: Cutaway, room names in 3D, a gentle fill light; stair labels out of room names (section 47)
 
 ### Deferred on purpose
 
@@ -2154,3 +2155,67 @@ All 47 older PDFs regenerate byte-identical (md5), and all 43 older truth entrie
   - Rerun on the same server, nothing edited: exit 0.
 - `e2e-studio`: exit 0, first run.
 - Not run: the other e2e suites. Not covered: any real CAD PDF; Linux CI for the new Node test (it reads only committed fixtures and generates nothing time-dependent).
+
+
+## 47. V.2 — Cutaway, room names in 3D, stair labels out of names (2026-10-27; not committed)
+
+**Report first: why imported plans looked cramped** (scratch script, Node, three's raycaster on the real wall meshes; the home camera at the 3D pane's 1040 × 844 and 390 × 624; floor sampled every 0.1 m):
+
+| | sample | plan-chatgpt-flat.pdf |
+| --- | --- | --- |
+| walls, thickness | 14, 0.1–0.2 m (median 0.2) | 16, 0.115–0.23 m (median 0.23) |
+| walls' share of the footprint box | 11.3% | 13.5% |
+| shortest room side, min / median | 2.85 / 3.85 m | 2.21 / 3.71 m |
+| wall height / median short side | 0.70 | 0.73 |
+| home camera | fov 45°, 15.8 m (29.1 m at 390), 35.8° up | fov 45°, 16.1 m (30.0 m at 390), 35.8° up |
+| floor visible from the home camera, full walls | 15.5% (17.6% at 390) | 19.2% (18.4%) |
+| the same, walls cut at 1.2 m | 63.6% (59.9%) | 56.7% (56.3%) |
+| floor in the sun's shadow, full / cut | 44% / 20% | 48% / 22% |
+
+So the walls are not unusually thick for the rooms (13.5% against 11.3%), and the camera is already fitted with 10% padding: a farther camera only makes the model smaller. What hides the rooms is 2.7 m walls seen from 36° up (about four fifths of the floor hidden behind them), and half of what remains in shadow. Applied: Cutaway (on by default for imports) and an ambient fill of 0.3 in Orbit and Top. Not applied: any camera change (nothing in the numbers asks for it, and `test-views` pins the home pose to the old FitCamera formula), thinner walls (data).
+
+**Built** (CLAUDE.md "Cutaway, room names in 3D, stair labels (step V.2)" has the rules):
+- `src/lib/view/cutaway.ts` (cut height, clipping plane, `cutInForce`, `cutReport`, `cutRaycast`), `src/store/cutawayStore.ts` (view setting in localStorage "atrium.cutaway"), `src/components/three/RoomLabels.tsx` (DOM labels + an in-canvas tracker).
+- `PlanModel.tsx`: materials clipped, a section cap per cut wall, every wall and opening raycast through `cutRaycast`, `__scene3d.cut()`. `Scene3D.tsx`: local clipping on, the labels, ambient 0.3 in Orbit and Top. `TopBar.tsx`: "Cutaway" and "Room names" (aria-pressed) in the View menu. `PushPullOverlay.tsx`: the "Cutaway is paused" line. `materials.ts`: `cutSection`. The import page sets `imported`; `projectStore` clears it on Open project and New plan.
+- `nameRooms.ts`: `withoutStairs`, applied inside `nameRooms`, so the PDF text path and OCR both lose UP, DN, DOWN and "UP TO …".
+
+**Failing first.**
+- `test-name-noise.ts`, the stair section before the fix: `PDF path, stair words out: UP | HALL | Up / Hall | HALL UP | DN -> Dn | Hall Up | Up / Hall | Up / Hall`.
+- `test-cutaway.ts` was written before `cutaway.ts` and `cutawayStore.ts` existed and stopped at "Cannot find module '…/src/lib/view/cutaway'". As you said, the unchanged-plan part cannot fail before the feature; it passed once the feature existed.
+
+**What the runs found (fixed, none a flake):**
+1. In development of `test-cutaway`, a ray straight down into a cut wall found nothing: wall meshes have no bottom face. Clicking a wall's cut section from Top would have cleared the selection. `cutRaycast` now also returns the point where the ray crosses the cut plane inside the solid (odd crossings straight above it). Asserted, with a ray just beside the wall finding nothing.
+2. drei `<Html>` for the labels: React 19 in development logged "Attempted to synchronously unmount a root while React was already rendering" (one per label) and one label was missing. Replaced by plain DOM beside the canvas, placed per frame by a tracker inside it.
+3. In development of `e2e-cutaway`, the walls' map returned unkeyed nested arrays; replaced by keyed Fragments. `npx prettier --write` reformatted the whole of PlanModel (the repo is not prettier-formatted); restored from git and only the V.2 edits re-applied.
+4. The 390 pixel check first failed (2.00x against 2x) because the label plates cover much of a small model, and the "off" measure counted the hover tint (#e4d3b0) as floor. The measuring screenshot now hides the label layer (`display: none`; `visibility` did not work, since the tracker sets each label visible), the pointer is moved off the model first, and the classifier excludes the hover tint and door leaves.
+
+**Not diagnosed:** in `e2e-cutaway`'s sequence at 1440, after a click on a wall's section, the wall stayed in `hoveredId` after the pointer left the canvas for the View menu. The next pass over the canvas cleared it. It did not reproduce on the sample with or without the cut (three probe orders). The test moves the pointer across the pane and off it before measuring. A stale hover tint is cosmetic.
+
+**Changed assertions:** none existing. Added: the stair section of `test-name-noise.ts`, `test-cutaway.ts` (in `npm test` after `test-views.ts`), `e2e-cutaway.ts`.
+
+**e2e-cutaway thresholds** (measured before they were set; oak pixels in the projected footprint's hull, every second device pixel, labels hidden for the measure): 1440 on 28.0%, off 7.1% (3.94x); 390 on 27.0%, off 5.8% (4.62x). Asserted: on at least 2x off and at least 20% of the hull.
+
+**Screenshots** (`/tmp/studio/`):
+- `cutaway-on-1440.png`: plan-chatgpt-flat from the home view with every wall cut at 1.2 m. The cut tops are dark bands, and the oak floors of all five rooms show. Labels: "Bedroom 1 14.2 m²", "Bedroom 2", "Hall", "Bathroom / Kitchen", "Living 21.4 m²". The door leaves stand as short dark panels, and the windows are cut through their frames, so only their lower frames show. The inner faces of the far walls still show up to 1.2 m. Nothing is under the Orbit | Top | Walk row or Recenter.
+- `cutaway-off-1440.png`: the same camera with full 2.7 m walls. Only the Living room's floor and slivers of the others show; the bedrooms and hall are hidden behind the south and west walls.
+- `cutaway-390.png`: the phone. The cut model sits mid-pane, about nine tenths of the width, with the five labels readable. The labels cover a good part of the smaller rooms, and "Bathroom / Kitchen" runs over the wall between it and Bedroom 1. The camera column (Orbit, Top, Walk) and Recenter are clear of it.
+
+**Verified (macOS, Node 24.14.0), on the final tree:**
+- `npm test` exit 0; `npx tsc --noEmit` exit 0; eslint on every changed file: no new errors (PlanModel's two `react-hooks/refs` errors and TopBar's one exist at HEAD).
+- Cold build: dev server stopped, `.next` deleted, `perl -e 'alarm 300; exec @ARGV' npm run build`, exit 0, compiled in 4.5 s, 12.5 s wall clock. Dev-hook grep and CDN grep: both clean.
+- Dev server restarted from a fresh `.next`. Then, one at a time: `e2e-cutaway` exit 0 (30 s), `e2e-views` exit 0 (39 s), `e2e-studio` exit 0 (164 s), `e2e-import3d` exit 0 (167 s), `e2e-walk` exit 0 (232 s), `e2e-newplan` exit 0 on its third run.
+- **One-off failures, logged before rerunning (nothing edited between runs):**
+  1. `e2e-newplan` run 1 got through every step at both sizes, then failed its final assertion on the console message "1440 console: WebSocket is already in CLOSING or CLOSED state." That is the dev server's HMR socket, not app code.
+  2. Run 2 failed at "390: the edit never reached "Saved" after 15 s" (step "390: an autosaved, edited plan"), a step run 1 had passed. Nothing in the dev log.
+  3. Run 3: exit 0.
+  Neither failure was diagnosed. V.2 does not touch the autosave (the store test proves no plan change, and the e2e that storage is byte-identical).
+
+**Decisions to confirm.**
+- "A wall's top is hovered or selected → full height" is met through the tools: Push/Pull and Move always show full height. A wall selected with the Select tool stays cut, and its tint follows the cut, so selecting a wall never pops the whole house to full height.
+- The user's Cutaway choice is global, not per plan (as with the Labels setting): turn it off once and imports open without it.
+- Room names follow Cutaway until chosen on their own.
+- The cut also clips door leaves and window frames, not only walls.
+- The section is drawn flat dark (`#4a443c`), not hatched.
+
+**Not covered:** a real phone, Safari, Firefox; Linux CI for the new Node test (it reads only committed fixtures, generates nothing time-dependent and compares no compressed bytes); a screen reader on the 3D labels.
+

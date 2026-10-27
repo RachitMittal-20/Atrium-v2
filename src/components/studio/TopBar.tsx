@@ -3,7 +3,8 @@
 /*
  * src/components/studio/TopBar.tsx — the editor's top bar: plan name (editable,
  * undoable through planStore.renamePlan), Undo and Redo, the 3D | 2D | Split
- * switch, a view-options popover (ceilings), an Import menu ("Floor plan image…"
+ * switch, a view-options popover (ceilings; since step V.2 Cutaway and Room names, two aria-pressed toggles over
+ * src/store/cutawayStore.ts, view settings in localStorage, never in the plan), an Import menu ("Floor plan image…"
  * goes to /studio/import; "3D model…" opens a file picker whose files go to
  * src/store/importStore.ts, step I.1; "Open project…" opens a .atrium.json, step E.1),
  * an Export menu holding only exports that work: "Save project…" (step E.1), and since step X.2 "Area
@@ -26,7 +27,10 @@ import { useImportStore } from "@/store/importStore";
 import { useCanRedo, useCanUndo, usePlanStore } from "@/store/planStore";
 import { useSaveStatus } from "@/store/persistence";
 import { useUnitsStore } from "@/store/unitsStore";
+import { cutawayOn, roomNamesOn, useCutawayStore } from "@/store/cutawayStore";
+import { CUT_HEIGHT } from "@/lib/view/cutaway";
 import { EditableText } from "./EditableText";
+import { useUnitFormat } from "./useUnitFormat";
 import { downloadSchedule, startExport } from "./ExportDialog";
 import { startNew, startOpen, startSave } from "./ProjectDialog";
 
@@ -82,6 +86,18 @@ function Popover({ label, shortLabel, glyph, testId, children }: { label: string
   );
 }
 
+/** A view option that is on or off (step V.2): a real button with aria-pressed and a tick, 40 px tall like the rows around it. */
+function Toggle({ on, set, testId, children }: { on: boolean; set: (on: boolean) => void; testId: string; children: ReactNode }) {
+  return (
+    <button type="button" data-testid={testId} aria-pressed={on} onClick={() => set(!on)} className="flex min-h-10 w-full items-center gap-2 rounded px-1 text-left hover:bg-limestone">
+      <span aria-hidden className={`grid h-4 w-4 place-items-center rounded-sm border ${on ? "border-cyanotype bg-cyanotype text-vellum" : "border-smoke"}`}>
+        {on && icon(<path d="M5 12l5 5 9-10" />)}
+      </span>
+      {children}
+    </button>
+  );
+}
+
 /** One radio group of the Units menu: real radios in a fieldset, named so a screen reader hears "Length, mm". */
 function UnitGroup<T extends string>({ legend, name, values, labels, value, set }: { legend: string; name: string; values: readonly T[]; labels: Record<T, string>; value: T; set: (v: T) => void }) {
   return (
@@ -107,6 +123,9 @@ export function TopBar({ view, setView, showCeiling, setShowCeiling }: { view: V
   const saveStatus = useSaveStatus((s) => s.status);
   const picker = useRef<HTMLInputElement>(null);
   const units = useUnitsStore();
+  const cutaway = useCutawayStore(cutawayOn);
+  const roomNames = useCutawayStore(roomNamesOn);
+  const { len } = useUnitFormat();
 
   const views: { id: View; label: string; cls?: string }[] = [
     { id: "3d", label: "3D" },
@@ -153,6 +172,13 @@ export function TopBar({ view, setView, showCeiling, setShowCeiling }: { view: V
             <input type="checkbox" data-testid="show-ceilings" checked={showCeiling} onChange={(e) => setShowCeiling(e.target.checked)} className="h-4 w-4 accent-cyanotype" />
             Show ceilings
           </label>
+          <Toggle on={cutaway} set={useCutawayStore.getState().setCutaway} testId="view-cutaway">
+            Cutaway
+          </Toggle>
+          <Toggle on={roomNames} set={useCutawayStore.getState().setRoomNames} testId="view-room-names">
+            Room names
+          </Toggle>
+          <p className="px-1 pb-1 text-xs text-smoke">Cutaway draws walls only up to {len(CUT_HEIGHT)} in Orbit and Top. Walk shows full height.</p>
         </Popover>
 
         <Popover label="Units" shortLabel="Units" testId="units-menu" glyph={icon(<path d="M3 17L17 3l4 4L7 21zM8 12l2 2M11 9l2 2M14 6l2 2" />)}>

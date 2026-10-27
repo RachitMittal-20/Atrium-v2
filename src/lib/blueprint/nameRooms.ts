@@ -19,6 +19,9 @@
  *     or × even with stray symbols around them ("12 x 14", "13 x 16°",
  *     "18 x 1%", "15 x19": OCR's misreads of foot marks), and text with no
  *     letter at all (OCR noise such as "|" or "—").
+ *   - Stair words are never names (step V.2, `withoutStairs`): UP, DN and DOWN as whole words, and
+ *     "UP TO …" / "DN TO …" to the end of the line, are taken out of every label first, so "Up / Hall"
+ *     names the room "Hall" and a lone "UP" names nothing. Both the PDF text and OCR come through here.
  *   - Names are title-cased: "BEDROOM 1" -> "Bedroom 1", "BATH / KITCHEN" ->
  *     "Bath / Kitchen". Rooms with no label keep deriveRooms' "Room N".
  *
@@ -86,6 +89,26 @@ export function cleanRoomLabels(labels: PlanLabel[]): PlanLabel[] {
   return out;
 }
 
+/** Step V.2: a stair direction ("UP TO FIRST FLOOR", "DN TO BASEMENT") from the word to the end of the line. */
+const STAIR_TO = /(?<![\p{L}\d])(?:UP|DN|DOWN)\s+TO(?![\p{L}\d]).*$/iu;
+/** Step V.2: a stair word on its own (UP, DN, DOWN), never inside a word: Cupboard, Upper and Downstairs stay. */
+const STAIR_WORD = /(?<![\p{L}\d])(?:UP|DN|DOWN)(?![\p{L}\d])/giu;
+const symbolOnly = (w: string) => !/[\p{L}\d]/u.test(w);
+
+/**
+ * Step V.2: a label without its stair words ("" when it was only one). Stair arrows say "UP" or "DN" inside or
+ * beside a hall's name, and nameRooms joined them in ("Up / Hall"). What a removed word leaves behind is tidied:
+ * symbol-only words at either end go ("↑", "/", "()"), and a run of them between words becomes the first ("Hall / / Kitchen").
+ */
+export function withoutStairs(text: string): string {
+  const stripped = text.replace(STAIR_TO, "").replace(STAIR_WORD, "");
+  if (stripped === text) return text; // no stair word: exactly as it was
+  const words = stripped.replace(/\(\s*\)/g, "").split(/\s+/).filter(Boolean);
+  while (words.length && symbolOnly(words[0])) words.shift();
+  while (words.length && symbolOnly(words[words.length - 1])) words.pop();
+  return words.filter((w, i) => !(symbolOnly(w) && symbolOnly(words[i - 1] ?? "x"))).join(" ");
+}
+
 /** "BATH / KITCHEN" -> "Bath / Kitchen": each word's first letter upper case, the rest lower. */
 export const titleCase = (t: string) =>
   t
@@ -100,8 +123,9 @@ export function nameRooms(plan: Plan, labels: PlanLabel[], origin: Vec2, pxPerM:
   const byRoom = new Map<string, { name: string; at: Vec2 }[]>();
 
   for (const label of labels) {
-    if (notAName(label.text)) continue;
-    const name = titleCase(label.text);
+    const text = withoutStairs(label.text); // step V.2: both paths come through here, PDF text and OCR alike
+    if (!text || notAName(text)) continue;
+    const name = titleCase(text);
     const at = { x: (label.x - origin.x) / pxPerM, y: (label.y - origin.y) / pxPerM };
     const room = rooms.find((r) => pointInPolygon(at, r.polygon));
     if (!room) {

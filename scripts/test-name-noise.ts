@@ -83,7 +83,39 @@ async function main() {
     assert.ok(names.includes("Oo) / Primary Bedroom / Lal") && names.includes("O / Closed Kitchen") && names.includes("We / Bathroom 2"), `nameRooms alone still joins every label as it always did: ${names.join(" | ")}`);
   }
 
-  console.log("name noise: four live-site labels cleaned, clean labels unchanged, rules and the PDF path checked");
+  // ---- step V.2: stair labels (UP, DN, DOWN, "UP TO …") are never part of a room name, on either path.
+  // The live string was "Up / Hall": the PDF's own "UP" beside a stair, joined with "HALL" by nameRooms.
+  {
+    const analysis = await analyseBlueprint(pixels, { ocr: fakeOcr([]) });
+    const b = buildFromAnalysis(analysis, MANUAL_100, {}, "02");
+    // nameRooms is the one place the PDF text path (snap.ts, twice) and the OCR path (analyse.ts) meet
+    const pdfNames = (labels: PlanLabel[]) => nameRooms(b.plan, labels, b.report.origin, 100).plan.rooms.map((r) => r.name).sort();
+    const stairCases: [PlanLabel[], string[]][] = [
+      [[...row("a", "UP", "HALL"), ...row("b", "Up / Hall"), ...row("c", "HALL UP"), ...row("d", "DN")], ["Hall", "Hall", "Hall", "Room 4"]],
+      [[...row("a", "UP TO FIRST FLOOR", "Hall"), ...row("b", "Landing DN TO BASEMENT"), ...row("c", "DOWN"), ...row("d", "↑ UP", "Stair Hall")], ["Hall", "Landing", "Room 3", "Stair Hall"]],
+      [[...row("a", "Hall (UP)"), ...row("b", "Hall / UP / Kitchen"), ...row("c", "up"), ...row("d", "Down to garage")], ["Hall", "Hall / Kitchen", "Room 3", "Room 4"]],
+    ];
+    const ROOM_ORDER = ["Room 1", "Room 2", "Room 3", "Room 4"];
+    for (const [labels, want] of stairCases) {
+      // a room left with no name keeps deriveRooms' "Room N"; which N depends on the room, so compare the named ones and the count
+      const got = pdfNames(labels);
+      assert.deepEqual(got.filter((n) => !ROOM_ORDER.includes(n)), want.filter((n) => !ROOM_ORDER.includes(n)), `PDF path, stair words out: ${labels.map((l) => l.text).join(" | ")} -> ${got.join(" | ")}`);
+      assert.equal(got.filter((n) => ROOM_ORDER.includes(n)).length, want.filter((n) => ROOM_ORDER.includes(n)).length, `PDF path, rooms named only by a stair word keep their default name: ${got.join(" | ")}`);
+      const ocr = await built(pixels, labels);
+      assert.deepEqual(ocr.filter((n) => !ROOM_ORDER.includes(n)), want.filter((n) => !ROOM_ORDER.includes(n)), `OCR path, stair words out: ${ocr.join(" | ")}`);
+    }
+    // real words that hold those letters must not change
+    const keep: [PlanLabel[], string[]][] = [
+      [[...row("a", "CUPBOARD"), ...row("b", "Dining"), ...row("c", "Study"), ...row("d", "Upper Hall")], ["Cupboard", "Dining", "Study", "Upper Hall"]],
+      [[...row("a", "Downstairs WC"), ...row("b", "Sunroom"), ...row("c", "Dressing Room"), ...row("d", "Lounge / Dining")], ["Downstairs Wc", "Dressing Room", "Lounge / Dining", "Sunroom"]],
+    ];
+    for (const [labels, want] of keep) {
+      assert.deepEqual(pdfNames(labels), want, `PDF path, clean labels unchanged: ${want.join(", ")}`);
+      assert.deepEqual(await built(pixels, labels), want, `OCR path, clean labels unchanged: ${want.join(", ")}`);
+    }
+  }
+
+  console.log("name noise: four live-site labels cleaned, clean labels unchanged, stair words out of names, rules and the PDF path checked");
 }
 
 main().catch((e) => {

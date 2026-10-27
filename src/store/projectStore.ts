@@ -14,7 +14,8 @@
  *     plan only after they are in, so a refusal or a full disk changes nothing.
  * `newPlan` (step N.1) is the way back from an autosaved plan: it replaces the plan with the sample
  * or an empty one as one undo step, and counts as the saved baseline (there is nothing to lose in
- * a fresh plan). View settings are never touched. Connects to: planStore, src/lib/import/assetCache.ts (the
+ * a fresh plan). View settings are never touched, except that opening a project or a new plan says the plan was
+ * not built from an import (cutawayStore.setImported(false), step V.2: Cutaway's default). Connects to: planStore, src/lib/import/assetCache.ts (the
  * store and the model cache), backgroundStore; used by src/components/studio/ProjectDialog.tsx.
  */
 import { create } from "zustand";
@@ -26,6 +27,7 @@ import { buildProject, checkProjectSize, estimateProjectBytes, readProject, refe
 import type { Plan } from "@/types/plan";
 import { useBackgroundStore } from "./backgroundStore";
 import { usePlanStore } from "./planStore";
+import { useCutawayStore } from "./cutawayStore";
 
 /** `epoch` goes up each time a file is opened, so the studio can remount its panes and fit both cameras to the new plan. */
 export const useProjectStore = create<{ saved: Plan; epoch: number }>(() => ({ saved: usePlanStore.getState().plan, epoch: 0 }));
@@ -99,6 +101,7 @@ export async function openProject(file: PickedFile): Promise<OpenResult> {
   useAssetCache.setState((s) => ({ assets: Object.fromEntries(Object.entries(s.assets).filter(([id, a]) => !(gone.has(id) && a.status !== "ready"))) }));
   useBackgroundStore.setState((s) => (s.asset && gone.has(s.asset.id) && s.asset.status !== "ready" ? { asset: null } : s));
   usePlanStore.getState().replacePlan(read.plan);
+  useCutawayStore.getState().setImported(false); // step V.2: an opened project starts with Cutaway off, unless the user chose
   useProjectStore.setState((s) => ({ saved: usePlanStore.getState().plan, epoch: s.epoch + 1 }));
   return { ok: true };
 }
@@ -110,5 +113,6 @@ export async function openProject(file: PickedFile): Promise<OpenResult> {
  */
 export function newPlan(kind: "sample" | "empty"): void {
   usePlanStore.getState().replacePlan(kind === "sample" ? structuredClone(samplePlan) : emptyPlan(new Date().toISOString()));
+  useCutawayStore.getState().setImported(false); // step V.2: not an import, so Cutaway is off unless the user chose
   useProjectStore.setState((s) => ({ saved: usePlanStore.getState().plan, epoch: s.epoch + 1 }));
 }

@@ -23,6 +23,8 @@
  * so pressing its buttons is never canvas input. Shown only while a 3D tool is
  * active and the 3D pane is not walking. Reads src/store/pushPullStore.ts and the
  * plan; pointer events pass through it except on the "123" button and its field.
+ * Step V.2: with Cutaway on, these tools show the walls at full height (src/lib/view/cutaway.ts cutInForce),
+ * and the status line says so on a line of its own (`cutaway-paused`).
  */
 import { distancePlaceholder, gridText, lenText, signedLenText } from "@/lib/units/current";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -33,6 +35,7 @@ import { useItemToolStore } from "@/store/itemToolStore";
 import { usePushPullStore } from "@/store/pushPullStore";
 import { isPushPullTool, useToolStore } from "@/store/toolStore";
 import { useViewStore } from "@/store/viewStore";
+import { cutawayOn, useCutawayStore } from "@/store/cutawayStore";
 
 const COARSE = "(any-pointer: coarse)";
 const watchCoarse = (cb: () => void) => {
@@ -42,6 +45,7 @@ const watchCoarse = (cb: () => void) => {
 };
 const OFFSET = 18; // px between the pointer and the label
 
+export const CUTAWAY_PAUSED = "Cutaway is paused: walls show full height while this tool is on.";
 export const STATUS_IDLE = "Click a face to push or pull it. Type a distance and press Enter.";
 export const STATUS_MOVE_IDLE = "Drag a door, a window, a wall's side, a corner or an imported model. Type a distance and press Enter.";
 const STATUS_PULL = "Move and click to finish, or type a distance and press Enter. Escape cancels.";
@@ -64,6 +68,7 @@ export function PushPullOverlay() {
   const fieldOpen = usePushPullStore((s) => s.fieldOpen);
   const openings = usePlanStore((s) => s.plan.openings);
   const itemBusy = useItemToolStore((s) => s.drag !== null || s.hover !== null);
+  const cutawayPaused = useCutawayStore(cutawayOn); // the tool is active and not walking whenever this overlay shows
   const coarse = useSyncExternalStore(watchCoarse, () => window.matchMedia(COARSE).matches || navigator.maxTouchPoints > 0, () => false);
 
   // the pane's size, to keep the label inside it
@@ -191,6 +196,11 @@ export function PushPullOverlay() {
         className="absolute bottom-3 left-1/2 w-max max-w-[calc(100%-1.5rem)] -translate-x-1/2 rounded border border-stone bg-vellum px-3 py-1.5 text-center text-xs text-iron shadow"
       >
         {pull?.corner || (corner && !pull) ? STATUS_CORNER : pull ? STATUS_PULL : moving ? STATUS_MOVE_IDLE : STATUS_IDLE}
+        {cutawayPaused && (
+          <span data-testid="cutaway-paused" className="block text-smoke">
+            {CUTAWAY_PAUSED}
+          </span>
+        )}
       </p>
     </div>
   );

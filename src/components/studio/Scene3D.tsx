@@ -25,6 +25,11 @@
  * pane go to the same import flow as the top bar's file picker
  * (src/store/importStore.ts), and a thin bar along the top shows while a stored
  * model is being read.
+ *
+ * Step V.2: Cutaway (src/lib/view/cutaway.ts, src/store/cutawayStore.ts) clips walls and openings at 1.2 m in Orbit
+ * and Top with per-material clipping planes (the renderer's localClippingEnabled is turned on here), and room names
+ * (RoomLabels, DOM beside the canvas, placed by RoomLabelTracker inside it) label the floors. A gentle ambient fill
+ * (0.3) lights the floors in Orbit and Top; walking keeps its 0.6.
  */
 import { OrbitControls, Grid } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
@@ -33,6 +38,7 @@ import * as THREE from "three";
 import { ImportedItems } from "@/components/three/ImportedItems";
 import { ItemTool } from "@/components/three/ItemTool";
 import { PlanModel } from "@/components/three/PlanModel";
+import { RoomLabelTracker, RoomLabels } from "@/components/three/RoomLabels";
 import { PushPullTool } from "@/components/three/PushPullTool";
 import { ViewCamera } from "@/components/three/ViewCamera";
 import { WalkControls } from "@/components/three/WalkControls";
@@ -60,6 +66,7 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
     return o;
   }, [cx, cz]);
   const host = useRef<HTMLDivElement>(null);
+  const labelEls = useRef(new Map<string, HTMLDivElement>()); // step V.2: the room labels, placed every frame by RoomLabelTracker
   const walking = useViewStore((s) => s.mode === "walk");
   // A 3D tool's cursor says what a press would do: a face that can't be pulled says no (the store has the reason
   // as its message), a door's or window's side resizes sideways, Move moves, everything else resizes up and down
@@ -105,13 +112,16 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
           shadows
           dpr={[1, 2]}
           camera={{ fov: 45, near: 0.1, far: 500 }}
+          onCreated={({ gl }) => void (gl.localClippingEnabled = true)} // Cutaway (step V.2) clips with per-material planes
           onPointerMissed={() => useViewStore.getState().mode === "orbit" && useSelectionStore.getState().select(null)} // a walking drag looks, it does not select
         >
           <color attach="background" args={[SCENE_COLORS.background]} />
           <hemisphereLight args={["#ffffff", "#b8ad98", 0.9]} />
           {/* Walking, under the ceilings: a ceiling faces down, so the hemisphere gives it only its beige ground
-              colour and it read as dark brown. A neutral fill lifts it and the shadowed walls. Ceilings cast no shadows. */}
-          {walking && <ambientLight intensity={0.6} />}
+              colour and it read as dark brown. A neutral fill lifts it and the shadowed walls. Ceilings cast no shadows.
+              Step V.2: a gentler fill in Orbit and Top too, because about half of an imported plan's floor is in the
+              sun's shadow (plan-chatgpt-flat: 48%; the sample: 44%) and read as a dark pit between the walls. */}
+          <ambientLight intensity={walking ? 0.6 : 0.3} />
           {/* The sun's shadow frustum is centred on the plan, not the world origin. */}
           <primitive object={target} />
           <directionalLight
@@ -139,6 +149,7 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
           />
           <ViewCamera bounds={bounds} host={host} />
           <PlanModel showCeiling={showCeiling} />
+          <RoomLabelTracker els={labelEls} />
           <ImportedItems />
           <OrbitControls makeDefault enabled={!walking} target={[cx, 0, cz]} maxPolarAngle={Math.PI / 2 - 0.02} />
           <WalkControls host={host} />
@@ -154,6 +165,7 @@ export function Scene3D({ showCeiling }: { showCeiling: boolean }) {
       {loading && (
         <div role="progressbar" aria-label="Loading a 3D model" data-testid="model-loading" className="pointer-events-none absolute inset-x-0 top-0 h-0.5 bg-cyanotype motion-safe:animate-pulse" />
       )}
+      <RoomLabels els={labelEls} />
       <WalkOverlay host={host} />
       <PushPullOverlay />
       <ItemToolOverlay />
