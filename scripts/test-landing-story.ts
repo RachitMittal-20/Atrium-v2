@@ -18,7 +18,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { samplePlan } from "../src/data/samplePlan";
 import { cameraAt, FOV, planBounds } from "../src/lib/landing/blueprint";
-import { BUILD_END, ENTER_END, FADE_START, frontDoor, orbitFrame, storyAt, storyCamera, TOUR_END, TOUR_START } from "../src/lib/landing/story";
+import { BUILD_END, ENTER_END, FADE_START, frontDoor, LIGHT_END, LIGHT_START, orbitFrame, storyAt, storyCamera, TOUR_END, TOUR_START } from "../src/lib/landing/story";
+import { CORRIDOR, sitePlan } from "../src/lib/landing/site";
 import { deriveRooms, pointInPolygon } from "../src/lib/plan/rooms";
 import { buildCollision, clearance } from "../src/lib/walk/collision";
 import type { Plan } from "../src/types/plan";
@@ -40,7 +41,7 @@ for (let i = 1; i <= 1000; i++) {
 }
 const end = storyAt(1);
 for (const k of Object.keys(end) as (keyof typeof end)[]) assert.equal(end[k], 1, `${k} ends at 1`);
-assert.ok(BUILD_END < TOUR_START && TOUR_START < TOUR_END && TOUR_END < ENTER_END && FADE_START < ENTER_END, "the marks are in order, and the fade starts before the camera is all the way in");
+assert.ok(BUILD_END < TOUR_START && TOUR_START < TOUR_END && TOUR_END < LIGHT_START && LIGHT_START < LIGHT_END && LIGHT_END <= ENTER_END && ENTER_END <= FADE_START, "the marks are in order: the daylight wash comes while the camera walks in, and the fade after it is in");
 
 // ---- the front door
 const door = frontDoor(plan);
@@ -123,6 +124,34 @@ for (const aspect of ASPECTS) {
   const { distance } = orbitFrame(noDoor, aspect);
   assert.ok(Math.abs(Math.hypot(out.position[0] - out.target[0], out.position[1] - out.target[1], out.position[2] - out.target[2]) - distance) < 1e-9, `${tag}: on the orbit`);
 }
+
+// ---- the site dressing (decoration, placed from the plan's footprint and front door)
+const site = sitePlan(pb, door);
+assert.deepEqual(sitePlan(pb, door), site, "seeded: the same plan gets the same garden");
+assert.ok(site.path && site.shrubs.length > 10 && site.trees.length >= 6, `a path, shrubs and trees (${site.shrubs.length} shrubs, ${site.trees.length} trees)`);
+const inTerrace = (x: number, z: number) => x > site.terrace.x && x < site.terrace.x + site.terrace.w && z > site.terrace.y && z < site.terrace.y + site.terrace.h;
+const rel = (x: number, z: number) => {
+  const [dx, dz] = [x - door.centre.x, z - door.centre.y];
+  return { along: dx * door.outward.x + dz * door.outward.y, across: Math.abs(dx * door.outward.y - dz * door.outward.x) };
+};
+for (const s of site.shrubs) {
+  assert.ok(!inTerrace(s.x, s.z), `shrub at ${s.x.toFixed(2)}, ${s.z.toFixed(2)} is off the terrace`);
+  const { along, across } = rel(s.x, s.z);
+  assert.ok(along < 0 || across > site.path!.width / 2 + s.r, `shrub at ${s.x.toFixed(2)}, ${s.z.toFixed(2)} is off the path`);
+}
+for (const t of site.trees) {
+  assert.ok(!inTerrace(t.x, t.z), "trees stand off the terrace");
+  const { along, across } = rel(t.x, t.z);
+  assert.ok(along < 0 || across > site.path!.width / 2 + CORRIDOR, `tree at ${t.x.toFixed(2)}, ${t.z.toFixed(2)} is out of the walk-in corridor`);
+}
+// Nothing of the garden stands where the camera walks: every camera position on the walk in is clear of every plant.
+for (const aspect of ASPECTS)
+  for (let i = 0; i <= 400; i++) {
+    const c = storyCamera(TOUR_END + ((1 - TOUR_END) * i) / 400, plan, aspect);
+    if (c.position[1] > 5) continue;
+    for (const s of site.shrubs) assert.ok(Math.hypot(c.position[0] - s.x, c.position[2] - s.z) > s.r + 0.3, "the walk in passes no shrub");
+    for (const t of site.trees) assert.ok(Math.hypot(c.position[0] - t.x, c.position[2] - t.z) > 1.5, "the walk in passes no tree");
+  }
 
 // ---- derived from the plan with the shared helpers
 const story = readFileSync("src/lib/landing/story.ts", "utf8");

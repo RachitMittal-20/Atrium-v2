@@ -12,7 +12,10 @@
  *   FINISH_START, FINISH_END   floors, roof, the site round the house and the sky come in; the sheet gives way to ground
  *   TOUR_START, TOUR_END       the camera circles to the front of the house (from BUILD_END it settles into the orbit)
  *   ENTER_END     the camera has walked through the front door
- *   FADE_START    where the hand-over to the photo tour starts; it ends at the scene's last scroll
+ *   LIGHT_START, LIGHT_END     daylight fills the view as the camera crosses the threshold (a vellum wash over the stage)
+ *   FADE_START    where the hand-over to the photo tour starts; it ends at the scene's last scroll. Late on purpose: the
+ *                 tour's lobby rises into place under the stage until the very end (the hero overlaps it by one screen),
+ *                 so the wash holds until the lobby is nearly in place, and the last stretch dissolves onto it.
  *   PRELOADER_MAX_MS  the longest the preloader may cover the page, from the start of navigation (step L.2)
  */
 export const BUILD_END = 0.24;
@@ -23,5 +26,7 @@ export const FINISH_END = 0.52;
 export const TOUR_START = 0.42;
 export const TOUR_END = 0.74;
 export const ENTER_END = 0.95;
-export const FADE_START = 0.92;
+export const LIGHT_START = 0.88;
+export const LIGHT_END = 0.94;
+export const FADE_START = 0.975;
 export const PRELOADER_MAX_MS = 2800; // under the 3 s the brief allows, leaving the fade-out inside it

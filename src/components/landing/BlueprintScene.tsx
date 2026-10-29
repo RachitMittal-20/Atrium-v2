@@ -1,22 +1,27 @@
 /**
- * BlueprintScene.tsx — the first screen of the landing page (step 8.1): the studio's REAL sample plan drawn as a
- * cyanotype sheet under the headline "From one drawing, a whole house". Scrolling pulls the camera back and raises
- * the plan's walls into 3D, doors and windows cut out, then hands over to the mansion (LandingTour) without a cut.
+ * BlueprintScene.tsx — the first screen of the landing page (step 8.1; a whole story since step H.2): the studio's REAL
+ * sample plan drawn as a cyanotype sheet under the headline "From one drawing, a whole house". Scrolling raises the plan's
+ * walls out of the sheet as glowing lines, a scan band turns them solid, the house is finished and dressed, the camera
+ * circles it and walks in at the front door, and the stage fades onto the photo tour's lobby (LandingTour) beneath.
  *
- * How it scrolls. The section is 300svh tall and its full-screen stage is CSS-sticky inside it, so the stage holds
- * still for two screens of scrolling. The section's bottom overlaps the tour by 100svh (negative margin), so the
+ * How it scrolls. The section is 800svh tall and its full-screen stage is CSS-sticky inside it, so the stage holds
+ * still for seven screens of scrolling. The section's bottom overlaps the tour by 100svh (negative margin), so the
  * tour's own pin starts at exactly the scroll where this stage stops sticking. One GSAP timeline, scrubbed by
- * ScrollTrigger (which reads Lenis through SmoothScrollProvider), runs over those two screens:
- *   0 → BUILD_END     the build: `progress.b` goes 0 → 1, which the 3D canvas turns into the camera and the walls;
- *   BUILD_END → FADE_START   a hold on the finished model;
- *   FADE_START → 1    the stage fades out while the mansion rises beneath it, ending pinned where the stage was.
+ * ScrollTrigger (which reads Lenis through SmoothScrollProvider), runs over those seven screens:
+ *   0 → 1                `progress.p` (the story's scroll), which the 3D canvas turns into its phases and its camera
+ *                        (marks in src/lib/landing/timeline.ts: build, scan, finish, tour, enter);
+ *   SCAN_START → SCAN_END   the headline fades away (the camera kept the model below it during the build);
+ *   TOUR_START → TOUR_END   a one-line caption at the bottom while the camera circles the house;
+ *   LIGHT_START → LIGHT_END   daylight (a vellum wash) fills the view as the camera crosses the threshold;
+ *   FADE_START → 1       the stage, wash and all, dissolves onto the lobby, which ends pinned where the stage was.
  * The stage is transparent (and hidden from pointers) by the time it unsticks, so nothing ever slides over the tour.
  *
  * Three modes, chosen in the browser (`data-mode`):
  *   "3d"      WebGL and motion allowed: BlueprintCanvas, loaded lazily (next/dynamic, no SSR), so three.js and
  *             react-three-fiber are never in the landing page's first-load JavaScript. Until its first frame is
  *             drawn the server-rendered sheet shows, and the canvas then fades in over the same drawing.
- *   "static"  prefers-reduced-motion, or no WebGL: no canvas and no three.js at all. A two-step crossfade between
+ *   "static"  prefers-reduced-motion, or no WebGL: no canvas and no three.js at all, and the short 300svh section of
+ *             step 8.1 (STATIC_MARKS; reduced motion gets it from CSS before any script). A two-step crossfade between
  *             the server-rendered sheet and the server-rendered end state at the middle of the build, and the same
  *             hand-over as a step at FADE_START. Nothing moves.
  *   "pending" the server's render and hydration, before the browser has been asked: the sheet alone.
@@ -43,13 +48,17 @@ import dynamic from "next/dynamic";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { useGSAP } from "@gsap/react";
-import { BUILD_END, FADE_START, PRELOADER_MAX_MS } from "@/lib/landing/timeline"; // not blueprint.ts: that would bring its geometry into first load
+import { BUILD_END, FADE_START, LIGHT_END, LIGHT_START, PRELOADER_MAX_MS, SCAN_END, SCAN_START, TOUR_END, TOUR_START } from "@/lib/landing/timeline"; // not blueprint.ts or story.ts: that would bring their geometry into first load
 
 gsap.registerPlugin(ScrollTrigger, useGSAP);
 
 const BlueprintCanvas = dynamic(() => import("./BlueprintCanvas"), { ssr: false });
 
 type Mode = "pending" | "3d" | "static";
+
+/** The static mode keeps step 8.1's short section (two screens of scroll, nothing moving): the sheet, then at `swap` the
+ *  end-state drawing, then at `out` the hand-over. `buildEnd` is what data-build-end says there (the old build's end). */
+const STATIC_MARKS = { buildEnd: 0.8, swap: 0.4, out: 0.85 };
 
 const REDUCED = "(prefers-reduced-motion: reduce)";
 let webgl: boolean | undefined;
@@ -92,7 +101,7 @@ class CanvasBoundary extends Component<{ onError: () => void; children: ReactNod
 export function BlueprintScene({ sheet, endState }: { sheet: ReactNode; endState: ReactNode }) {
   const root = useRef<HTMLElement>(null);
   const stage = useRef<HTMLDivElement>(null);
-  const progress = useRef({ b: 0 }); // the build's progress, tweened by the timeline and read by the canvas every tick
+  const progress = useRef({ p: 0 }); // the hero's scroll, 0 → 1, tweened by the timeline and read by the canvas every tick (step H.2: was the build's b)
   const browser = useSyncExternalStore(subscribe, browserMode, serverMode);
   const [failed, setFailed] = useState(false);
   const mode: Mode = failed ? "static" : browser;
@@ -129,10 +138,15 @@ export function BlueprintScene({ sheet, endState }: { sheet: ReactNode; endState
       if (mode === "3d") {
         gsap
           .timeline({ defaults: { ease: "none" }, scrollTrigger: { ...trigger, scrub: true } })
-          .to(progress.current, { b: 1, duration: BUILD_END }, 0)
+          .to(progress.current, { p: 1, duration: 1 }, 0)
+          // The headline goes once the walls have risen; the tour's caption shows while the camera circles the house.
+          .to("[data-headline]", { autoAlpha: 0, y: -16, duration: SCAN_END - SCAN_START }, SCAN_START)
+          .fromTo("[data-tour-caption]", { autoAlpha: 0, y: 16 }, { autoAlpha: 1, y: 0, duration: 0.04 }, TOUR_START)
+          .to("[data-tour-caption]", { autoAlpha: 0, duration: 0.04 }, TOUR_END - 0.04)
+          .fromTo("[data-door-light]", { autoAlpha: 0 }, { autoAlpha: 1, duration: LIGHT_END - LIGHT_START }, LIGHT_START)
           .to(stage.current, { autoAlpha: 0, duration: 1 - FADE_START }, FADE_START);
       } else if (mode === "static") {
-        const at = (self: ScrollTrigger) => setStep(self.progress >= FADE_START ? 2 : self.progress >= BUILD_END / 2 ? 1 : 0);
+        const at = (self: ScrollTrigger) => setStep(self.progress >= STATIC_MARKS.out ? 2 : self.progress >= STATIC_MARKS.swap ? 1 : 0);
         ScrollTrigger.create({ ...trigger, onUpdate: at, onRefresh: at });
       }
     },
@@ -148,9 +162,10 @@ export function BlueprintScene({ sheet, endState }: { sheet: ReactNode; endState
       data-ready={ready}
       data-step={step}
       data-preloader="showing"
-      data-build-end={BUILD_END}
-      data-fade-start={FADE_START}
-      className="relative -mb-[100svh] h-[300svh]"
+      data-build-end={mode === "static" ? STATIC_MARKS.buildEnd : BUILD_END}
+      data-fade-start={mode === "static" ? STATIC_MARKS.out : FADE_START}
+      // Reduced motion gets the short static section from the first paint (CSS), a browser without WebGL once it is known.
+      className={`relative -mb-[100svh] ${mode === "static" ? "h-[300svh]" : "h-[800svh] motion-reduce:h-[300svh]"}`}
     >
       <div
         ref={stage}
@@ -174,6 +189,12 @@ export function BlueprintScene({ sheet, endState }: { sheet: ReactNode; endState
           <h1 className="font-display text-2xl leading-tight sm:text-4xl">From one drawing, a whole house</h1>
           <p className="mx-auto mt-3 max-w-[46ch] text-base text-vellum/85 sm:text-lg">This is the studio&apos;s own sample plan. Scroll to raise its walls.</p>
         </div>
+        {mode === "3d" && <div data-door-light aria-hidden className="pointer-events-none invisible absolute inset-0 bg-vellum opacity-0" />}
+        {mode === "3d" && (
+          <p data-tour-caption className="invisible pointer-events-none absolute inset-x-0 bottom-0 px-6 pb-12 text-center text-base text-iron opacity-0 sm:pb-16 sm:text-lg">
+            Every wall, door and window came from the plan. Keep scrolling to step inside.
+          </p>
+        )}
       </div>
       {preloader !== "gone" && (
         <div

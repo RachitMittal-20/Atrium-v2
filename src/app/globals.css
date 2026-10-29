@@ -45,6 +45,17 @@
   --text-5xl: 96px;
 }
 
+/* The landing hero's 3D scene only (step H.2, BlueprintCanvas.tsx reads them with getComputedStyle): never for text or
+   interface. Plain custom properties, not @theme tokens: no utility class uses them, and Tailwind v4 leaves unused theme
+   variables out of the CSS, which made the canvas read an empty string (white) for every one of them. */
+:root {
+  --color-glow: #6fdcff;   /* the lines of the plan rising, and the scan band that turns them into walls */
+  --color-sky: #dfe5e6;    /* the sky behind the finished house */
+  --color-lawn: #8a9a64;   /* the ground round the house */
+  --color-leaf: #56693b;   /* shrubs and tree canopies */
+  --color-paving: #d9d1c1; /* the terrace and the path to the front door */
+}
+
 body {
   background: var(--color-limestone);
   color: var(--color-iron);

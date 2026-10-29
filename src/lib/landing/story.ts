@@ -26,7 +26,7 @@ import type { Plan, Vec2 } from "@/types/plan";
 import { cameraAt, FOV, planBounds, type CameraPose } from "./blueprint";
 import { BUILD_END, ENTER_END, FADE_START, FINISH_END, FINISH_START, SCAN_END, SCAN_START, TOUR_END, TOUR_START } from "./timeline";
 
-export { BUILD_END, ENTER_END, FADE_START, FINISH_END, FINISH_START, SCAN_END, SCAN_START, TOUR_END, TOUR_START } from "./timeline";
+export { BUILD_END, ENTER_END, FADE_START, FINISH_END, FINISH_START, LIGHT_END, LIGHT_START, SCAN_END, SCAN_START, TOUR_END, TOUR_START } from "./timeline";
 
 const clamp01 = (t: number) => Math.min(1, Math.max(0, t));
 /** 0 → 0 and 1 → 1 exactly, flat at both ends. */
