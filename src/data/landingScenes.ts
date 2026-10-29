@@ -4,8 +4,9 @@
  * The photographed part of the landing story, in scroll order. LandingTour
  * renders one full-screen layer per entry and reveals each through an
  * arch-shaped opening. Since step H.2 it starts in the lobby: the hero's camera
- * walks in at the sample house's front door and the stage fades onto it, so the
- * mansion's exterior photograph (and its heading) is no longer shown. Text lives here, not in the component, so copy
+ * walks in at the sample house's front door and the stage fades onto it. Since
+ * step H.3 the mansion's exterior photograph is shown in the hero instead: a
+ * glowing sweep reveals it over the model's front view (BlueprintScene's VILLA). Text lives here, not in the component, so copy
  * changes never touch animation code.
  */
 export interface LandingScene {

@@ -2,7 +2,9 @@
  * BlueprintScene.tsx — the first screen of the landing page (step 8.1; a whole story since step H.2): the studio's REAL
  * sample plan drawn as a cyanotype sheet under the headline "From one drawing, a whole house". Scrolling raises the plan's
  * walls out of the sheet as glowing lines, a scan band turns them solid, the house is finished and dressed, the camera
- * circles it and walks in at the front door, and the stage fades onto the photo tour's lobby (LandingTour) beneath.
+ * circles it and comes to stand in front of it (step H.3: finished as a small villa at sunset), a glowing sweep reveals the
+ * illustrative villa photograph, the view pushes in towards its door, and the stage fades onto the photo tour's lobby
+ * (LandingTour) beneath.
  *
  * How it scrolls. The section is 800svh tall and its full-screen stage is CSS-sticky inside it, so the stage holds
  * still for seven screens of scrolling. The section's bottom overlaps the tour by 100svh (negative margin), so the
@@ -11,8 +13,11 @@
  *   0 → 1                `progress.p` (the story's scroll), which the 3D canvas turns into its phases and its camera
  *                        (marks in src/lib/landing/timeline.ts: build, scan, finish, tour, enter);
  *   SCAN_START → SCAN_END   the headline fades away (the camera kept the model below it during the build);
- *   TOUR_START → TOUR_END   a one-line caption at the bottom while the camera circles the house;
- *   LIGHT_START → LIGHT_END   daylight (a vellum wash) fills the view as the camera crosses the threshold;
+ *   TOUR_START → APPROACH_END   a one-line caption at the bottom while the camera circles the house and comes to the front;
+ *   REVEAL_START → REVEAL_END   (step H.3) a glowing band rises up the screen and the illustrative villa photograph
+ *                        appears below it, over the model's front view; then it pushes in towards its door to PUSH_END,
+ *                        with its "Illustrative photograph" label;
+ *   LIGHT_START → LIGHT_END   daylight (a vellum wash) fills the view as the push-in reaches the photograph's door;
  *   FADE_START → FADE_END   the stage, wash and all, dissolves onto the lobby, which ends pinned where the stage was.
  * The stage is transparent (and hidden from pointers) by the time it unsticks, so nothing ever slides over the tour.
  *
@@ -48,13 +53,21 @@ import dynamic from "next/dynamic";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { useGSAP } from "@gsap/react";
-import { BUILD_END, FADE_END, FADE_START, LIGHT_END, LIGHT_START, PRELOADER_MAX_MS, SCAN_END, SCAN_START, TOUR_END, TOUR_START } from "@/lib/landing/timeline"; // not blueprint.ts or story.ts: that would bring their geometry into first load
+import { APPROACH_END, BUILD_END, FADE_END, FADE_START, LIGHT_END, LIGHT_START, PRELOADER_MAX_MS, PUSH_END, REVEAL_END, REVEAL_START, SCAN_END, SCAN_START, TOUR_START } from "@/lib/landing/timeline"; // not blueprint.ts or story.ts: that would bring their geometry into first load
 
 gsap.registerPlugin(ScrollTrigger, useGSAP);
 
 const BlueprintCanvas = dynamic(() => import("./BlueprintCanvas"), { ssr: false });
 
 type Mode = "pending" | "3d" | "static";
+
+/** Step H.3: the villa photograph the front view turns into (the tour's old first photo, AI-generated, illustrative). */
+const VILLA = {
+  src: "/images/01_mansion.webp",
+  alt: "An illustrative photograph of a white villa with arched black-framed windows and a dark tiled roof at sunset, a fountain and a circular drive in front",
+};
+/** A transparent 1 px GIF (a data: URL, so no request) standing in for the photograph until the build is done. */
+const BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
 /** The static mode keeps step 8.1's short section (two screens of scroll, nothing moving): the sheet, then at `swap` the
  *  end-state drawing, then at `out` the hand-over. `buildEnd` is what data-build-end says there (the old build's end). */
@@ -108,6 +121,7 @@ export function BlueprintScene({ sheet, endState }: { sheet: ReactNode; endState
   const [ready, setReady] = useState(false);
   const [preloader, setPreloader] = useState<"showing" | "leaving" | "gone">("showing");
   const [step, setStep] = useState(0); // static mode: 0 the sheet, 1 the end state, 2 handed over
+  const [villa, setVilla] = useState(false); // the villa photograph is fetched only once the build is done (step H.3)
   // Stable, so the canvas's ticker effect is not torn down (and its frame count reset) when this re-renders.
   const onReady = useCallback(() => setReady(true), []);
   const onRender = useCallback((n: number) => root.current?.setAttribute("data-renders", String(n)), []);
@@ -137,12 +151,21 @@ export function BlueprintScene({ sheet, endState }: { sheet: ReactNode; endState
       const trigger = { trigger: root.current, start: "top top", end: "bottom bottom" };
       if (mode === "3d") {
         gsap
-          .timeline({ defaults: { ease: "none" }, scrollTrigger: { ...trigger, scrub: true } })
+          .timeline({ defaults: { ease: "none" }, scrollTrigger: { ...trigger, scrub: true, onUpdate: (self) => void (self.progress > BUILD_END && setVilla(true)) } })
           .to(progress.current, { p: 1, duration: 1 }, 0)
           // The headline goes once the walls have risen; the tour's caption shows while the camera circles the house.
           .to("[data-headline]", { autoAlpha: 0, y: -16, duration: SCAN_END - SCAN_START }, SCAN_START)
           .fromTo("[data-tour-caption]", { autoAlpha: 0, y: 16 }, { autoAlpha: 1, y: 0, duration: 0.04 }, TOUR_START)
-          .to("[data-tour-caption]", { autoAlpha: 0, duration: 0.04 }, TOUR_END - 0.04)
+          .to("[data-tour-caption]", { autoAlpha: 0, duration: 0.03 }, APPROACH_END - 0.03)
+          // Step H.3: from the front view a glowing band rises up the screen with the villa photograph below it, then the
+          // view pushes in towards the photograph's door, with its illustrative label, before the daylight wash.
+          .fromTo("[data-villa]", { clipPath: "inset(100% 0% 0% 0%)" }, { clipPath: "inset(0% 0% 0% 0%)", duration: REVEAL_END - REVEAL_START }, REVEAL_START)
+          .fromTo("[data-villa-band]", { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.005 }, REVEAL_START) // hidden until the reveal (a fromTo renders its start at once)
+          .fromTo("[data-villa-band]", { top: "100%" }, { top: "0%", duration: REVEAL_END - REVEAL_START }, REVEAL_START)
+          .to("[data-villa-band]", { autoAlpha: 0, duration: 0.015 }, REVEAL_END)
+          .fromTo("[data-villa-photo]", { scale: 1 }, { scale: 1.3, duration: PUSH_END - REVEAL_END, ease: "power1.in" }, REVEAL_END)
+          .fromTo("[data-villa-caption]", { autoAlpha: 0, y: 12 }, { autoAlpha: 1, y: 0, duration: 0.02 }, REVEAL_END)
+          .to("[data-villa-caption]", { autoAlpha: 0, duration: 0.02 }, LIGHT_START - 0.02)
           .fromTo("[data-door-light]", { autoAlpha: 0 }, { autoAlpha: 1, duration: LIGHT_END - LIGHT_START }, LIGHT_START)
           .to(stage.current, { autoAlpha: 0, duration: FADE_END - FADE_START }, FADE_START);
       } else if (mode === "static") {
@@ -189,10 +212,31 @@ export function BlueprintScene({ sheet, endState }: { sheet: ReactNode; endState
           <h1 className="font-display text-2xl leading-tight sm:text-4xl">From one drawing, a whole house</h1>
           <p className="mx-auto mt-3 max-w-[46ch] text-base text-vellum/85 sm:text-lg">This is the studio&apos;s own sample plan. Scroll to raise its walls.</p>
         </div>
+        {mode === "3d" && (
+          // The illustrative villa photograph (an AI-generated image, not Atrium output), revealed over the model's front view.
+          <div data-villa className="pointer-events-none absolute inset-0 overflow-hidden" style={{ clipPath: "inset(100% 0% 0% 0%)" }}>
+            {/* eslint-disable-next-line @next/next/no-img-element -- full-bleed scroll art under a transform, as the tour's photos */}
+            <img
+              data-villa-photo
+              src={villa ? VILLA.src : BLANK}
+              alt={VILLA.alt}
+              width={1600}
+              height={900}
+              decoding="async"
+              className="h-full w-full object-cover will-change-transform"
+              style={{ transformOrigin: "50% 62%" }}
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-iron/70 via-iron/10 to-transparent" />
+            <p data-villa-caption className="invisible absolute inset-x-0 bottom-0 mx-auto max-w-[44ch] px-6 pb-12 text-center text-sm text-vellum opacity-0 [text-shadow:0_1px_3px_rgb(0_0_0/0.7),0_0_12px_rgb(0_0_0/0.45)] sm:pb-16 sm:text-base">
+              Illustrative photograph: one way a house like this could be finished. Atrium builds the plain model you just saw, from the plan.
+            </p>
+          </div>
+        )}
+        {mode === "3d" && <div data-villa-band aria-hidden className="pointer-events-none invisible absolute inset-x-0 h-[3px] -translate-y-1/2 bg-[var(--color-glow)] opacity-0 shadow-[0_0_18px_6px_var(--color-glow)]" />}
         {mode === "3d" && <div data-door-light aria-hidden className="pointer-events-none invisible absolute inset-0 bg-vellum opacity-0" />}
         {mode === "3d" && (
           <p data-tour-caption className="invisible pointer-events-none absolute inset-x-0 bottom-0 px-6 pb-12 text-center text-base text-iron opacity-0 sm:pb-16 sm:text-lg">
-            Every wall, door and window came from the plan. Keep scrolling to step inside.
+            Every wall, door and window came from the plan. The roof, the garden and the light are dressing.
           </p>
         )}
       </div>

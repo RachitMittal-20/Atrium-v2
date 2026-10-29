@@ -41,7 +41,8 @@
  * Step H.2 (the hero is a story now: lines rise, a scan turns them solid, the camera tours the house and walks in at the
  * front door; see src/lib/landing/story.ts): the build is the first 24% of a seven-screen scroll, so every "% of the
  * build" above is of that first phase, which still uses cameraAt and its no-crop fitting. The tour starts in the lobby, so
- * the photos are 02 to 05 (four), and Step inside is gone. The story's later phases are checked in Node
+ * the photos are 02 to 05 (four), and Step inside is gone. Step H.3: the villa photograph (01) is shown in the hero's
+ * reveal, fetched once the build is done, so it is requested before the tour's pin. The story's later phases are checked in Node
  * (scripts/test-landing-story.ts) and by `story` here: frames at the settle, the tour, the walk in, the daylight wash and
  * the end are drawn and differ from each other, the sky shows behind the finished house, and the stage dissolves onto
  * the lobby.
@@ -477,14 +478,15 @@ async function runLoad(browser: Browser, width: number, height: number, touch: b
     await scrollTo(page, g.span - 400, touch, tol, "the tour's first screen", 200);
     await until(() => photos.includes("03"), `${tag}: the living room was never requested once the tour was near`);
     await page.waitForLoadState("networkidle");
-    assert.deepEqual([...photos].sort(), ["02", "03"], `${tag}: before the tour's pin the first two (got ${photos}, scrollY ${await page.evaluate("scrollY")} of pin at ${g.span})`);
+    // Step H.3: by now the hero has passed its build, so the villa photograph (01, shown in the hero's reveal) is in too.
+    assert.deepEqual([...photos].sort(), ["01", "02", "03"], `${tag}: before the tour's pin the villa and the tour's first two (got ${photos}, scrollY ${await page.evaluate("scrollY")} of pin at ${g.span})`);
     const spacer = await page.evaluate<number>(`(() => { const p = document.querySelector("${TOUR}").parentElement; if (!p.classList.contains("pin-spacer")) throw new Error("the tour is not pinned"); return p.offsetHeight - innerHeight; })()`);
     await scrollTo(page, g.span + Math.round(spacer * 0.14), touch, tol, "into the first room change", 200);
     await until(() => photos.includes("04"), `${tag}: the dining room was never requested once the scroll reached the living room`);
     await page.waitForLoadState("networkidle");
-    assert.deepEqual([...photos].sort(), ["02", "03", "04"], `${tag}: one room ahead of the scroll, no more (got ${photos})`);
+    assert.deepEqual([...photos].sort(), ["01", "02", "03", "04"], `${tag}: one room ahead of the scroll, no more (got ${photos})`);
     await scrollTo(page, g.span + Math.round(spacer * 0.875), touch, tol, "near the end of the tour", 600);
-    await until(() => photos.length === 4, `${tag}: not every photo arrived by the end of the tour (got ${photos})`);
+    await until(() => photos.length === 5, `${tag}: not every photo arrived by the end of the tour (got ${photos})`);
     console.log(`  ${tag}: photos requested in order: ${photos.join(", ")} (vh ${vh})`);
   } finally {
     await context.close();
@@ -650,7 +652,8 @@ async function runStory(browser: Browser, width: number, height: number, touch: 
     const g = await geometry(page);
     const tol = Math.round(g.span * 0.01);
     // Scroll shares from src/lib/landing/timeline.ts: the walls risen as lines, the settle, the tour, the front, the door, the wash.
-    const marks: [string, number][] = [["built", 0.24], ["scan", 0.34], ["tour", 0.58], ["front", 0.74], ["door", 0.86], ["wash", 0.955]];
+    // Step H.3: the front view at 0.72, the sweep halfway at 0.785, the photograph pushing in at 0.86 (its label shows from 0.83 to 0.88), the wash at 0.955.
+    const marks: [string, number][] = [["built", 0.22], ["scan", 0.32], ["tour", 0.52], ["front", 0.72], ["reveal", 0.785], ["photo", 0.86], ["wash", 0.955]];
     const frames: Pixels[] = [];
     for (const [name, at] of marks) {
       step(`${tag}: ${name}`);
@@ -663,20 +666,25 @@ async function runStory(browser: Browser, width: number, height: number, touch: 
       console.log(`  ${tag}: ${marks[i][0]} differs from ${marks[i - 1][0]} in ${pct(d)} of pixels`);
       assert.ok(d >= 0.05, `${tag}: ${marks[i][0]} differs from ${marks[i - 1][0]} (${pct(d)})`);
     }
-    // The finished house stands under the sky: the top rows of the tour frame are the sky token, within 40 summed.
-    const sky = [0xdf, 0xe5, 0xe6];
+    // The finished house stands under the sky: the top rows of the tour frame are the light sunset sky (step H.3: a dome
+    // from a warm band to a dusky blue overhead, every colour over 400 summed), not the dark ground (iron sums to 69).
     const tour = frames[2];
     let near = 0;
     const rows = Math.round(tour.h * 0.04);
-    for (let i = 0; i < rows * tour.w; i++) if (Math.abs(tour.data[3 * i] - sky[0]) + Math.abs(tour.data[3 * i + 1] - sky[1]) + Math.abs(tour.data[3 * i + 2] - sky[2]) <= 40) near++;
+    for (let i = 0; i < rows * tour.w; i++) if (tour.data[3 * i] + tour.data[3 * i + 1] + tour.data[3 * i + 2] > 400) near++;
     console.log(`  ${tag}: top ${rows} rows of the tour frame are sky in ${pct(near / (rows * tour.w))}`);
     assert.ok(near / (rows * tour.w) >= 0.9, `${tag}: the sky shows above the finished house (${pct(near / (rows * tour.w))})`);
     // While touring the headline has gone and the caption shows.
-    await scrollTo(page, Math.round(g.span * 0.58), touch, tol, "tour again", touch ? 500 : 1200);
+    await scrollTo(page, Math.round(g.span * 0.52), touch, tol, "tour again", touch ? 500 : 1200);
     await settle(page, "tour again");
     const ops = await page.evaluate<number[]>(`[document.querySelector("[data-headline]"), document.querySelector("[data-tour-caption]")].map((e) => Number(getComputedStyle(e).opacity))`);
     assert.ok(ops[0] < 0.05 && ops[1] > 0.95, `${tag}: while touring the headline is gone (${ops[0]}) and the caption shows (${ops[1]})`);
-    // The daylight wash: the vellum token over nearly the whole frame as the camera crosses the threshold.
+    // The villa photograph with its illustrative label, then the daylight wash: the vellum token over nearly the whole frame.
+    await scrollTo(page, Math.round(g.span * 0.86), touch, tol, "photo again", touch ? 500 : 1200);
+    await settle(page, "photo again");
+    const villa = await page.evaluate<{ src: string; complete: boolean; label: number; text: string }>(`(() => { const i = document.querySelector("[data-villa-photo]"); const c = document.querySelector("[data-villa-caption]"); return { src: i.getAttribute("src"), complete: i.complete && i.naturalWidth > 1, label: Number(getComputedStyle(c).opacity), text: c.textContent }; })()`);
+    assert.ok(villa.src.includes("01_mansion") && villa.complete, `${tag}: the villa photograph is loaded (${villa.src.slice(0, 40)})`);
+    assert.ok(villa.label > 0.95 && /Illustrative photograph/.test(villa.text), `${tag}: the photograph carries its illustrative label (opacity ${villa.label})`);
     const vellum = [0xf4, 0xef, 0xe5];
     const wash = frames[frames.length - 1];
     let lit = 0;
