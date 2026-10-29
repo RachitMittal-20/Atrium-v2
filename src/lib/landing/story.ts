@@ -1,7 +1,8 @@
 /**
- * story.ts — the pure maths of the landing hero's story after the build (step H.2): which phase each scroll position is
- * in, the house's front door, and where the camera stands while it settles into an orbit, tours round the house and
- * walks in at the front door. No React and no three.js, so the lazy 3D canvas and the Node test
+ * story.ts — the pure maths of the landing hero's story after the build (step H.2, reworked in H.3): which phase each
+ * scroll position is in, the house's front door, and where the camera stands while it settles into an orbit, tours round
+ * the house and comes down to the front view, facing the house across its garden (H.2 walked in through the door; since
+ * H.3 the illustrative villa photograph is revealed from the front view instead, in the DOM, see BlueprintScene). No React and no three.js, so the lazy 3D canvas and the Node test
  * (scripts/test-landing-scene.ts) read the same numbers.
  *
  * The scroll `p` is the hero's whole scroll, 0 to 1, with its marks in timeline.ts:
@@ -10,12 +11,13 @@
  *   BUILD_END → TOUR_START   the camera settles from the build's last pose into the orbit round the house
  *   SCAN, FINISH             what the canvas shows meanwhile (storyAt's `scan` and `finish`)
  *   TOUR_START → TOUR_END    the orbit turns to the front door's side and comes down a little
- *   TOUR_END → ENTER_END     the camera comes to stand in front of the door at eye height, then walks straight through it
- *   FADE_START → 1           the hand-over fade (`fade`)
+ *   TOUR_END → APPROACH_END  the camera comes down to the front view (frontView) and holds there
+ *   FADE_START → FADE_END    the hand-over fade (`fade`)
  *
  * Everything is derived from the Plan: the orbit frames planBounds and the tallest wall, and the front door is the
  * plan's own exterior door (frontDoor: the widest door with a room on one side and no room on the other, found with
- * deriveRooms and openingFrame). A plan with no exterior door keeps the camera on its orbit (no walk in).
+ * deriveRooms and openingFrame). A plan with no exterior door keeps the camera on its orbit (no front view). The
+ * framing allows for the roof (villa.ts houseTop), which stands above the walls.
  * World = (plan x, height, plan y), as in PlanModel. Azimuth 0 looks from due south (+z), turning towards the east (+x).
  * Connects to: src/lib/landing/{blueprint,timeline}.ts, src/lib/plan/rooms.ts, src/lib/plan2d/openings.ts,
  * src/components/landing/BlueprintCanvas.tsx.
@@ -24,9 +26,10 @@ import { pointInPolygon, deriveRooms } from "@/lib/plan/rooms";
 import { openingFrame } from "@/lib/plan2d/openings";
 import type { Plan, Vec2 } from "@/types/plan";
 import { cameraAt, FOV, planBounds, type CameraPose } from "./blueprint";
-import { BUILD_END, ENTER_END, FADE_END, FADE_START, FINISH_END, FINISH_START, SCAN_END, SCAN_START, TOUR_END, TOUR_START } from "./timeline";
+import { APPROACH_END, BUILD_END, FADE_END, FADE_START, FINISH_END, FINISH_START, SCAN_END, SCAN_START, TOUR_END, TOUR_START } from "./timeline";
+import { houseTop } from "./villa";
 
-export { BUILD_END, ENTER_END, FADE_END, FADE_START, FINISH_END, FINISH_START, LIGHT_END, LIGHT_START, SCAN_END, SCAN_START, TOUR_END, TOUR_START } from "./timeline";
+export { APPROACH_END, BUILD_END, FADE_END, FADE_START, FINISH_END, FINISH_START, LIGHT_END, LIGHT_START, PUSH_END, REVEAL_END, REVEAL_START, SCAN_END, SCAN_START, TOUR_END, TOUR_START } from "./timeline";
 
 const clamp01 = (t: number) => Math.min(1, Math.max(0, t));
 /** 0 → 0 and 1 → 1 exactly, flat at both ends. */
@@ -50,8 +53,8 @@ export interface StoryState {
   finish: number;
   /** The orbit's progress round the house. */
   tour: number;
-  /** The walk to and through the front door. */
-  enter: number;
+  /** The way down from the orbit to the front view. */
+  approach: number;
   /** The hand-over fade. */
   fade: number;
 }
@@ -62,7 +65,7 @@ export function storyAt(p: number): StoryState {
     scan: smooth(phase(p, SCAN_START, SCAN_END)),
     finish: smooth(phase(p, FINISH_START, FINISH_END)),
     tour: phase(p, TOUR_START, TOUR_END),
-    enter: phase(p, TOUR_END, ENTER_END),
+    approach: phase(p, TOUR_END, APPROACH_END),
     fade: phase(p, FADE_START, FADE_END),
   };
 }
@@ -109,20 +112,15 @@ const TOUR_POLAR = { start: 64, end: 76 };
 const ORBIT_AIM = 1.2;
 /** Room round the house in the orbit's framing, as a share of the view (the house never touches its edges). */
 const ORBIT_FIT = 0.9;
-/** Eye height for the walk in, metres; how far in front of the door the walk pauses, and how far inside it ends. */
-export const EYE = 1.6;
-const FRONT_DIST = 4.5;
-const INSIDE_DIST = 1.6;
-/** Where in the walk the camera stands still in front of the door before stepping through. */
-const AT_DOOR = 0.6;
+/** The front view: how far above level it looks down, degrees, and how much of the view the house may fill. */
+const FRONT_TILT = 9;
+const FRONT_FIT = 0.78;
 
-const tallest = (plan: Plan) => Math.max(2.7, ...plan.walls.map((w) => w.height));
-
-/** The orbit's aim and radius for a view of `aspect`: the house's box (from the floor to the tallest wall) fits inside
+/** The orbit's aim and radius for a view of `aspect`: the house's box (from the floor to the roof's ridge) fits inside
  *  ORBIT_FIT of the view from every direction, because its bounding sphere does. */
 export function orbitFrame(plan: Plan, aspect: number): { target: V3; distance: number; radius: number } {
   const pb = planBounds(plan);
-  const H = tallest(plan);
+  const H = houseTop(plan);
   const target: V3 = [pb.x + pb.w / 2, ORBIT_AIM, pb.y + pb.h / 2];
   // The sphere round the box, centred on the aim (which is not the box's middle height, so take the farther corner).
   const radius = Math.hypot(pb.w / 2, pb.h / 2, Math.max(ORBIT_AIM, H - ORBIT_AIM));
@@ -144,8 +142,27 @@ const turn = (a: number, b: number) => {
 };
 
 export interface StoryCamera extends CameraPose {
-  /** The near plane, metres: smaller for the walk through the door, so its jambs never cut into the view. */
+  /** The near plane, metres. */
   near: number;
+}
+
+/**
+ * The front view for a view of `aspect`: aimed at the middle of the house's front (its centre moved onto the front
+ * door's wall line, at half the house's height), looking FRONT_TILT degrees down from out along the door's normal, far
+ * enough back that the house's full width (with the roof's overhang) and height fit inside FRONT_FIT of the view.
+ */
+export function frontView(plan: Plan, door: FrontDoor, aspect: number): CameraPose {
+  const pb = planBounds(plan);
+  const top = houseTop(plan);
+  const c = { x: pb.x + pb.w / 2, y: pb.y + pb.h / 2 };
+  const [nx, nz] = [door.outward.x, door.outward.y];
+  const out = (door.centre.x - c.x) * nx + (door.centre.y - c.y) * nz; // from the centre out to the door's wall line
+  const half = Math.abs(nx) * pb.h / 2 + Math.abs(nz) * pb.w / 2 + 0.6; // half the front's width, with the overhang
+  const t = Math.tan(rad(FOV / 2)) * FRONT_FIT;
+  const d = Math.max(half / (t * aspect), top / 2 / t) + Math.abs(nx) * pb.w / 2 + Math.abs(nz) * pb.h / 2; // plus the depth behind the front
+  const target: V3 = [c.x + nx * out, top / 2, c.y + nz * out];
+  const tilt = Math.tan(rad(FRONT_TILT));
+  return { position: [target[0] + nx * d, target[1] + d * tilt, target[2] + nz * d], target };
 }
 
 /**
@@ -173,17 +190,8 @@ export function storyCamera(p: number, plan: Plan, aspect: number, reserve = 0):
   const round = orbitPose(target, distance, rad(lerp(TOUR_POLAR.start, TOUR_POLAR.end, t)), lerp(az0, az1, t));
   if (p <= TOUR_END || !door) return { ...round, near: 0.1 };
 
-  // The walk in: to a point in front of the door at eye height, a pause, then straight through it along its normal.
-  const [cx, cz, nx, nz] = [door.centre.x, door.centre.y, door.outward.x, door.outward.y];
-  const front: V3 = [cx + nx * FRONT_DIST, EYE, cz + nz * FRONT_DIST];
-  const atDoor: V3 = [cx, Math.min(EYE, door.height) - 0.15, cz];
-  const inside: V3 = [cx - nx * INSIDE_DIST, EYE, cz - nz * INSIDE_DIST];
-  const beyond: V3 = [cx - nx * 8, EYE - 0.1, cz - nz * 8];
-  const u = s.enter;
-  if (u <= AT_DOOR) {
-    const k = smooth(u / AT_DOOR);
-    return { position: mix(round.position, front, k), target: mix(round.target, atDoor, k), near: lerp(0.1, 0.05, k) };
-  }
-  const k = smooth((u - AT_DOOR) / (1 - AT_DOOR));
-  return { position: mix(front, inside, k), target: mix(atDoor, beyond, k), near: 0.05 };
+  // The way down to the front view, then a hold there while the photograph is revealed over it.
+  const front = frontView(plan, door, aspect);
+  const k = smooth(s.approach);
+  return { position: mix(round.position, front.position, k), target: mix(round.target, front.target, k), near: 0.1 };
 }

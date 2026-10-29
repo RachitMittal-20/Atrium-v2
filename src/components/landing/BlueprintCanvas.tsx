@@ -1,36 +1,40 @@
 /**
- * BlueprintCanvas.tsx — the 3D half of the landing page's hero (step 8.1, rebuilt as a story in step H.2), loaded lazily
- * by BlueprintScene (next/dynamic, no SSR), so three.js and react-three-fiber stay out of the landing page's first-load
- * JavaScript and are never fetched under reduced motion or without WebGL.
+ * BlueprintCanvas.tsx — the 3D half of the landing page's hero (step 8.1, a story since step H.2, finished as a small
+ * villa at sunset since step H.3), loaded lazily by BlueprintScene (next/dynamic, no SSR), so three.js and
+ * react-three-fiber stay out of the landing page's first-load JavaScript and are never fetched under reduced motion or
+ * without WebGL.
  *
  * The story, scrubbed by the scroll (`progress.p`, 0 → 1; phases from storyAt in src/lib/landing/story.ts):
  *   1. build    the cyanotype sheet seen straight down; the plan's walls rise out of it as glowing lines (their crease
  *               edges, drawn as fat lines with a soft halo) while the camera tilts to a three-quarter view;
  *   2. scan     a glowing band climbs the walls: below it they are solid, above it they are still lines;
- *   3. finish   floors, the roof (dropping into place), window glass, the paved terrace, the path, shrubs and trees
- *               (grown one after another) come in, the sheet gives way to the lawn and the dark ground to the sky;
- *   4. tour     the camera circles to the front of the house;
- *   5. enter    it walks up to the front door at eye height and through it; BlueprintScene fades the stage meanwhile
- *               and the photo tour's lobby is underneath.
+ *   3. finish   the hip roof drops into place; black frames, glazing bars and warm glass fill the windows, the closed
+ *               double front door, its porch and lamps appear; the terrace, path, round drive and fountain, hedges,
+ *               cypresses, shrubs and trees come in (grown one after another); the sheet gives way to the lawn, the dark
+ *               ground to a sunset sky, and a low warm sun casts soft shadows;
+ *   4. tour     the camera circles to the front of the house; then it comes down to the front view and holds there while
+ *               BlueprintScene reveals the illustrative villa photograph over it (DOM, not this canvas).
  *
  * What is derived from the REAL sample plan, and what is decoration:
  *   - the sheet: the server-rendered SVG already on the page, serialised with its computed token colours and laid on
  *     the ground over exactly its own box, so the first frame (cameraAt(0)) is the drawing the page painted first;
  *   - the walls, solid, lines and band: buildBlueprintWalls, the studio's own buildWallMeshData meshes with every door
  *     and window cut out (the band and the solid walls are the same meshes, clipped by planes at the band's height);
- *   - floors and roof: deriveRooms' polygons through the studio's buildFloorGeometry; the walls' own tops close the roof;
- *   - window glass: one pane per window, placed with openingFrame at its sill and height;
- *   - the camera: storyCamera (cameraAt for the build, then the orbit and the walk in at frontDoor);
- *   - DECORATION, not plan data: the terrace, path, shrubs and trees (sitePlan, seeded from the footprint and the door),
- *     the lawn and the sky. Their colours are the landing-only tokens in globals.css (glow, sky, lawn, leaf, paving).
+ *   - floors: deriveRooms' polygons through the studio's buildFloorGeometry;
+ *   - roof, frames, glass, the front door, porch and lamps: villa.ts, placed on the plan's footprint and its own openings
+ *     (the roof's form and pitch are a choice made there; a plan has no roof);
+ *   - the camera: storyCamera (cameraAt for the build, then the orbit and the front view at frontDoor);
+ *   - DECORATION, not plan data: the garden (sitePlan, seeded from the footprint and the door), the lawn, the sky and the
+ *     sun. Their colours are the landing-only custom properties in globals.css.
  *
  * The clock. frameloop="never": react-three-fiber runs no loop of its own (CLAUDE.md: nothing but gsap.ticker drives
  * animation). A gsap.ticker callback renders a frame only when something changed (the scroll, the canvas size or the
  * sheet texture) AND the stage is on screen (IntersectionObserver), so the scene costs nothing while the page rests
  * or once it has scrolled away. Each frame drawn is counted to `onRender`. Pixel ratio is capped at 1.5 on coarse
- * (touch) pointers and 2 elsewhere. No tone mapping (`flat`), so the sheet's colours match the DOM drawing.
- * Connects to: src/lib/landing/{blueprint,blueprintMeshes,story,site}.ts, src/lib/plan/{meshBuilders,rooms}.ts,
- * src/lib/plan2d/openings.ts, src/components/landing/BlueprintScene.tsx.
+ * (touch) pointers and 2 elsewhere; the sun's shadow map is 1024 px there and 2048 elsewhere. No tone mapping (`flat`),
+ * so the sheet's colours match the DOM drawing.
+ * Connects to: src/lib/landing/{blueprint,blueprintMeshes,story,site,villa}.ts, src/lib/plan/{meshBuilders,rooms}.ts,
+ * src/components/landing/BlueprintScene.tsx.
  */
 "use client";
 
@@ -44,11 +48,11 @@ import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeome
 import { samplePlan } from "@/data/samplePlan";
 import { FOV, planBounds, sheetBox, wallRise } from "@/lib/landing/blueprint";
 import { buildBlueprintWalls } from "@/lib/landing/blueprintMeshes";
-import { sitePlan } from "@/lib/landing/site";
+import { DRIVE, FOUNTAIN, sitePlan } from "@/lib/landing/site";
 import { frontDoor, storyAt, storyCamera, type StoryState } from "@/lib/landing/story";
+import { dressing, hipRoof, piecesTriangles, type Piece } from "@/lib/landing/villa";
 import { buildFloorGeometry } from "@/lib/plan/meshBuilders";
 import { deriveRooms } from "@/lib/plan/rooms";
-import { openingFrame } from "@/lib/plan2d/openings";
 import type { Plan } from "@/types/plan";
 
 interface Props {
@@ -106,9 +110,18 @@ function headlineReserve(stage: HTMLElement | null): number {
   return s.height > 0 ? Math.min(0.5, Math.max(0, (h.bottom - s.top + 12) / s.height)) : 0;
 }
 
+/** A mesh from plain triangles (villa.ts), normals given or worked out per face. */
+function triangles(positions: number[], normals?: number[]): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  if (normals) g.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  else g.computeVertexNormals();
+  return g;
+}
+
 interface World {
   root: THREE.Group;
-  /** The sky and the fog, which the canvas's scene takes while this world is shown. */
+  /** The ground colour behind everything (the sky dome fades in over it) and the haze, which the scene takes while shown. */
   background: THREE.Color;
   fog: THREE.Fog;
   sheet: THREE.MeshBasicMaterial;
@@ -118,43 +131,51 @@ interface World {
 }
 
 /** Every object of the story, built once for the plan, and how each one follows the story's state. */
-function buildWorld(plan: Plan): World {
+function buildWorld(plan: Plan, coarse: boolean): World {
+  const col = (name: string) => new THREE.Color(token(name));
   const c = {
-    vellum: new THREE.Color(token("vellum")),
-    limestone: new THREE.Color(token("limestone")),
-    stone: new THREE.Color(token("stone")),
-    smoke: new THREE.Color(token("smoke")),
-    iron: new THREE.Color(token("iron")),
-    cyanotype: new THREE.Color(token("cyanotype")),
-    glow: new THREE.Color(token("glow")),
-    sky: new THREE.Color(token("sky")),
-    lawn: new THREE.Color(token("lawn")),
-    leaf: new THREE.Color(token("leaf")),
-    paving: new THREE.Color(token("paving")),
+    vellum: col("vellum"),
+    limestone: col("limestone"),
+    stone: col("stone"),
+    smoke: col("smoke"),
+    iron: col("iron"),
+    cyanotype: col("cyanotype"),
+    glow: col("glow"),
+    lawn: col("lawn"),
+    leaf: col("leaf"),
+    paving: col("paving"),
+    roof: col("roof"),
+    lamplight: col("lamplight"),
+    top: col("sunset-top"),
+    band: col("sunset-glow"),
+    horizon: col("sunset-horizon"),
+    sun: col("sunlight"),
   };
   const H = Math.max(2.7, ...plan.walls.map((w) => w.height));
   const box = sheetBox(plan);
   const pb = planBounds(plan);
+  const centre = new THREE.Vector3(pb.x + pb.w / 2, 0, pb.y + pb.h / 2);
   const door = frontDoor(plan);
   const site = sitePlan(pb, door);
   const owned: { dispose: () => void }[] = []; // everything this world made, for dispose()
   const own = <T extends { dispose: () => void }>(x: T) => (owned.push(x), x);
   const root = new THREE.Group();
+  const shadowed = (m: THREE.Mesh, cast = true, receive = true) => ((m.castShadow = cast), (m.receiveShadow = receive), m);
 
-  // ---- the sheet, the lawn, the terrace and the path
+  // ---- the sheet, the lawn, the terrace, the path and the drive
   const flat = (g: THREE.BufferGeometry) => own(g).rotateX(-Math.PI / 2);
   const sheet = own(new THREE.MeshBasicMaterial({ transparent: true, fog: false }));
   const sheetMesh = new THREE.Mesh(flat(new THREE.PlaneGeometry(box.w, box.h)), sheet);
   sheetMesh.position.set(box.x + box.w / 2, 0, box.y + box.h / 2);
   const lawn = own(new THREE.MeshLambertMaterial({ color: c.lawn, transparent: true, opacity: 0 }));
-  const lawnMesh = new THREE.Mesh(flat(new THREE.CircleGeometry(400, 96)), lawn);
-  lawnMesh.position.set(pb.x + pb.w / 2, -0.02, pb.y + pb.h / 2);
+  const lawnMesh = shadowed(new THREE.Mesh(flat(new THREE.CircleGeometry(400, 96)), lawn), false);
+  lawnMesh.position.set(centre.x, -0.02, centre.z);
   const paving = own(new THREE.MeshLambertMaterial({ color: c.paving, transparent: true, opacity: 0, polygonOffset: true, polygonOffsetFactor: -1 }));
-  const terrace = new THREE.Mesh(flat(new THREE.PlaneGeometry(site.terrace.w, site.terrace.h)), paving);
+  const terrace = shadowed(new THREE.Mesh(flat(new THREE.PlaneGeometry(site.terrace.w, site.terrace.h)), paving), false);
   terrace.position.set(site.terrace.x + site.terrace.w / 2, 0.004, site.terrace.y + site.terrace.h / 2);
   root.add(sheetMesh, lawnMesh, terrace);
   if (site.path) {
-    const path = new THREE.Mesh(flat(new THREE.PlaneGeometry(site.path.width, site.path.length)), paving);
+    const path = shadowed(new THREE.Mesh(flat(new THREE.PlaneGeometry(site.path.width, site.path.length)), paving), false);
     path.position.set(site.path.centre.x, 0.006, site.path.centre.y);
     path.rotation.y = Math.atan2(-site.path.dir.x, -site.path.dir.y); // the plane's length (−z after flat) along the path
     root.add(path);
@@ -175,7 +196,7 @@ function buildWorld(plan: Plan): World {
   const bands = new THREE.Group();
   const lines = new THREE.Group();
   for (const w of walls) {
-    solids.add(new THREE.Mesh(w.geometry, solid));
+    solids.add(shadowed(new THREE.Mesh(w.geometry, solid)));
     bands.add(new THREE.Mesh(w.geometry, band));
     const edges = own(new THREE.EdgesGeometry(w.geometry, 30));
     const fat = own(new LineSegmentsGeometry().fromEdgesGeometry(edges));
@@ -185,38 +206,65 @@ function buildWorld(plan: Plan): World {
   root.add(rising);
   owned.push({ dispose: () => walls.forEach((w) => w.geometry.dispose()) }); // re-uploaded if the canvas mounts again
 
-  // ---- floors, roof and glass (finish)
-  const rooms = deriveRooms(plan);
+  // ---- floors, the roof and the villa's dressing (finish)
   const floor = own(new THREE.MeshLambertMaterial({ color: c.stone, transparent: true, opacity: 0, polygonOffset: true, polygonOffsetFactor: -2 }));
-  const roof = own(new THREE.MeshLambertMaterial({ color: c.limestone, side: THREE.DoubleSide, transparent: true, opacity: 0 }));
-  const roofs = new THREE.Group();
-  for (const r of rooms) {
-    const g = own(buildFloorGeometry(r.polygon));
-    const f = new THREE.Mesh(g, floor);
+  for (const r of deriveRooms(plan)) {
+    const f = new THREE.Mesh(own(buildFloorGeometry(r.polygon)), floor);
     f.position.y = 0.012;
     root.add(f);
-    roofs.add(new THREE.Mesh(g, roof));
   }
-  root.add(roofs);
-  const glass = own(new THREE.MeshBasicMaterial({ color: c.cyanotype, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
-  for (const o of plan.openings) {
-    const wall = plan.walls.find((w) => w.id === o.wallId);
-    if (o.kind !== "window" || !wall) continue;
-    const f = openingFrame(wall, o);
-    const pane = new THREE.Mesh(own(new THREE.PlaneGeometry(o.width, o.height)), glass);
-    pane.position.set(f.centre.x, o.sillHeight + o.height / 2, f.centre.y);
-    pane.rotation.y = Math.atan2(f.normal.x, f.normal.y); // the pane's +z turned to the wall's normal
-    root.add(pane);
+  const roofMat = own(new THREE.MeshLambertMaterial({ color: c.roof, side: THREE.DoubleSide, transparent: true, opacity: 0 }));
+  const roof = shadowed(new THREE.Mesh(own(triangles(hipRoof(plan).positions)), roofMat));
+  root.add(roof);
+  const dress = dressing(plan, door);
+  const dressed = new THREE.Group();
+  const frameMat = own(new THREE.MeshLambertMaterial({ color: c.iron }));
+  const stoneMat = own(new THREE.MeshLambertMaterial({ color: c.limestone }));
+  const warm = own(new THREE.MeshBasicMaterial({ color: c.lamplight, side: THREE.DoubleSide, fog: false }));
+  const pieces = (list: Piece[], m: THREE.Material) => {
+    const t = piecesTriangles(list);
+    return shadowed(new THREE.Mesh(own(triangles(t.positions, t.normals)), m));
+  };
+  dressed.add(pieces(dress.frames, frameMat), pieces(dress.stone, stoneMat), pieces(dress.lamps, warm));
+  for (const p of dress.panes) {
+    const pane = new THREE.Mesh(own(new THREE.PlaneGeometry(p.w, p.h)), warm);
+    pane.position.set(...p.centre);
+    pane.rotation.y = p.rotY; // the pane's +z turned to the wall's normal
+    dressed.add(pane);
   }
+  root.add(dressed);
 
-  // ---- the garden (decoration): shrubs and trees, grown one after another
-  const shrubMat = own(new THREE.MeshLambertMaterial({ color: c.leaf, flatShading: true }));
-  const canopyMat = own(new THREE.MeshLambertMaterial({ color: c.leaf.clone().multiplyScalar(0.82), flatShading: true }));
+  // ---- the garden (decoration): hedges, the drive and fountain, shrubs, cypresses and round trees
+  const leafMat = own(new THREE.MeshLambertMaterial({ color: c.leaf, flatShading: true }));
+  const darkLeaf = own(new THREE.MeshLambertMaterial({ color: c.leaf.clone().multiplyScalar(0.72), flatShading: true }));
   const trunkMat = own(new THREE.MeshLambertMaterial({ color: c.smoke }));
-  const shrubs = new THREE.InstancedMesh(own(new THREE.IcosahedronGeometry(1, 1)), shrubMat, site.shrubs.length);
-  const canopy = new THREE.InstancedMesh(own(new THREE.ConeGeometry(1, 1, 7).translate(0, 0.5, 0)), canopyMat, site.trees.length);
-  const trunks = new THREE.InstancedMesh(own(new THREE.CylinderGeometry(0.5, 0.7, 1, 6).translate(0, 0.5, 0)), trunkMat, site.trees.length);
-  root.add(shrubs, canopy, trunks);
+  const hedges = pieces(site.hedges.map((h) => ({ centre: [h.centre.x, h.height / 2, h.centre.y], size: [h.length, h.height, h.depth], rotY: Math.atan2(-h.dir.y, h.dir.x) })), darkLeaf);
+  const garden = new THREE.Group();
+  garden.add(hedges);
+  if (site.fountain) {
+    const { x, y: z } = site.fountain;
+    const drive = shadowed(new THREE.Mesh(flat(new THREE.RingGeometry(DRIVE.inner, DRIVE.outer, 72)), paving), false);
+    drive.position.set(x, 0.007, z);
+    const basin = shadowed(new THREE.Mesh(own(new THREE.CylinderGeometry(FOUNTAIN.basin, FOUNTAIN.basin + 0.1, FOUNTAIN.height, 40)), stoneMat));
+    basin.position.set(x, FOUNTAIN.height / 2, z);
+    const water = new THREE.Mesh(flat(new THREE.CircleGeometry(FOUNTAIN.basin - 0.12, 40)), own(new THREE.MeshLambertMaterial({ color: c.cyanotype.clone().lerp(c.top, 0.55) })));
+    water.position.set(x, FOUNTAIN.height - 0.06, z);
+    const column = shadowed(new THREE.Mesh(own(new THREE.CylinderGeometry(0.12, 0.18, 1.1, 16)), stoneMat));
+    column.position.set(x, 0.55, z);
+    const bowl = shadowed(new THREE.Mesh(own(new THREE.CylinderGeometry(0.5, 0.2, 0.16, 28)), stoneMat));
+    bowl.position.set(x, 1.12, z);
+    root.add(drive);
+    garden.add(basin, water, column, bowl);
+  }
+  root.add(garden);
+  const cypress = site.trees.filter((t) => t.kind === "cypress");
+  const round = site.trees.filter((t) => t.kind === "round");
+  const shrubs = new THREE.InstancedMesh(own(new THREE.IcosahedronGeometry(1, 1)), leafMat, site.shrubs.length);
+  const spires = new THREE.InstancedMesh(own(new THREE.ConeGeometry(1, 1, 8).translate(0, 0.5, 0)), darkLeaf, cypress.length);
+  const crowns = new THREE.InstancedMesh(own(new THREE.IcosahedronGeometry(1, 1)), leafMat, round.length);
+  const trunks = new THREE.InstancedMesh(own(new THREE.CylinderGeometry(0.5, 0.7, 1, 6).translate(0, 0.5, 0)), trunkMat, round.length);
+  for (const im of [shrubs, spires, crowns, trunks]) (im.castShadow = true), (im.receiveShadow = true);
+  root.add(shrubs, spires, crowns, trunks);
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
   const v = new THREE.Vector3();
@@ -227,23 +275,56 @@ function buildWorld(plan: Plan): World {
       const k = Math.max(1e-3, grow(finish, i, site.shrubs.length));
       shrubs.setMatrixAt(i, m.compose(v.set(s.x, s.r * 0.6 * k, s.z), q, sc.set(s.r * k, s.r * 0.75 * k, s.r * k)));
     });
-    site.trees.forEach((t, i) => {
-      const k = Math.max(1e-3, grow(finish, i, site.trees.length));
-      trunks.setMatrixAt(i, m.compose(v.set(t.x, 0, t.z), q, sc.set(0.22 * k, (t.h / 3) * k, 0.22 * k)));
-      canopy.setMatrixAt(i, m.compose(v.set(t.x, (t.h / 3) * k, t.z), q, sc.set(t.h * 0.32 * k, ((2 * t.h) / 3) * k, t.h * 0.32 * k)));
+    cypress.forEach((t, i) => {
+      const k = Math.max(1e-3, grow(finish, i, cypress.length));
+      spires.setMatrixAt(i, m.compose(v.set(t.x, 0, t.z), q, sc.set(0.5 * k, t.h * k, 0.5 * k)));
     });
-    for (const im of [shrubs, canopy, trunks]) im.instanceMatrix.needsUpdate = true;
+    round.forEach((t, i) => {
+      const k = Math.max(1e-3, grow(finish, i, round.length));
+      trunks.setMatrixAt(i, m.compose(v.set(t.x, 0, t.z), q, sc.set(0.22 * k, t.h * 0.42 * k, 0.22 * k)));
+      crowns.setMatrixAt(i, m.compose(v.set(t.x, t.h * 0.68 * k, t.z), q, sc.set(t.h * 0.3 * k, t.h * 0.34 * k, t.h * 0.3 * k)));
+    });
+    for (const im of [shrubs, spires, crowns, trunks]) im.instanceMatrix.needsUpdate = true;
   };
 
-  // ---- sky, light and fog
+  // ---- the sky: a dome round the scene coloured by height (the horizon at the ground, warm band, blue overhead), faded in
+  // over the dark ground colour. In world space, so the horizon is where the lawn meets it, and the haze on the far lawn
+  // is the dome's own horizon colour: no seam. (A screen-space gradient behind the scene put a hard line there.)
+  const SKY_R = 300;
+  const domeGeo = own(new THREE.SphereGeometry(SKY_R, 48, 24));
+  const at = domeGeo.getAttribute("position");
+  const colors: number[] = [];
+  const cc = new THREE.Color();
+  for (let i = 0; i < at.count; i++) {
+    const t = Math.max(0, at.getY(i)) / SKY_R; // 0 at the horizon (and below), 1 overhead
+    if (t < 0.12) cc.copy(c.horizon).lerp(c.band, smooth(t / 0.12));
+    else cc.copy(c.band).lerp(c.top, smooth((t - 0.12) / 0.5));
+    colors.push(cc.r, cc.g, cc.b);
+  }
+  domeGeo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  const skyMat = own(new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false, transparent: true, opacity: 0, depthWrite: false }));
+  const dome = new THREE.Mesh(domeGeo, skyMat);
+  dome.position.copy(centre);
+  dome.renderOrder = -1; // drawn first; it writes no depth, so everything else draws over it
+  root.add(dome);
   const background = c.iron.clone();
-  const fog = new THREE.Fog(background.clone(), 40, 150);
+  const tmp = [new THREE.Color()];
+  const fog = new THREE.Fog(c.iron.clone(), 40, 160);
   const hemi = new THREE.HemisphereLight(c.vellum, c.iron, 1.6);
   const sun = new THREE.DirectionalLight(0xffffff, 1.2);
-  sun.position.set(-8, 14, 10);
-  const indoor = new THREE.AmbientLight(0xffffff, 0); // brightens the rooms as the camera walks in under the roof
-  root.add(hemi, sun, indoor);
-  const groundLight = c.iron.clone();
+  // From the front's side and low (the photograph's sunset light), so the facade the camera ends on is lit.
+  const out = door ? new THREE.Vector3(door.outward.x, 0, door.outward.y) : new THREE.Vector3(0, 0, 1);
+  const side = new THREE.Vector3(out.z, 0, -out.x);
+  sun.position.copy(centre).addScaledVector(out, 14).addScaledVector(side, -10).setY(11);
+  sun.target.position.copy(centre);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(coarse ? 1024 : 2048, coarse ? 1024 : 2048);
+  const reach = Math.hypot(pb.w, pb.h) / 2 + 10;
+  Object.assign(sun.shadow.camera, { left: -reach, right: reach, top: reach, bottom: -reach, near: 1, far: 60 });
+  sun.shadow.bias = -0.0005;
+  sun.shadow.normalBias = 0.03;
+  root.add(hemi, sun, sun.target);
+  const white = new THREE.Color(0xffffff);
 
   const update = (s: StoryState, w: number, h: number) => {
     const rise = wallRise(s.b);
@@ -267,18 +348,22 @@ function buildWorld(plan: Plan): World {
     lawnMesh.visible = f > 0;
     paving.opacity = smooth((f - 0.1) / 0.5);
     floor.opacity = smooth(f / 0.5);
-    const r = smooth((f - 0.3) / 0.6);
-    roof.opacity = r;
-    roofs.visible = r > 0;
-    roofs.position.y = H + (1 - r) * 1.5; // the roof drops into place
-    glass.opacity = 0.42 * smooth((f - 0.4) / 0.5);
-    shrubs.visible = canopy.visible = trunks.visible = f > 0;
+    const r = smooth((f - 0.25) / 0.55);
+    roofMat.opacity = r;
+    roof.visible = r > 0;
+    roof.position.y = (1 - r) * 1.6; // the roof drops into place
+    dressed.visible = f > 0.35;
+    garden.visible = shrubs.visible = spires.visible = crowns.visible = trunks.visible = f > 0;
+    garden.scale.y = Math.max(1e-3, smooth((f - 0.2) / 0.6));
     if (f > 0) placePlants(f);
-    background.copy(c.iron).lerp(c.sky, f);
-    fog.color.copy(background);
-    hemi.color.copy(c.vellum).lerp(c.sky, f);
-    hemi.groundColor.copy(groundLight.copy(c.iron).lerp(c.stone, f)); // stone, not lawn: green bounce light tinted the walls
-    indoor.intensity = 0.9 * smooth((s.enter - 0.45) / 0.4);
+    skyMat.opacity = f;
+    dome.visible = f > 0;
+    fog.color.copy(c.iron).lerp(c.horizon, f);
+    hemi.intensity = 1.6 - 0.6 * f;
+    hemi.color.copy(c.vellum).lerp(c.top, 0.5 * f);
+    hemi.groundColor.copy(tmp[0].copy(c.iron).lerp(c.stone, f)); // stone, not lawn: green bounce light tinted the walls
+    sun.color.copy(white).lerp(c.sun, f);
+    sun.intensity = 1.2 + 1.1 * f;
   };
 
   return {
@@ -289,15 +374,16 @@ function buildWorld(plan: Plan): World {
     update,
     dispose: () => {
       owned.forEach((x) => x.dispose());
-      for (const im of [shrubs, canopy, trunks]) im.dispose();
+      for (const im of [shrubs, spires, crowns, trunks]) im.dispose();
+      sun.shadow.map?.dispose();
     },
   };
 }
 
-function Story({ progress, stage, onReady, onRender }: Props) {
+function Story({ progress, stage, onReady, onRender, coarse }: Props & { coarse: boolean }) {
   const get = useThree((s) => s.get);
   const scene = useThree((s) => s.scene);
-  const world = useMemo(() => buildWorld(samplePlan), []);
+  const world = useMemo(() => buildWorld(samplePlan, coarse), [coarse]);
   const [sheet, setSheet] = useState<THREE.Texture | null>(null);
 
   // The scene takes the world's sky and fog while it is shown. Set and cleared in one effect, so React's development
@@ -358,7 +444,8 @@ function Story({ progress, stage, onReady, onRender }: Props) {
       cam.position.set(...pose.position);
       cam.lookAt(...pose.target);
       cam.updateProjectionMatrix();
-      world.update(storyAt(p), size.width, size.height);
+      const state = storyAt(p);
+      world.update(state, size.width, size.height);
       gl.render(s, cam);
       onRender(++count);
       if (count === 1) onReady();
@@ -382,9 +469,13 @@ export default function BlueprintCanvas(props: Props) {
       dpr={[1, coarse ? 1.5 : 2]}
       resize={{ scroll: false }}
       camera={{ fov: FOV, near: 0.1, far: 500 }}
-      onCreated={({ gl }) => void (gl.localClippingEnabled = true)}
+      onCreated={({ gl }) => {
+        gl.localClippingEnabled = true;
+        gl.shadowMap.enabled = true; // on from the start: switching it later would need every material recompiled
+        gl.shadowMap.type = THREE.PCFSoftShadowMap;
+      }}
     >
-      <Story {...props} />
+      <Story {...props} coarse={coarse} />
     </Canvas>
   );
 }

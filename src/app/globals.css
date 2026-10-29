@@ -54,6 +54,13 @@
   --color-lawn: #8a9a64;   /* the ground round the house */
   --color-leaf: #56693b;   /* shrubs and tree canopies */
   --color-paving: #d9d1c1; /* the terrace and the path to the front door */
+  /* Step H.3, the villa at sunset */
+  --color-roof: #3b302b;          /* the hip roof's dark tiles and its fascia */
+  --color-lamplight: #ffc977;     /* the warm glass of the windows and door, and the lamps */
+  --color-sunset-top: #7f93b8;    /* the sky overhead */
+  --color-sunset-glow: #f1b46c;   /* the sky's warm band */
+  --color-sunset-horizon: #f6d9ae; /* the sky at the horizon, and the haze over the far ground */
+  --color-sunlight: #ffd8a6;      /* the low sun's light */
 }
 
 body {
