@@ -23,7 +23,7 @@
  * and neither three.js nor react-three-fiber fetched, the sheet first and the end-state drawing after the middle, the stage gone at the end.
  * No console errors anywhere.
  *
- * Step L.2 adds (E2E_ONLY=fit|load|failed|tour runs one part; the rest of this header is step 8.1's):
+ * Step L.2 adds (E2E_ONLY=fit|scene|story|load|failed|tour runs one part; the rest of this header is step 8.1's):
  *   fit     1440x900, 1280x720 and 390x844, 3D mode, nine scroll positions from 0 to 100% of the build, each by pixels:
  *           the outer ring of the screenshot (one device pixel wide) is the ground colour, so no part of the sheet or the
  *           model reaches the edge of the viewport (whole sheet and model in view); and from 25% of the build on, with the
@@ -38,6 +38,13 @@
  *   tour    at 390 the tour is a crossfade (no clip-path, no will-change, nothing wider than the screen), the hero caption
  *           and Step inside do not overlap and the caption is readable (contrast against the picture, measured); at 1440
  *           the arches are kept. Frame times through the tour are printed.
+ * Step H.2 (the hero is a story now: lines rise, a scan turns them solid, the camera tours the house and walks in at the
+ * front door; see src/lib/landing/story.ts): the build is the first 24% of a seven-screen scroll, so every "% of the
+ * build" above is of that first phase, which still uses cameraAt and its no-crop fitting. The tour starts in the lobby, so
+ * the photos are 02 to 05 (four), and Step inside is gone. The story's later phases are checked in Node
+ * (scripts/test-landing-story.ts) and by `story` here: frames at the settle, the tour, the walk in, the daylight wash and
+ * the end are drawn and differ from each other, the sky shows behind the finished house, and the stage dissolves onto
+ * the lobby.
  * Screenshots in /tmp/studio/ (L.2): landing-final-{0,100}-{1440,1280,390}.png, landing-final-tour-{1440,390}.png.
  * Screenshots in /tmp/studio/: landing-scene-{0,50,100}-1440.png, landing-scene-390.png (the 50% frame) and
  * landing-scene-{0,100}-390.png, landing-scene-reduced-{1440,390}.png, landing-scene-nowebgl-1440.png.
@@ -79,8 +86,14 @@ async function settle(page: Page, what: string) {
   }
 }
 
+/** E2E_NO_TOUCH=1 scrolls the phone runs with the mouse wheel: on the cloud's Linux headless Chromium, CDP's touch scroll
+ *  gestures do not scroll at all (step H.2 found it: a plain 5000 px page stays at scrollY 0), so the 390 parts cannot
+ *  run there otherwise. The phone's layout, pixel ratio and touch flags are unchanged; only the scrolling input differs. */
+const NO_TOUCH = process.env.E2E_NO_TOUCH === "1";
+
 /** Scrolls with the real device: mouse wheel (Lenis) or touch gestures, until within `tol` px of `y`. */
 async function scrollTo(page: Page, y: number, touch: boolean, tol: number, what: string, maxStep = touch ? 500 : Infinity) {
+  touch &&= !NO_TOUCH;
   const vw = await page.evaluate<number>("innerWidth");
   for (let i = 0; i < 40; i++) {
     const at = await page.evaluate<number>("scrollY");
@@ -452,26 +465,26 @@ async function runLoad(browser: Browser, width: number, height: number, touch: b
 
     step(`${tag}: photos are not requested before the scroll is near them`);
     await page.waitForLoadState("networkidle");
-    assert.deepEqual(photos, ["01"], `${tag}: at rest only the first photo is requested (got ${photos})`);
+    assert.deepEqual(photos, ["02"], `${tag}: at rest only the first photo (the lobby, since step H.2) is requested (got ${photos})`);
     const g = await geometry(page);
     const tol = Math.round(g.span * 0.01);
     const vh = await page.evaluate<number>("innerHeight");
     // In steps of 200 px: a wheel or swipe that is counted twice by a moving scroll can then only overshoot by that much.
     await scrollTo(page, Math.round(vh * 0.4), touch, tol, "a little way into the build", 200);
     await page.waitForLoadState("networkidle");
-    assert.deepEqual(photos, ["01"], `${tag}: a little way into the build still only the first (got ${photos})`);
+    assert.deepEqual(photos, ["02"], `${tag}: a little way into the build still only the first (got ${photos})`);
     // 400 px short of the tour's pin (its progress is still 0): the tour has been in view for half a screen, so the lobby, and no more
     await scrollTo(page, g.span - 400, touch, tol, "the tour's first screen", 200);
-    await until(() => photos.includes("02"), `${tag}: the lobby was never requested once the tour was near`);
+    await until(() => photos.includes("03"), `${tag}: the living room was never requested once the tour was near`);
     await page.waitForLoadState("networkidle");
-    assert.deepEqual([...photos].sort(), ["01", "02"], `${tag}: before the tour's pin the first two (got ${photos}, scrollY ${await page.evaluate("scrollY")} of pin at ${g.span})`);
+    assert.deepEqual([...photos].sort(), ["02", "03"], `${tag}: before the tour's pin the first two (got ${photos}, scrollY ${await page.evaluate("scrollY")} of pin at ${g.span})`);
     const spacer = await page.evaluate<number>(`(() => { const p = document.querySelector("${TOUR}").parentElement; if (!p.classList.contains("pin-spacer")) throw new Error("the tour is not pinned"); return p.offsetHeight - innerHeight; })()`);
     await scrollTo(page, g.span + Math.round(spacer * 0.14), touch, tol, "into the first room change", 200);
-    await until(() => photos.includes("03"), `${tag}: the living room was never requested once the scroll reached the lobby`);
+    await until(() => photos.includes("04"), `${tag}: the dining room was never requested once the scroll reached the living room`);
     await page.waitForLoadState("networkidle");
-    assert.deepEqual([...photos].sort(), ["01", "02", "03"], `${tag}: one room ahead of the scroll, no more (got ${photos})`);
+    assert.deepEqual([...photos].sort(), ["02", "03", "04"], `${tag}: one room ahead of the scroll, no more (got ${photos})`);
     await scrollTo(page, g.span + Math.round(spacer * 0.875), touch, tol, "near the end of the tour", 600);
-    await until(() => photos.length === 5, `${tag}: not every photo arrived by the end of the tour (got ${photos})`);
+    await until(() => photos.length === 4, `${tag}: not every photo arrived by the end of the tour (got ${photos})`);
     console.log(`  ${tag}: photos requested in order: ${photos.join(", ")} (vh ${vh})`);
   } finally {
     await context.close();
@@ -537,7 +550,7 @@ async function runFailed(browser: Browser) {
   }
 }
 
-/** The tour: a crossfade on a phone, arches on a desktop; the hero caption readable and clear of Step inside. */
+/** The tour: a crossfade on a phone, arches on a desktop; the photographs' caption readable. */
 async function runTour(browser: Browser, width: number, height: number, touch: boolean) {
   const tag = `${width} tour`;
   const dpr = touch ? 3 : 1;
@@ -557,13 +570,12 @@ async function runTour(browser: Browser, width: number, height: number, touch: b
     const shot = await pixels(png);
     await noSideways(page, width, tag);
 
-    step(`${tag}: the hero caption and Step inside`);
-    const button = (await page.getByRole("button", { name: "Step inside" }).boundingBox())!;
+    // Step H.2 removed Step inside (the hero's camera walks in now), so the overlap check with it went too.
+    step(`${tag}: the photographs' caption`);
+    assert.equal(await page.getByRole("button", { name: "Step inside" }).count(), 0, `${tag}: no Step inside button any more`);
     const note = page.locator("p", { hasText: "Illustrative photographs" });
     const nb = (await note.boundingBox())!;
     const vh = await page.evaluate<number>("innerHeight");
-    const apart = nb.y >= button.y + button.height || nb.y + nb.height <= button.y || nb.x >= button.x + button.width || nb.x + nb.width <= button.x;
-    assert.ok(apart, `${tag}: the caption (${JSON.stringify(nb)}) overlaps Step inside (${JSON.stringify(button)})`);
     assert.ok(nb.x >= 0 && nb.x + nb.width <= width && nb.y >= 0 && nb.y + nb.height <= vh, `${tag}: the caption is inside the screen (${JSON.stringify(nb)})`);
     const fontPx = await note.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
     assert.ok(fontPx >= 12, `${tag}: the caption's text is ${fontPx}px`);
@@ -583,7 +595,7 @@ async function runTour(browser: Browser, width: number, height: number, touch: b
     ls.sort((a, b) => a - b);
     const bg = ls[Math.floor(ls.length * 0.75)];
     const ratio = (lum(0xf4, 0xef, 0xe5) + 0.05) / (bg + 0.05);
-    console.log(`  ${tag}: caption ${nb.width.toFixed(0)}x${nb.height.toFixed(0)} at y ${nb.y.toFixed(0)}, ${fontPx}px, Step inside ends at y ${(button.y + button.height).toFixed(0)}, contrast ${ratio.toFixed(1)}:1`);
+    console.log(`  ${tag}: caption ${nb.width.toFixed(0)}x${nb.height.toFixed(0)} at y ${nb.y.toFixed(0)}, ${fontPx}px, contrast ${ratio.toFixed(1)}:1`);
     assert.ok(ratio >= 4.5, `${tag}: the caption's contrast is ${ratio.toFixed(2)}:1`);
 
     step(`${tag}: how the layers are made`);
@@ -593,7 +605,7 @@ async function runTour(browser: Browser, width: number, height: number, touch: b
       // A crossfade: no clip-path, no photo scaling (the photos carry no will-change), and one promoted layer per room, for opacity only.
       // (Without will-change: opacity every fade repainted a 3x full-screen photo on the main thread: 5 to 11 frames over 50 ms.)
       for (const l of at0) assert.ok(l.clip === "none" && l.wc === "opacity" && l.pwc === "auto", `${tag}: a layer uses clip-path or a will-change other than opacity (${JSON.stringify(l)})`);
-      assert.deepEqual(at0.slice(1).map((l) => l.vis), ["hidden", "hidden", "hidden", "hidden"], `${tag}: the later rooms are hidden`);
+      assert.deepEqual(at0.slice(1).map((l) => l.vis), ["hidden", "hidden", "hidden"], `${tag}: the later rooms are hidden`);
     } else {
       assert.ok(at0.slice(1).every((l) => l.clip !== "none"), `${tag}: the arches are kept on a desktop`);
     }
@@ -621,6 +633,61 @@ async function runTour(browser: Browser, width: number, height: number, touch: b
   }
 }
 
+/** Step H.2: the story after the build, by pixels. The camera's path itself is proven in Node (test-landing-story.ts). */
+async function runStory(browser: Browser, width: number, height: number, touch: boolean) {
+  const tag = `${width} story`;
+  const dpr = touch ? 3 : 1;
+  const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: dpr, hasTouch: touch, isMobile: touch });
+  const page = await context.newPage();
+  watchErrors(page, tag, errors);
+  try {
+    step(`${tag}: open the landing page`);
+    await page.goto(`${BASE}/`);
+    await hideDevBadge(page);
+    await waitUntil(page, `${tag}: the canvas never drew the sheet`, `document.querySelector("${SCENE}").dataset.ready === "true"`, 90_000);
+    await waitUntil(page, `${tag}: the canvas never finished fading in`, `getComputedStyle(document.querySelector("[data-testid=blueprint-canvas]")).opacity === "1"`);
+    await waitUntil(page, `${tag}: the preloader was never removed`, `!document.querySelector("${PRELOADER}")`);
+    const g = await geometry(page);
+    const tol = Math.round(g.span * 0.01);
+    // Scroll shares from src/lib/landing/timeline.ts: the walls risen as lines, the settle, the tour, the front, the door, the wash.
+    const marks: [string, number][] = [["built", 0.24], ["scan", 0.34], ["tour", 0.58], ["front", 0.74], ["door", 0.86], ["wash", 0.955]];
+    const frames: Pixels[] = [];
+    for (const [name, at] of marks) {
+      step(`${tag}: ${name}`);
+      await scrollTo(page, Math.round(g.span * at), touch, tol, name, touch ? 500 : 1200);
+      await settle(page, name);
+      frames.push(await pixels(await page.screenshot({ path: `${OUT}/landing-story-${name}-${width}.png` })));
+    }
+    for (let i = 1; i < frames.length; i++) {
+      const d = changed(frames[i - 1], frames[i]);
+      console.log(`  ${tag}: ${marks[i][0]} differs from ${marks[i - 1][0]} in ${pct(d)} of pixels`);
+      assert.ok(d >= 0.05, `${tag}: ${marks[i][0]} differs from ${marks[i - 1][0]} (${pct(d)})`);
+    }
+    // The finished house stands under the sky: the top rows of the tour frame are the sky token, within 40 summed.
+    const sky = [0xdf, 0xe5, 0xe6];
+    const tour = frames[2];
+    let near = 0;
+    const rows = Math.round(tour.h * 0.04);
+    for (let i = 0; i < rows * tour.w; i++) if (Math.abs(tour.data[3 * i] - sky[0]) + Math.abs(tour.data[3 * i + 1] - sky[1]) + Math.abs(tour.data[3 * i + 2] - sky[2]) <= 40) near++;
+    console.log(`  ${tag}: top ${rows} rows of the tour frame are sky in ${pct(near / (rows * tour.w))}`);
+    assert.ok(near / (rows * tour.w) >= 0.9, `${tag}: the sky shows above the finished house (${pct(near / (rows * tour.w))})`);
+    // While touring the headline has gone and the caption shows.
+    await scrollTo(page, Math.round(g.span * 0.58), touch, tol, "tour again", touch ? 500 : 1200);
+    await settle(page, "tour again");
+    const ops = await page.evaluate<number[]>(`[document.querySelector("[data-headline]"), document.querySelector("[data-tour-caption]")].map((e) => Number(getComputedStyle(e).opacity))`);
+    assert.ok(ops[0] < 0.05 && ops[1] > 0.95, `${tag}: while touring the headline is gone (${ops[0]}) and the caption shows (${ops[1]})`);
+    // The daylight wash: the vellum token over nearly the whole frame as the camera crosses the threshold.
+    const vellum = [0xf4, 0xef, 0xe5];
+    const wash = frames[frames.length - 1];
+    let lit = 0;
+    for (let i = 0; i < wash.n; i++) if (Math.abs(wash.data[3 * i] - vellum[0]) + Math.abs(wash.data[3 * i + 1] - vellum[1]) + Math.abs(wash.data[3 * i + 2] - vellum[2]) <= 40) lit++;
+    assert.ok(lit / wash.n >= 0.9, `${tag}: the daylight wash covers the view at the threshold (${pct(lit / wash.n)})`);
+    await noSideways(page, width, tag);
+  } finally {
+    await context.close();
+  }
+}
+
 async function main() {
   await warmRoutes(["/"]);
   mkdirSync(OUT, { recursive: true });
@@ -642,6 +709,10 @@ async function main() {
       await runLoad(browser, 390, 844, true);
       await runLoadReduced(browser, 1440, 900, false);
       await runLoadReduced(browser, 390, 844, true);
+    }
+    if (wants("story")) {
+      await runStory(browser, 1440, 900, false);
+      await runStory(browser, 390, 844, true);
     }
     if (wants("failed")) await runFailed(browser);
     if (wants("tour")) {

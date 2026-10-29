@@ -17,6 +17,7 @@ Tick each active item (`[x]`) as its step finishes.
 - [x] Reader fixes for doors and windows: windows with face strokes, leaves in a door frame (step Q.5, section 46; proven on synthetic fixtures only)
 - [ ] Prove the Q.5 door and window fixes on a fresh real plan (none has been read)
 - [x] V.2 A spacious look for imported plans: Cutaway, room names in 3D, a gentle fill light; stair labels out of room names (section 47)
+- [x] H.2 The landing hero as a story: lines rise, a scan turns them solid, the house is finished and toured, the camera walks in at the front door onto the lobby (section 48)
 
 ### Deferred on purpose
 
@@ -2218,4 +2219,28 @@ So the walls are not unusually thick for the rooms (13.5% against 11.3%), and th
 - The section is drawn flat dark (`#4a443c`), not hatched.
 
 **Not covered:** a real phone, Safari, Firefox; Linux CI for the new Node test (it reads only committed fixtures, generates nothing time-dependent and compares no compressed bytes); a screen reader on the 3D labels.
+
+## 48. H.2 — the landing hero as a story (2026-10-29, branch `hero-build`)
+
+**Why.** The owner sent two reference videos (AI-made, photoreal): a tower whose blueprint lines rise into a wireframe and turn into a finished building, and a villa whose glowing cyan wireframe rises on a site, is swept into a finished house by a glowing band, and is walked into at the front door. He chose: live 3D from the plan (not a scroll-scrubbed video), the door to open onto the existing photo tour, and site dressing. Told up front: a live WebGL scene does not look like AI footage.
+
+**What it does** (scroll shares in `src/lib/landing/timeline.ts`; the section is 800svh, seven screens):
+1. 0–0.24 build: step 8.1's camera (`cameraAt`, its no-crop fitting unchanged) while the walls rise as glowing lines (fat lines with a halo, the studio meshes' crease edges).
+2. 0.26–0.42 scan: a glowing band climbs the walls; solid wall below it, lines above (the same meshes, clipped by planes).
+3. 0.38–0.52 finish: floors and roof (deriveRooms + buildFloorGeometry), window glass (openingFrame), terrace, path, shrubs and trees, lawn and sky; the sheet fades.
+4. 0.42–0.74 tour: the camera settles from the build's last pose into an orbit that frames the house from every side and turns to the front door.
+5. 0.74–0.95 walk in: to 4.5 m in front of the door at eye height, a pause, then straight through it; 0.88–0.94 a vellum daylight wash; 0.975–1 the stage dissolves onto the lobby.
+- The photo tour starts in the lobby (mansion photo and Step inside removed). Reduced motion and no-WebGL keep step 8.1's short static section (CSS `motion-reduce:h-[300svh]` from the first paint).
+- Landing-only colour tokens (glow, sky, lawn, leaf, paving) are plain `:root` properties: as `@theme` tokens Tailwind v4 left them out of the CSS (no utility uses them) and the canvas read every one as white. Found by eye in the first screenshots.
+- React's development double effect run cleared the scene's background, so the sky showed as a dark band; the background and fog are now set and cleared in one effect.
+
+**Tests.**
+- `scripts/test-landing-story.ts` (new, in `npm test`): phases in order and monotone; front door = d-front, out to the north; no exterior door → no walk in; camera continuous (largest move between scroll steps 1/4000 apart under 0.2 m), never under 0.3 m; whole house in view while settling and touring at 1440×900, 1280×720 and 390×844; on the walk in clear of every wall by 0.15 m (the walk collision), through the door's gap and under its head, ending in a room; the garden off the terrace, off the path and out of the walk-in corridor. **Not written failing first**: the module and the test were written together and it passed on its first run.
+- `scripts/test-landing-scene.ts`: one assertion changed, `BUILD_END > 0.5` became `BUILD_END > 0 && BUILD_END < FADE_START` (the build is now the first of five phases).
+- `scripts/e2e-landing.ts`: photos are now 02–05 (four); the Step inside overlap check is replaced by "no Step inside"; three hidden later rooms, not four; new part `story` (frames at built, scan, tour, front, door, wash differ by 5%+, the sky above the finished house, the headline gone and the caption shown while touring, the wash over 90% of the frame).
+- **Touch scrolling does not work in the cloud's Linux headless Chromium** (CDP `synthesizeScrollGesture` leaves even a plain 5000 px page at scrollY 0), so every 390 touch part failed there before any change of this step could matter (`could not scroll to 709 for 50% (at 0)` in the unchanged `scene` part). `E2E_NO_TOUCH=1` scrolls the phone runs with the wheel; the results below used it. Run the suite on the Mac without it.
+
+**Verified here** (cloud Linux, Node 22 against `.nvmrc`'s 24.14.0): `npm test` exit 0, `npx tsc --noEmit` clean, cold build exit 0 under the 5-minute cap, both greps clean, `/` first load 195 kB gzip (unchanged). Screenshots of the whole scroll at 1440 and 390 checked by eye. The e2e results are in the commit that adds this section.
+
+**Limits.** Stylised, not photoreal: flat colours, no shadows, low-poly plants. The garden is decoration (not plan data). Doors have no leaves or frames in the hero; the front door is an open gap. The roof is the rooms' polygons at wall height (no overhang). Frame times measured only on SwiftShader. Not tested on a real phone, Safari or Firefox.
 
