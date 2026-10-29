@@ -145,7 +145,9 @@ export function LandingTour() {
             width={PHOTO_W}
             height={PHOTO_H}
             className="h-full w-full object-cover sm:will-change-transform"
-            loading={i === 0 ? "eager" : "lazy"}
+            // Eager once allowed (step H.2): `allowed` is the real gate; left lazy, Chromium did not fetch the living room
+            // while its layer was still clipped shut, so the next room was not ready when its arch opened.
+            loading={i < allowed ? "eager" : "lazy"}
             // The first photo is three screens below the hero (a drawing, not a photograph), so it must not outrank the hero's own
             // script and font on a slow link (step A.1). Still eager: it is requested at once, just after what the first screen needs.
             fetchPriority={i === 0 ? "low" : "auto"}
