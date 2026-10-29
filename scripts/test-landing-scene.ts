@@ -17,7 +17,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { samplePlan } from "../src/data/samplePlan";
-import { BUILD_END, cameraAt, planBounds, SHEET_FIT, sheetBox, sheetShapes, wallRise } from "../src/lib/landing/blueprint";
+import { BUILD_END, cameraAt, FADE_START, planBounds, SHEET_FIT, sheetBox, sheetShapes, wallRise } from "../src/lib/landing/blueprint";
 import { axonometricFaces, buildBlueprintWalls, cutOpeningIds } from "../src/lib/landing/blueprintMeshes";
 import { wallOutline } from "../src/lib/plan/geometry";
 import { buildWallMeshData } from "../src/lib/plan/meshBuilders";
@@ -136,7 +136,7 @@ for (const [w, h] of [[1440, 900], [1280, 720], [390, 844]]) {
 }
 assert.equal(wallRise(0), 0, "walls flat at the start");
 assert.equal(wallRise(1), 1, "walls full height at the end of the build");
-assert.ok(BUILD_END > 0.5 && BUILD_END < 1, "the build ends before the hand-over");
+assert.ok(BUILD_END > 0 && BUILD_END < FADE_START, "the build ends before the hand-over"); // step H.2: the build is now the first of five phases (was > 0.5)
 
 // ---- shared helpers, not a copy
 const src = (p: string) => readFileSync(p, "utf8");
