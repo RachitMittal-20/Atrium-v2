@@ -95,7 +95,7 @@ const NO_TOUCH = process.env.E2E_NO_TOUCH === "1";
 async function scrollTo(page: Page, y: number, touch: boolean, tol: number, what: string, maxStep = touch ? 500 : Infinity) {
   touch &&= !NO_TOUCH;
   const vw = await page.evaluate<number>("innerWidth");
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 80; i++) { // 80 (step H.2; was 40): the hero is seven screens now, and a wheel step can move a phone run under 200 px
     const at = await page.evaluate<number>("scrollY");
     const d = y - at;
     if (Math.abs(d) <= tol) return;
