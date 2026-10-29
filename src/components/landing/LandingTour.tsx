@@ -1,8 +1,9 @@
 /*
  * src/components/landing/LandingTour.tsx
  *
- * The photographed half of the landing page: mansion → lobby → living →
- * dining → piano room, driven entirely by scroll.
+ * The photographed half of the landing page: lobby → living → dining →
+ * piano room, driven entirely by scroll (step H.2: it starts in the lobby, where
+ * the hero's camera has just walked in at the front door).
  *
  * How it works:
  *  - One pinned, full-screen stage holds every photo stacked on top of each
@@ -19,13 +20,12 @@
  *      390; with it 0 or 1). A faded-out layer is visibility: hidden, which GSAP's autoAlpha sets.
  *  - Titles cross-fade with their rooms. The last room reveals the call to
  *    action that leads into the app (/studio).
- *  - "Step inside" on the mansion glides the scroll to the lobby reveal via
- *    scrollToOffset (Lenis), instead of jumping.
+ *  - (Step H.2 removed "Step inside": the hero's camera now steps inside.)
  *  - Photos (step L.2): the five are 0.7 to 1.2 MB each, so only the first has a
  *    real src at load (eager, high priority). Native loading="lazy" is not enough: the tour starts one screen
  *    below the fold, which is inside the browser's lazy-load distance, so all five were fetched before the first
  *    scroll. The others hold a 1 px placeholder until `allowed` says they are near: the lobby once the tour
- *    section enters the viewport (or "Step inside" is pressed), then one room ahead of the scroll's progress.
+ *    section enters the viewport, then one room ahead of the scroll's progress.
  *    Every photo has its real width and height.
  * BlueprintScene (step 8.1) sits above this and overlaps its first screen: its pin starts exactly where the
  * blueprint stage, faded out, stops sticking. The construction scene (8.2) is deferred.
@@ -38,7 +38,6 @@ import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { useGSAP } from "@gsap/react";
 import { LANDING_SCENES } from "@/data/landingScenes";
-import { scrollToOffset } from "@/store/scrollStore";
 
 gsap.registerPlugin(ScrollTrigger, useGSAP);
 
@@ -57,7 +56,6 @@ const PHOTO_H = 900;
 
 export function LandingTour() {
   const root = useRef<HTMLDivElement>(null);
-  const trigger = useRef<ScrollTrigger | null>(null);
   const [allowed, setAllowed] = useState(1); // how many photos (from the first) may load; only ever grows
   const allow = useCallback((n: number) => setAllowed((a) => Math.max(a, Math.min(n, LANDING_SCENES.length))), []);
 
@@ -84,7 +82,6 @@ export function LandingTour() {
         end: `+=${steps * per}%`,
         pin: true,
         scrub: true,
-        onRefresh: (self: ScrollTrigger) => (trigger.current = self),
         onUpdate: (self: ScrollTrigger) => allow(2 + Math.ceil(self.progress * steps)),
       });
 
@@ -134,15 +131,6 @@ export function LandingTour() {
     { scope: root, dependencies: [allow] },
   );
 
-  // Glide to the moment the lobby has fully opened (end of transition 1).
-  const stepInside = () => {
-    const st = trigger.current;
-    if (!st) return;
-    allow(3); // the lobby, and the living room it opens onto next
-    const steps = LANDING_SCENES.length - 1;
-    scrollToOffset(st.start + ((st.end - st.start) * 0.9) / steps);
-  };
-
   const last = LANDING_SCENES.length - 1;
 
   return (
@@ -176,16 +164,6 @@ export function LandingTour() {
         >
           <h2 className="font-display text-3xl leading-tight sm:text-5xl">{scene.title}</h2>
           <p className="mx-auto mt-3 max-w-[46ch] text-base text-vellum/85 sm:text-lg">{scene.caption}</p>
-
-          {i === 0 && (
-            <button
-              type="button"
-              onClick={stepInside}
-              className="pointer-events-auto mt-8 rounded-full border border-vellum/70 px-7 py-3 text-sm font-medium transition-colors hover:bg-vellum hover:text-iron"
-            >
-              Step inside
-            </button>
-          )}
 
           {/* Honesty note: the photographs are AI-generated, not Atrium output. Quiet, wraps at 390 px. */}
           {i === 0 && (

@@ -3,7 +3,9 @@
  *
  * The photographed part of the landing story, in scroll order. LandingTour
  * renders one full-screen layer per entry and reveals each through an
- * arch-shaped opening. Text lives here, not in the component, so copy
+ * arch-shaped opening. Since step H.2 it starts in the lobby: the hero's camera
+ * walks in at the sample house's front door and the stage fades onto it, so the
+ * mansion's exterior photograph (and its heading) is no longer shown. Text lives here, not in the component, so copy
  * changes never touch animation code.
  */
 export interface LandingScene {
@@ -15,14 +17,6 @@ export interface LandingScene {
 }
 
 export const LANDING_SCENES: LandingScene[] = [
-  {
-    id: "mansion",
-    image: "/images/01_mansion.webp",
-    alt: "A white classical villa with arched black-framed windows at sunset, a circular driveway in front",
-    // The page's one "From one drawing, a whole house" is the blueprint scene's h1 (step L.2); this scene has its own line.
-    title: "Every wall starts as a line on a plan",
-    caption: "Atrium turns the lines of a plan into walls, doors and windows you can walk through.",
-  },
   {
     id: "lobby",
     image: "/images/02_lobby.webp",
