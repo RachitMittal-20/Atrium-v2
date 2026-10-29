@@ -13,7 +13,7 @@
  *   SCAN_START → SCAN_END   the headline fades away (the camera kept the model below it during the build);
  *   TOUR_START → TOUR_END   a one-line caption at the bottom while the camera circles the house;
  *   LIGHT_START → LIGHT_END   daylight (a vellum wash) fills the view as the camera crosses the threshold;
- *   FADE_START → 1       the stage, wash and all, dissolves onto the lobby, which ends pinned where the stage was.
+ *   FADE_START → FADE_END   the stage, wash and all, dissolves onto the lobby, which ends pinned where the stage was.
  * The stage is transparent (and hidden from pointers) by the time it unsticks, so nothing ever slides over the tour.
  *
  * Three modes, chosen in the browser (`data-mode`):
@@ -48,7 +48,7 @@ import dynamic from "next/dynamic";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { useGSAP } from "@gsap/react";
-import { BUILD_END, FADE_START, LIGHT_END, LIGHT_START, PRELOADER_MAX_MS, SCAN_END, SCAN_START, TOUR_END, TOUR_START } from "@/lib/landing/timeline"; // not blueprint.ts or story.ts: that would bring their geometry into first load
+import { BUILD_END, FADE_END, FADE_START, LIGHT_END, LIGHT_START, PRELOADER_MAX_MS, SCAN_END, SCAN_START, TOUR_END, TOUR_START } from "@/lib/landing/timeline"; // not blueprint.ts or story.ts: that would bring their geometry into first load
 
 gsap.registerPlugin(ScrollTrigger, useGSAP);
 
@@ -144,7 +144,7 @@ export function BlueprintScene({ sheet, endState }: { sheet: ReactNode; endState
           .fromTo("[data-tour-caption]", { autoAlpha: 0, y: 16 }, { autoAlpha: 1, y: 0, duration: 0.04 }, TOUR_START)
           .to("[data-tour-caption]", { autoAlpha: 0, duration: 0.04 }, TOUR_END - 0.04)
           .fromTo("[data-door-light]", { autoAlpha: 0 }, { autoAlpha: 1, duration: LIGHT_END - LIGHT_START }, LIGHT_START)
-          .to(stage.current, { autoAlpha: 0, duration: 1 - FADE_START }, FADE_START);
+          .to(stage.current, { autoAlpha: 0, duration: FADE_END - FADE_START }, FADE_START);
       } else if (mode === "static") {
         const at = (self: ScrollTrigger) => setStep(self.progress >= STATIC_MARKS.out ? 2 : self.progress >= STATIC_MARKS.swap ? 1 : 0);
         ScrollTrigger.create({ ...trigger, onUpdate: at, onRefresh: at });

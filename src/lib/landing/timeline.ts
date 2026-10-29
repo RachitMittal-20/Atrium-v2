@@ -16,6 +16,9 @@
  *   FADE_START    where the hand-over to the photo tour starts; it ends at the scene's last scroll. Late on purpose: the
  *                 tour's lobby rises into place under the stage until the very end (the hero overlaps it by one screen),
  *                 so the wash holds until the lobby is nearly in place, and the last stretch dissolves onto it.
+ *   FADE_END      the stage is fully gone (and hidden) a little before the very end, so a scroll that stops a few px short
+ *                 of the hand-over never leaves a faint stage over the lobby (e2e-landing at 390 stopped 2 px short and
+ *                 found it still "visible" at 1% opacity)
  *   PRELOADER_MAX_MS  the longest the preloader may cover the page, from the start of navigation (step L.2)
  */
 export const BUILD_END = 0.24;
@@ -29,4 +32,5 @@ export const ENTER_END = 0.95;
 export const LIGHT_START = 0.88;
 export const LIGHT_END = 0.94;
 export const FADE_START = 0.975;
+export const FADE_END = 0.995;
 export const PRELOADER_MAX_MS = 2800; // under the 3 s the brief allows, leaving the fade-out inside it
